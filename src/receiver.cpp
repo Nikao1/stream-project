@@ -97,6 +97,27 @@ SOCKET g_udpSocket =
 
 
 // ============================================================
+// Endereço do servidor
+//
+// É preenchido no main() depois de configurar
+// 127.0.0.1:5001.
+// ============================================================
+
+sockaddr_in g_serverAddress{};
+
+
+// ============================================================
+// Controle do stream
+//
+// false = ainda não recebemos vídeo válido
+// true  = já recebemos pelo menos um pacote de vídeo válido
+// ============================================================
+
+std::atomic<bool>
+g_streamReceived{ false };
+
+
+// ============================================================
 // Decoder
 // ============================================================
 
@@ -467,8 +488,6 @@ void ProcessUdpPacket(
         // ====================================================
         // Iniciar decoder
         //
-        // IMPORTANTE:
-        //
         // H264Decoder::Start() recebe somente:
         //
         // width
@@ -613,6 +632,54 @@ void ProcessUdpPacket(
 
 
 // ============================================================
+// Enviar HELLO para o servidor
+// ============================================================
+
+bool SendHello()
+{
+    const char hello[] =
+        "HELLO";
+
+
+    int sent =
+        sendto(
+            g_udpSocket,
+
+            hello,
+
+            static_cast<int>(
+                std::strlen(hello)
+            ),
+
+            0,
+
+            reinterpret_cast<sockaddr*>(
+                &g_serverAddress
+            ),
+
+            sizeof(g_serverAddress)
+        );
+
+
+    if (
+        sent ==
+        SOCKET_ERROR)
+    {
+        std::cout
+            << "Falha ao enviar HELLO. Erro: "
+            << WSAGetLastError()
+            << "\n";
+
+
+        return false;
+    }
+
+
+    return true;
+}
+
+
+// ============================================================
 // Thread UDP
 // ============================================================
 
@@ -637,8 +704,138 @@ void ReceiverThread()
     );
 
 
+    // ========================================================
+    // Controle do intervalo entre HELLOs
+    // ========================================================
+
+    ULONGLONG lastHelloTime =
+        0;
+
+
     while (g_running)
     {
+        // ====================================================
+        // Reenviar HELLO periodicamente
+        //
+        // Enquanto ainda não recebemos vídeo, enviamos
+        // um HELLO a cada 1 segundo.
+        // ====================================================
+
+        ULONGLONG now =
+            GetTickCount64();
+
+
+        if (
+            !g_streamReceived &&
+            (
+                lastHelloTime == 0 ||
+                now - lastHelloTime >= 1000
+            ))
+        {
+            if (SendHello())
+            {
+                std::cout
+                    << "HELLO UDP enviado para "
+                    << "127.0.0.1:"
+                    << SERVER_UDP_PORT
+                    << "\n";
+            }
+
+
+            lastHelloTime =
+                now;
+        }
+
+
+        // ====================================================
+        // Esperar dados UDP por até 200 ms
+        //
+        // Usamos select() para não ficar bloqueado
+        // indefinidamente no recvfrom().
+        // ====================================================
+
+        fd_set readSet{};
+
+
+        FD_ZERO(
+            &readSet
+        );
+
+
+        FD_SET(
+            g_udpSocket,
+            &readSet
+        );
+
+
+        timeval timeout{};
+
+
+        timeout.tv_sec =
+            0;
+
+
+        timeout.tv_usec =
+            200000;
+
+
+        int result =
+            select(
+                0,
+                &readSet,
+                nullptr,
+                nullptr,
+                &timeout
+            );
+
+
+        if (!g_running)
+            break;
+
+
+        // ====================================================
+        // Timeout
+        // ====================================================
+
+        if (result == 0)
+            continue;
+
+
+        // ====================================================
+        // Erro
+        // ====================================================
+
+        if (result == SOCKET_ERROR)
+        {
+            int error =
+                WSAGetLastError();
+
+
+            if (g_running)
+            {
+                std::cout
+                    << "\nselect() erro: "
+                    << error
+                    << "\n";
+            }
+
+
+            break;
+        }
+
+
+        // ====================================================
+        // Há dados no socket
+        // ====================================================
+
+        if (!FD_ISSET(
+                g_udpSocket,
+                &readSet))
+        {
+            continue;
+        }
+
+
         sockaddr_in senderAddress{};
 
 
@@ -649,16 +846,19 @@ void ReceiverThread()
         int received =
             recvfrom(
                 g_udpSocket,
+
                 buffer.data(),
+
                 static_cast<int>(
                     buffer.size()
                 ),
+
                 0,
-                reinterpret_cast<
-                    sockaddr*
-                >(
+
+                reinterpret_cast<sockaddr*>(
                     &senderAddress
                 ),
+
                 &senderAddressSize
             );
 
@@ -681,7 +881,7 @@ void ReceiverThread()
                 << "\n";
 
 
-            break;
+            continue;
         }
 
 
@@ -689,10 +889,46 @@ void ReceiverThread()
             continue;
 
 
+        // ====================================================
+        // Recebemos alguma coisa.
+        //
+        // ProcessUdpPacket() verifica se é um pacote
+        // de vídeo válido.
+        // ====================================================
+
         ProcessUdpPacket(
             buffer.data(),
             received
         );
+
+
+        // ====================================================
+        // Se já temos resolução configurada, significa que
+        // recebemos pelo menos um pacote de vídeo válido.
+        // ====================================================
+
+        if (
+            g_frameWidth > 0 &&
+            g_frameHeight > 0)
+        {
+            if (!g_streamReceived)
+            {
+                g_streamReceived =
+                    true;
+
+
+                std::cout
+                    << "\n========================================\n"
+                    << "STREAM UDP RECEBIDO!\n"
+                    << "Resolucao: "
+                    << g_frameWidth
+                    << "x"
+                    << g_frameHeight
+                    << "\n"
+                    << "HELLO nao sera mais reenviado.\n"
+                    << "========================================\n\n";
+            }
+        }
     }
 
 
@@ -968,7 +1204,7 @@ LRESULT CALLBACK WindowProc(
 
 
         // ====================================================
-        // Desbloquear recvfrom()
+        // Desbloquear recvfrom()/select()
         // ====================================================
 
         if (
@@ -1205,59 +1441,23 @@ int main()
 
 
     // ========================================================
-    // HELLO
+    // Salvar endereço do servidor globalmente
     // ========================================================
 
-    const char hello[] =
-        "HELLO";
-
-
-    int sent =
-        sendto(
-            g_udpSocket,
-            hello,
-            static_cast<int>(
-                std::strlen(hello)
-            ),
-            0,
-            reinterpret_cast<
-                sockaddr*
-            >(
-                &serverAddress
-            ),
-            sizeof(serverAddress)
-        );
-
-
-    if (
-        sent ==
-        SOCKET_ERROR)
-    {
-        std::cout
-            << "Falha ao enviar HELLO.\n"
-            << "Erro: "
-            << WSAGetLastError()
-            << "\n";
-
-
-        closesocket(
-            g_udpSocket
-        );
-
-
-        WSACleanup();
-
-
-        return 1;
-    }
+    g_serverAddress =
+        serverAddress;
 
 
     std::cout
-        << "HELLO UDP enviado!\n";
+        << "Servidor configurado: "
+        << "127.0.0.1:"
+        << SERVER_UDP_PORT
+        << "\n";
 
 
     std::cout
-        << "Aguardando servidor...\n\n";
+        << "HELLO sera enviado automaticamente "
+        << "a cada 1 segundo ate o stream iniciar.\n\n";
 
 
     // ========================================================
@@ -1426,7 +1626,7 @@ int main()
 
 
     // ========================================================
-    // Desbloquear recvfrom()
+    // Desbloquear recvfrom()/select()
     // ========================================================
 
     if (

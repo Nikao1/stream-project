@@ -29,6 +29,7 @@
 #include <chrono>
 #include <cstdint>
 #include <cstring>
+#include <coroutine>
 
 #pragma comment(lib, "d3d11.lib")
 #pragma comment(lib, "dxgi.lib")
@@ -126,10 +127,32 @@ uint32_t g_encoderHeight = 0;
 
 
 // ============================================================
-// DIRECT3D INTEROP
+// PREVIEW DA CAPTURA
 // ============================================================
 
-struct __declspec(uuid("A9B3D012-1F1C-4A3B-9E5A-8C5B5A6B8D41"))
+std::vector<unsigned char> g_displayPixels;
+
+std::mutex g_displayMutex;
+
+uint32_t g_displayWidth = 0;
+uint32_t g_displayHeight = 0;
+
+
+// ============================================================
+// DIRECT3D INTEROP
+// ============================================================
+//
+// Interface usada para recuperar a interface DXGI
+// de uma IDirect3DSurface.
+//
+// GUID correto:
+// A9B3D012-3DF2-4EE3-B8D1-8695F457D3C1
+//
+// Usamos "Custom" no nome para evitar conflito caso o
+// Windows SDK já declare IDirect3DDxgiInterfaceAccess.
+// ============================================================
+
+struct __declspec(uuid("A9B3D012-3DF2-4EE3-B8D1-8695F457D3C1"))
 IDirect3DDxgiInterfaceAccessCustom : IUnknown
 {
     virtual HRESULT STDMETHODCALLTYPE GetInterface(
@@ -137,6 +160,47 @@ IDirect3DDxgiInterfaceAccessCustom : IUnknown
         void** p
     ) = 0;
 };
+
+
+// ============================================================
+// DEBUG CONSOLE
+// ============================================================
+
+void CreateDebugConsole()
+{
+    if (!AllocConsole())
+        return;
+
+    FILE* fp = nullptr;
+
+    freopen_s(
+        &fp,
+        "CONOUT$",
+        "w",
+        stdout
+    );
+
+    freopen_s(
+        &fp,
+        "CONOUT$",
+        "w",
+        stderr
+    );
+
+    freopen_s(
+        &fp,
+        "CONIN$",
+        "r",
+        stdin
+    );
+
+    SetConsoleTitleW(
+        L"Stream Project - Debug"
+    );
+
+    std::cout
+        << "Console de debug criada.\n\n";
+}
 
 
 // ============================================================
@@ -237,11 +301,14 @@ void EncoderThread()
                     << "UDP: receiver desconectado. "
                     << "Parando encoder.\n";
 
+
                 g_h264Encoder.Stop();
+
 
                 g_encoderWidth = 0;
                 g_encoderHeight = 0;
             }
+
 
             continue;
         }
@@ -269,12 +336,14 @@ void EncoderThread()
                     << "\nH264: resolucao mudou. "
                     << "Reiniciando encoder...\n";
 
+
                 g_h264Encoder.Stop();
             }
 
 
             g_encoderWidth =
                 frame.width;
+
 
             g_encoderHeight =
                 frame.height;
@@ -287,6 +356,14 @@ void EncoderThread()
             // 8 Mbps
             // ----------------------------------------------------
 
+            std::cout
+                << "H264: iniciando encoder em "
+                << frame.width
+                << "x"
+                << frame.height
+                << "...\n";
+
+
             if (!g_h264Encoder.Start(
                     frame.width,
                     frame.height,
@@ -296,8 +373,10 @@ void EncoderThread()
                 std::cout
                     << "H264: falha ao iniciar encoder.\n";
 
+
                 g_encoderWidth = 0;
                 g_encoderHeight = 0;
+
 
                 continue;
             }
@@ -324,10 +403,13 @@ void EncoderThread()
             std::cout
                 << "H264: falha ao codificar frame.\n";
 
+
             g_h264Encoder.Stop();
+
 
             g_encoderWidth = 0;
             g_encoderHeight = 0;
+
 
             continue;
         }
@@ -360,10 +442,13 @@ void EncoderThread()
                         << "UDP: falha ao enviar "
                         << "video H264.\n";
 
+
                     g_udpReceiverConnected =
                         false;
 
+
                     g_h264Encoder.Stop();
+
 
                     g_encoderWidth = 0;
                     g_encoderHeight = 0;
@@ -443,6 +528,7 @@ bool CreateD3DDevice()
             << hr
             << std::dec
             << "\n";
+
 
         return false;
     }
@@ -550,6 +636,19 @@ com_ptr<ID3D11Texture2D>
 GetTextureFromSurface(
     IDirect3DSurface surface)
 {
+    if (!surface)
+    {
+        std::cout
+            << "Surface invalida.\n";
+
+        return nullptr;
+    }
+
+
+    // --------------------------------------------------------
+    // Obter interface DXGI da Surface
+    // --------------------------------------------------------
+
     com_ptr<IDirect3DDxgiInterfaceAccessCustom>
         dxgiAccess;
 
@@ -568,13 +667,23 @@ GetTextureFromSurface(
     if (FAILED(hr))
     {
         std::cout
-            << "QueryInterface DXGI access falhou.\n";
+            << "QueryInterface DXGI access falhou. HRESULT: 0x"
+            << std::hex
+            << hr
+            << std::dec
+            << "\n";
+
 
         return nullptr;
     }
 
 
-    com_ptr<ID3D11Texture2D> texture;
+    // --------------------------------------------------------
+    // Obter ID3D11Texture2D
+    // --------------------------------------------------------
+
+    com_ptr<ID3D11Texture2D>
+        texture;
 
 
     hr =
@@ -587,7 +696,12 @@ GetTextureFromSurface(
     if (FAILED(hr))
     {
         std::cout
-            << "GetInterface ID3D11Texture2D falhou.\n";
+            << "GetInterface ID3D11Texture2D falhou. HRESULT: 0x"
+            << std::hex
+            << hr
+            << std::dec
+            << "\n";
+
 
         return nullptr;
     }
@@ -634,6 +748,10 @@ bool CopyTextureToPixels(
     }
 
 
+    // --------------------------------------------------------
+    // Criar textura staging
+    // --------------------------------------------------------
+
     D3D11_TEXTURE2D_DESC stagingDesc =
         desc;
 
@@ -674,15 +792,24 @@ bool CopyTextureToPixels(
             << std::dec
             << "\n";
 
+
         return false;
     }
 
+
+    // --------------------------------------------------------
+    // GPU -> staging
+    // --------------------------------------------------------
 
     g_d3dContext->CopyResource(
         stagingTexture.get(),
         texture
     );
 
+
+    // --------------------------------------------------------
+    // Map
+    // --------------------------------------------------------
 
     D3D11_MAPPED_SUBRESOURCE mapped{};
 
@@ -706,9 +833,14 @@ bool CopyTextureToPixels(
             << std::dec
             << "\n";
 
+
         return false;
     }
 
+
+    // --------------------------------------------------------
+    // Copiar linhas para memória contínua
+    // --------------------------------------------------------
 
     const size_t rowSize =
         static_cast<size_t>(width) * 4;
@@ -745,6 +877,10 @@ bool CopyTextureToPixels(
         );
     }
 
+
+    // --------------------------------------------------------
+    // Unmap
+    // --------------------------------------------------------
 
     g_d3dContext->Unmap(
         stagingTexture.get(),
@@ -878,6 +1014,7 @@ void SaveTextureAsBMP(
         std::cout
             << "Nao foi possivel salvar BMP.\n";
 
+
         return;
     }
 
@@ -930,8 +1067,10 @@ void UdpServerThread()
         std::cout
             << "Falha ao iniciar servidor UDP.\n";
 
+
         g_udpServerStarted =
             false;
+
 
         return;
     }
@@ -1012,6 +1151,10 @@ void OnFrameArrived(
         return;
 
 
+    // ----------------------------------------------------------
+    // Surface -> ID3D11Texture2D
+    // ----------------------------------------------------------
+
     com_ptr<ID3D11Texture2D> texture =
         GetTextureFromSurface(
             surface
@@ -1052,7 +1195,6 @@ void OnFrameArrived(
 
     g_frameCount++;
 
-
     g_fpsFrameCounter++;
 
 
@@ -1085,46 +1227,69 @@ void OnFrameArrived(
 
 
     // ----------------------------------------------------------
-    // Precisamos de CPU pixels somente se houver receiver
+    // Copiar GPU -> CPU
     // ----------------------------------------------------------
 
-    bool needPixels =
-        g_udpReceiverConnected;
+    std::vector<unsigned char> pixels;
+
+    uint32_t width = 0;
+    uint32_t height = 0;
 
 
-    if (needPixels)
+    if (CopyTextureToPixels(
+            texture.get(),
+            pixels,
+            width,
+            height))
     {
-        std::vector<unsigned char> pixels;
+        // ------------------------------------------------------
+        // Atualizar preview
+        // ------------------------------------------------------
 
-        uint32_t width = 0;
-        uint32_t height = 0;
-
-
-        if (CopyTextureToPixels(
-                texture.get(),
-                pixels,
-                width,
-                height))
         {
-            // --------------------------------------------------
-            // UDP + H264
-            // --------------------------------------------------
+            std::lock_guard<std::mutex> lock(
+                g_displayMutex
+            );
 
+
+            g_displayPixels =
+                pixels;
+
+
+            g_displayWidth =
+                width;
+
+
+            g_displayHeight =
+                height;
+        }
+
+
+        // ------------------------------------------------------
+        // Solicitar repaint
+        // ------------------------------------------------------
+
+        if (g_hwnd)
+        {
+            InvalidateRect(
+                g_hwnd,
+                nullptr,
+                FALSE
+            );
+        }
+
+
+        // ------------------------------------------------------
+        // Se houver receiver, enviar ao encoder
+        // ------------------------------------------------------
+
+        if (g_udpReceiverConnected)
+        {
             {
                 std::lock_guard<std::mutex> lock(
                     g_encodeMutex
                 );
 
-
-                // ----------------------------------------------
-                // Não acumulamos frames.
-                //
-                // O encoder sempre recebe o frame mais recente.
-                // Se houver um frame antigo esperando, ele será
-                // substituído.
-                //
-                // Isso ajuda a manter a latência baixa.
-                // ----------------------------------------------
 
                 g_pendingEncodeFrame.pixels =
                     std::move(
@@ -1151,7 +1316,7 @@ void OnFrameArrived(
 
 
     // ----------------------------------------------------------
-    // Atualizar janela
+    // Atualizar título da janela
     // ----------------------------------------------------------
 
     if (g_hwnd)
@@ -1207,6 +1372,10 @@ winrt::fire_and_forget StartCaptureAsync()
 {
     try
     {
+        std::cout
+            << "\nIniciando Graphics Capture Picker...\n";
+
+
         auto device =
             CreateWinRTDirect3DDevice();
 
@@ -1219,13 +1388,12 @@ winrt::fire_and_forget StartCaptureAsync()
         );
 
 
+        std::cout
+            << "Aguardando selecao da janela...\n";
+
+
         // --------------------------------------------------------
-        // IMPORTANTE:
-        //
-        // Não usamos .get().
-        //
-        // O thread principal continua processando as mensagens
-        // do Windows enquanto o usuário escolhe a janela.
+        // Usar co_await para não bloquear a message loop
         // --------------------------------------------------------
 
         auto item =
@@ -1278,6 +1446,10 @@ winrt::fire_and_forget StartCaptureAsync()
         // Criar Frame Pool
         // --------------------------------------------------------
 
+        std::cout
+            << "Criando Frame Pool...\n";
+
+
         g_framePool =
             Direct3D11CaptureFramePool::CreateFreeThreaded(
                 device,
@@ -1298,7 +1470,7 @@ winrt::fire_and_forget StartCaptureAsync()
 
 
         // --------------------------------------------------------
-        // Frame callback
+        // Registrar callback
         // --------------------------------------------------------
 
         g_frameArrivedToken =
@@ -1327,7 +1499,9 @@ winrt::fire_and_forget StartCaptureAsync()
 
 
         std::cout
-            << "Captura iniciada!\n";
+            << "========================================\n"
+            << "CAPTURA INICIADA!\n"
+            << "========================================\n";
     }
     catch (const winrt::hresult_error& error)
     {
@@ -1415,25 +1589,191 @@ LRESULT CALLBACK WindowProc(
         );
 
 
-        FillRect(
-            hdc,
-            &rect,
-            static_cast<HBRUSH>(
-                GetStockObject(
-                    BLACK_BRUSH
+        // ----------------------------------------------------
+        // Copiar frame atual
+        // ----------------------------------------------------
+
+        std::vector<unsigned char> pixels;
+
+        uint32_t width = 0;
+        uint32_t height = 0;
+
+
+        {
+            std::lock_guard<std::mutex> lock(
+                g_displayMutex
+            );
+
+
+            if (!g_displayPixels.empty() &&
+                g_displayWidth > 0 &&
+                g_displayHeight > 0)
+            {
+                pixels =
+                    g_displayPixels;
+
+
+                width =
+                    g_displayWidth;
+
+
+                height =
+                    g_displayHeight;
+            }
+        }
+
+
+        // ----------------------------------------------------
+        // Ainda não temos frame
+        // ----------------------------------------------------
+
+        if (pixels.empty() ||
+            width == 0 ||
+            height == 0)
+        {
+            FillRect(
+                hdc,
+                &rect,
+                static_cast<HBRUSH>(
+                    GetStockObject(
+                        BLACK_BRUSH
+                    )
                 )
-            )
-        );
+            );
+        }
+        else
+        {
+            // ------------------------------------------------
+            // Informações do bitmap
+            // ------------------------------------------------
+
+            BITMAPINFO bmi{};
 
 
-        // ------------------------------------------------------
-        // A janela do sender permanece preta.
-        //
-        // A captura acontece na GPU e é enviada para:
-        //
-        // BGRA -> H264 NVENC -> MPEG-TS -> UDP
-        //
-        // ------------------------------------------------------
+            bmi.bmiHeader.biSize =
+                sizeof(BITMAPINFOHEADER);
+
+
+            bmi.bmiHeader.biWidth =
+                static_cast<LONG>(width);
+
+
+            // Negativo = top-down
+            bmi.bmiHeader.biHeight =
+                -static_cast<LONG>(height);
+
+
+            bmi.bmiHeader.biPlanes =
+                1;
+
+
+            bmi.bmiHeader.biBitCount =
+                32;
+
+
+            bmi.bmiHeader.biCompression =
+                BI_RGB;
+
+
+            // ------------------------------------------------
+            // Dimensões da janela
+            // ------------------------------------------------
+
+            int windowWidth =
+                rect.right -
+                rect.left;
+
+
+            int windowHeight =
+                rect.bottom -
+                rect.top;
+
+
+            if (windowWidth > 0 &&
+                windowHeight > 0)
+            {
+                double scaleX =
+                    static_cast<double>(
+                        windowWidth
+                    ) /
+                    static_cast<double>(
+                        width
+                    );
+
+
+                double scaleY =
+                    static_cast<double>(
+                        windowHeight
+                    ) /
+                    static_cast<double>(
+                        height
+                    );
+
+
+                double scale =
+                    (scaleX < scaleY)
+                        ? scaleX
+                        : scaleY;
+
+
+                int drawWidth =
+                    static_cast<int>(
+                        width * scale
+                    );
+
+
+                int drawHeight =
+                    static_cast<int>(
+                        height * scale
+                    );
+
+
+                int drawX =
+                    (windowWidth -
+                     drawWidth) / 2;
+
+
+                int drawY =
+                    (windowHeight -
+                     drawHeight) / 2;
+
+
+                // ------------------------------------------------
+                // Fundo preto
+                // ------------------------------------------------
+
+                FillRect(
+                    hdc,
+                    &rect,
+                    static_cast<HBRUSH>(
+                        GetStockObject(
+                            BLACK_BRUSH
+                        )
+                    )
+                );
+
+
+                // ------------------------------------------------
+                // Desenhar frame
+                // ------------------------------------------------
+
+                StretchDIBits(
+                    hdc,
+                    drawX,
+                    drawY,
+                    drawWidth,
+                    drawHeight,
+                    0,
+                    0,
+                    static_cast<int>(width),
+                    static_cast<int>(height),
+                    pixels.data(),
+                    &bmi,
+                    DIB_RGB_COLORS,
+                    SRCCOPY
+                );
+            }
+        }
 
 
         EndPaint(
@@ -1456,9 +1796,9 @@ LRESULT CALLBACK WindowProc(
             << "\nEncerrando Stream Project...\n";
 
 
-        // ------------------------------------------------------
+        // ----------------------------------------------------
         // Parar captura
-        // ------------------------------------------------------
+        // ----------------------------------------------------
 
         g_captureRunning =
             false;
@@ -1467,6 +1807,7 @@ LRESULT CALLBACK WindowProc(
         if (g_captureSession)
         {
             g_captureSession.Close();
+
 
             g_captureSession =
                 nullptr;
@@ -1491,14 +1832,32 @@ LRESULT CALLBACK WindowProc(
 
             g_framePool.Close();
 
+
             g_framePool =
                 nullptr;
         }
 
 
-        // ------------------------------------------------------
+        // ----------------------------------------------------
+        // Limpar preview
+        // ----------------------------------------------------
+
+        {
+            std::lock_guard<std::mutex> lock(
+                g_displayMutex
+            );
+
+
+            g_displayPixels.clear();
+
+            g_displayWidth = 0;
+            g_displayHeight = 0;
+        }
+
+
+        // ----------------------------------------------------
         // Parar encoder
-        // ------------------------------------------------------
+        // ----------------------------------------------------
 
         g_encoderRunning =
             false;
@@ -1516,9 +1875,9 @@ LRESULT CALLBACK WindowProc(
         g_h264Encoder.Stop();
 
 
-        // ------------------------------------------------------
+        // ----------------------------------------------------
         // Parar UDP
-        // ------------------------------------------------------
+        // ----------------------------------------------------
 
         g_udpReceiverConnected =
             false;
@@ -1528,20 +1887,12 @@ LRESULT CALLBACK WindowProc(
             false;
 
 
-        // ------------------------------------------------------
-        // Muito importante:
-        //
-        // WaitForClient() pode estar bloqueado no recvfrom().
-        //
-        // Stop() fecha o socket e libera a thread.
-        // ------------------------------------------------------
-
         g_udpServer.Stop();
 
 
-        // ------------------------------------------------------
+        // ----------------------------------------------------
         // Esperar thread UDP
-        // ------------------------------------------------------
+        // ----------------------------------------------------
 
         if (g_udpThread.joinable())
         {
@@ -1549,9 +1900,9 @@ LRESULT CALLBACK WindowProc(
         }
 
 
-        // ------------------------------------------------------
+        // ----------------------------------------------------
         // Limpar D3D
-        // ------------------------------------------------------
+        // ----------------------------------------------------
 
         g_lastCapturedTexture =
             nullptr;
@@ -1600,6 +1951,13 @@ int WINAPI wWinMain(
     PWSTR,
     int nCmdShow)
 {
+    // =========================================================
+    // CONSOLE DE DEBUG
+    // =========================================================
+
+    CreateDebugConsole();
+
+
     std::cout
         << "=============================================\n"
         << "       STREAM PROJECT - SERVER\n"
@@ -1628,6 +1986,7 @@ int WINAPI wWinMain(
             << "WSAStartup falhou. Erro: "
             << wsaResult
             << "\n";
+
 
         return 1;
     }
@@ -1765,15 +2124,6 @@ int WINAPI wWinMain(
 
     // =========================================================
     // INICIAR CAPTURA
-    // =========================================================
-    //
-    // Não chamamos StartCaptureAsync() diretamente.
-    //
-    // Enviamos uma mensagem para a própria janela para que a
-    // captura seja iniciada já dentro do message loop.
-    //
-    // Isso garante que o GraphicsCapturePicker tenha uma UI
-    // responsiva.
     // =========================================================
 
     PostMessageW(
