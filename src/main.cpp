@@ -1,21 +1,17 @@
+#include "udp_server.h"
+#include "h264_encoder.h"
+
 #include <winsock2.h>
 #include <ws2tcpip.h>
-
 #include <windows.h>
 #include <shobjidl.h>
 
 #include <d3d11.h>
 #include <dxgi1_2.h>
 
-#include <fstream>
-#include <vector>
-#include <cstring>
-#include <thread>
-#include <atomic>
-#include <cstdint>
-#include <algorithm>
-
-#include "server.h"
+#include <windows.graphics.capture.h>
+#include <windows.graphics.directx.direct3d11.interop.h>
+#include <windows.graphics.directx.direct3d11.h>
 
 #include <winrt/base.h>
 #include <winrt/Windows.Foundation.h>
@@ -23,39 +19,30 @@
 #include <winrt/Windows.Graphics.DirectX.h>
 #include <winrt/Windows.Graphics.DirectX.Direct3D11.h>
 
-#include <windows.graphics.directx.direct3d11.interop.h>
+#include <iostream>
+#include <fstream>
+#include <vector>
+#include <thread>
+#include <mutex>
+#include <condition_variable>
+#include <atomic>
+#include <chrono>
+#include <cstdint>
+#include <cstring>
 
-#pragma comment(lib, "windowsapp.lib")
 #pragma comment(lib, "d3d11.lib")
 #pragma comment(lib, "dxgi.lib")
+#pragma comment(lib, "windowsapp.lib")
 #pragma comment(lib, "ws2_32.lib")
 
-using winrt::com_ptr;
-using winrt::check_hresult;
-using winrt::hresult_error;
-using winrt::init_apartment;
-using winrt::apartment_type;
-
-namespace WGC = winrt::Windows::Graphics::Capture;
-namespace WGD = winrt::Windows::Graphics::DirectX;
-namespace WGD3D11 = winrt::Windows::Graphics::DirectX::Direct3D11;
+using namespace winrt;
+using namespace winrt::Windows::Graphics::Capture;
+using namespace winrt::Windows::Graphics::DirectX;
+using namespace winrt::Windows::Graphics::DirectX::Direct3D11;
 
 
 // ============================================================
-// Interface de acesso à textura DXGI
-// ============================================================
-
-struct __declspec(uuid("A9B3D012-3DF2-4EE3-B8D1-8695F457D3C1"))
-    IDirect3DDxgiInterfaceAccessCustom : IUnknown
-{
-    virtual HRESULT STDMETHODCALLTYPE GetInterface(
-        REFIID iid,
-        void** p) = 0;
-};
-
-
-// ============================================================
-// Variáveis globais
+// GLOBALS
 // ============================================================
 
 HWND g_hwnd = nullptr;
@@ -63,500 +50,612 @@ HWND g_hwnd = nullptr;
 com_ptr<ID3D11Device> g_d3dDevice;
 com_ptr<ID3D11DeviceContext> g_d3dContext;
 
-
-TcpServer g_tcpServer;
-
-
-// ============================================================
-// Swap Chain
-// ============================================================
-
 com_ptr<IDXGISwapChain1> g_swapChain;
 com_ptr<ID3D11RenderTargetView> g_renderTargetView;
 
-
-// ============================================================
-// Última textura capturada
-// ============================================================
-
 com_ptr<ID3D11Texture2D> g_lastCapturedTexture;
 
+UdpServer g_udpServer;
 
-// ============================================================
-// Graphics Capture
-// ============================================================
-
-WGC::Direct3D11CaptureFramePool g_framePool{ nullptr };
-WGC::GraphicsCaptureSession g_captureSession{ nullptr };
+H264Encoder g_h264Encoder;
 
 
 // ============================================================
-// Estatísticas
+// GRAPHICS CAPTURE
 // ============================================================
 
-std::atomic<int> g_frameCount{ 0 };
+GraphicsCaptureItem g_captureItem{ nullptr };
+Direct3D11CaptureFramePool g_framePool{ nullptr };
+GraphicsCaptureSession g_captureSession{ nullptr };
 
-ULONGLONG g_lastFpsUpdate = 0;
-int g_lastFrameCount = 0;
-double g_fps = 0.0;
+winrt::event_token g_frameArrivedToken{};
 
-std::atomic<UINT> g_captureWidth{ 0 };
-std::atomic<UINT> g_captureHeight{ 0 };
+bool g_captureRunning = false;
 
-std::atomic<bool> g_textureAvailable{ false };
-
-std::atomic<bool> g_serverStarted{ false };
-std::atomic<bool> g_receiverConnected{ false };
-
-ULONGLONG g_lastFrameSendTime = 0;
-
-constexpr ULONGLONG FRAME_SEND_INTERVAL_MS = 33;
 
 // ============================================================
-// Criar Render Target
+// CAPTURE STATS
 // ============================================================
 
-void CreateRenderTarget()
+std::atomic<uint64_t> g_frameCount{ 0 };
+
+uint32_t g_captureWidth = 0;
+uint32_t g_captureHeight = 0;
+
+double g_captureFps = 0.0;
+
+ULONGLONG g_fpsStartTime = 0;
+uint64_t g_fpsFrameCounter = 0;
+
+
+// ============================================================
+// UDP
+// ============================================================
+
+std::atomic<bool> g_udpServerStarted{ false };
+std::atomic<bool> g_udpReceiverConnected{ false };
+
+std::thread g_udpThread;
+
+
+// ============================================================
+// H264 ENCODER THREAD
+// ============================================================
+
+struct PendingEncodeFrame
 {
-    if (!g_swapChain)
-        return;
+    std::vector<unsigned char> pixels;
 
-    com_ptr<ID3D11Texture2D> backBuffer;
+    uint32_t width = 0;
+    uint32_t height = 0;
 
-    check_hresult(
-        g_swapChain->GetBuffer(
-            0,
-            IID_PPV_ARGS(backBuffer.put())
-        )
-    );
+    bool valid = false;
+};
 
-    check_hresult(
-        g_d3dDevice->CreateRenderTargetView(
-            backBuffer.get(),
-            nullptr,
-            g_renderTargetView.put()
-        )
-    );
-}
+PendingEncodeFrame g_pendingEncodeFrame;
+
+std::mutex g_encodeMutex;
+std::condition_variable g_encodeCv;
+
+std::atomic<bool> g_encoderRunning{ false };
+
+std::thread g_encoderThread;
+
+uint32_t g_encoderWidth = 0;
+uint32_t g_encoderHeight = 0;
 
 
 // ============================================================
-// Redimensionar Swap Chain
+// DIRECT3D INTEROP
 // ============================================================
 
-void ResizeSwapChain(
-    UINT width,
-    UINT height)
+struct __declspec(uuid("A9B3D012-1F1C-4A3B-9E5A-8C5B5A6B8D41"))
+IDirect3DDxgiInterfaceAccessCustom : IUnknown
 {
-    if (!g_swapChain)
-        return;
-
-    if (width == 0 || height == 0)
-        return;
-
-    g_renderTargetView = nullptr;
-
-    HRESULT hr =
-        g_swapChain->ResizeBuffers(
-            0,
-            width,
-            height,
-            DXGI_FORMAT_UNKNOWN,
-            0
-        );
-
-    if (FAILED(hr))
-        return;
-
-    CreateRenderTarget();
-}
+    virtual HRESULT STDMETHODCALLTYPE GetInterface(
+        REFIID iid,
+        void** p
+    ) = 0;
+};
 
 
 // ============================================================
-// Inicializar Swap Chain
+// FORWARD DECLARATIONS
 // ============================================================
 
-bool InitializeSwapChain()
+void EncoderThread();
+
+void UdpServerThread();
+
+winrt::fire_and_forget StartCaptureAsync();
+
+bool CopyTextureToPixels(
+    ID3D11Texture2D* texture,
+    std::vector<unsigned char>& pixels,
+    uint32_t& width,
+    uint32_t& height
+);
+
+void SaveTextureAsBMP(
+    ID3D11Texture2D* texture,
+    const wchar_t* filename
+);
+
+
+// ============================================================
+// H264 ENCODER THREAD
+// ============================================================
+
+void EncoderThread()
 {
-    if (!g_d3dDevice)
-        return false;
+    std::cout
+        << "Thread H264 encoder iniciada.\n";
 
-    RECT rect{};
 
-    if (!GetClientRect(
-        g_hwnd,
-        &rect))
+    while (g_encoderRunning)
     {
-        return false;
-    }
-
-    UINT width =
-        static_cast<UINT>(
-            rect.right - rect.left
-        );
-
-    UINT height =
-        static_cast<UINT>(
-            rect.bottom - rect.top
-        );
-
-    if (width == 0)
-        width = 800;
-
-    if (height == 0)
-        height = 600;
+        PendingEncodeFrame frame;
 
 
-    // ========================================================
-    // IDXGIDevice
-    // ========================================================
+        // --------------------------------------------------------
+        // Esperar por um frame novo
+        // --------------------------------------------------------
 
-    com_ptr<IDXGIDevice> dxgiDevice;
-
-    HRESULT hr =
-        g_d3dDevice->QueryInterface(
-            IID_PPV_ARGS(dxgiDevice.put())
-        );
-
-    if (FAILED(hr))
-        return false;
-
-
-    // ========================================================
-    // Adapter
-    // ========================================================
-
-    com_ptr<IDXGIAdapter> adapter;
-
-    hr =
-        dxgiDevice->GetAdapter(
-            adapter.put()
-        );
-
-    if (FAILED(hr))
-        return false;
-
-
-    // ========================================================
-    // Factory
-    // ========================================================
-
-    com_ptr<IDXGIFactory2> factory;
-
-    hr =
-        adapter->GetParent(
-            IID_PPV_ARGS(factory.put())
-        );
-
-    if (FAILED(hr))
-        return false;
-
-
-    // ========================================================
-    // Swap Chain
-    // ========================================================
-
-    DXGI_SWAP_CHAIN_DESC1 swapChainDesc{};
-
-    swapChainDesc.Width =
-        width;
-
-    swapChainDesc.Height =
-        height;
-
-    swapChainDesc.Format =
-        DXGI_FORMAT_B8G8R8A8_UNORM;
-
-    swapChainDesc.Stereo =
-        FALSE;
-
-    swapChainDesc.SampleDesc.Count =
-        1;
-
-    swapChainDesc.SampleDesc.Quality =
-        0;
-
-    swapChainDesc.BufferUsage =
-        DXGI_USAGE_RENDER_TARGET_OUTPUT;
-
-    swapChainDesc.BufferCount =
-        2;
-
-    swapChainDesc.Scaling =
-        DXGI_SCALING_STRETCH;
-
-    swapChainDesc.SwapEffect =
-        DXGI_SWAP_EFFECT_FLIP_DISCARD;
-
-    swapChainDesc.AlphaMode =
-        DXGI_ALPHA_MODE_IGNORE;
-
-    swapChainDesc.Flags =
-        0;
-
-
-    hr =
-        factory->CreateSwapChainForHwnd(
-            g_d3dDevice.get(),
-            g_hwnd,
-            &swapChainDesc,
-            nullptr,
-            nullptr,
-            g_swapChain.put()
-        );
-
-    if (FAILED(hr))
-        return false;
-
-
-    factory->MakeWindowAssociation(
-        g_hwnd,
-        DXGI_MWA_NO_ALT_ENTER
-    );
-
-
-    CreateRenderTarget();
-
-
-    return
-        g_renderTargetView != nullptr;
-}
-
-
-// ============================================================
-// Renderizar
-// ============================================================
-
-void Render()
-{
-    if (!g_d3dContext)
-        return;
-
-    if (!g_renderTargetView)
-        return;
-
-
-    ID3D11RenderTargetView* renderTarget =
-        g_renderTargetView.get();
-
-    g_d3dContext->OMSetRenderTargets(
-        1,
-        &renderTarget,
-        nullptr
-    );
-
-
-    // ========================================================
-    // Limpar tela
-    // ========================================================
-
-    const float clearColor[4] =
-    {
-        0.03f,
-        0.03f,
-        0.06f,
-        1.0f
-    };
-
-    g_d3dContext->ClearRenderTargetView(
-        g_renderTargetView.get(),
-        clearColor
-    );
-
-
-    // ========================================================
-    // Mostrar último frame capturado
-    // ========================================================
-
-    if (g_lastCapturedTexture)
-    {
-        D3D11_TEXTURE2D_DESC textureDesc{};
-
-        g_lastCapturedTexture->GetDesc(
-            &textureDesc
-        );
-
-
-        com_ptr<ID3D11Texture2D> backBuffer;
-
-        HRESULT hr =
-            g_swapChain->GetBuffer(
-                0,
-                IID_PPV_ARGS(backBuffer.put())
-            );
-
-
-        if (SUCCEEDED(hr))
         {
-            D3D11_TEXTURE2D_DESC backBufferDesc{};
-
-            backBuffer->GetDesc(
-                &backBufferDesc
+            std::unique_lock<std::mutex> lock(
+                g_encodeMutex
             );
 
 
-            UINT copyWidth =
-    (textureDesc.Width < backBufferDesc.Width)
-        ? textureDesc.Width
-        : backBufferDesc.Width;
-
-            UINT copyHeight =
-    (textureDesc.Height < backBufferDesc.Height)
-        ? textureDesc.Height
-        : backBufferDesc.Height;
-
-
-            if (
-                textureDesc.Format ==
-                backBufferDesc.Format &&
-                copyWidth > 0 &&
-                copyHeight > 0)
-            {
-                D3D11_BOX sourceBox{};
-
-                sourceBox.left =
-                    0;
-
-                sourceBox.top =
-                    0;
-
-                sourceBox.front =
-                    0;
-
-                sourceBox.right =
-                    copyWidth;
-
-                sourceBox.bottom =
-                    copyHeight;
-
-                sourceBox.back =
-                    1;
+            g_encodeCv.wait(
+                lock,
+                []()
+                {
+                    return
+                        !g_encoderRunning ||
+                        g_pendingEncodeFrame.valid;
+                }
+            );
 
 
-                g_d3dContext->CopySubresourceRegion(
-                    backBuffer.get(),
-                    0,
-                    0,
-                    0,
-                    0,
-                    g_lastCapturedTexture.get(),
-                    0,
-                    &sourceBox
+            if (!g_encoderRunning)
+                break;
+
+
+            // ----------------------------------------------------
+            // Pegamos o frame mais recente
+            // ----------------------------------------------------
+
+            frame.pixels =
+                std::move(
+                    g_pendingEncodeFrame.pixels
                 );
+
+
+            frame.width =
+                g_pendingEncodeFrame.width;
+
+
+            frame.height =
+                g_pendingEncodeFrame.height;
+
+
+            g_pendingEncodeFrame.valid =
+                false;
+        }
+
+
+        // --------------------------------------------------------
+        // Se não existe receiver UDP, não codifica
+        // --------------------------------------------------------
+
+        if (!g_udpReceiverConnected)
+        {
+            if (g_h264Encoder.IsRunning())
+            {
+                std::cout
+                    << "UDP: receiver desconectado. "
+                    << "Parando encoder.\n";
+
+                g_h264Encoder.Stop();
+
+                g_encoderWidth = 0;
+                g_encoderHeight = 0;
+            }
+
+            continue;
+        }
+
+
+        if (frame.pixels.empty() ||
+            frame.width == 0 ||
+            frame.height == 0)
+        {
+            continue;
+        }
+
+
+        // --------------------------------------------------------
+        // Se resolução mudou, reiniciar encoder
+        // --------------------------------------------------------
+
+        if (!g_h264Encoder.IsRunning() ||
+            g_encoderWidth != frame.width ||
+            g_encoderHeight != frame.height)
+        {
+            if (g_h264Encoder.IsRunning())
+            {
+                std::cout
+                    << "\nH264: resolucao mudou. "
+                    << "Reiniciando encoder...\n";
+
+                g_h264Encoder.Stop();
+            }
+
+
+            g_encoderWidth =
+                frame.width;
+
+            g_encoderHeight =
+                frame.height;
+
+
+            // ----------------------------------------------------
+            // H264 NVENC
+            //
+            // 60 FPS
+            // 8 Mbps
+            // ----------------------------------------------------
+
+            if (!g_h264Encoder.Start(
+                    frame.width,
+                    frame.height,
+                    60,
+                    8))
+            {
+                std::cout
+                    << "H264: falha ao iniciar encoder.\n";
+
+                g_encoderWidth = 0;
+                g_encoderHeight = 0;
+
+                continue;
+            }
+
+
+            std::cout
+                << "H264: encoder iniciado em "
+                << frame.width
+                << "x"
+                << frame.height
+                << " @ 60 FPS, 8 Mbps.\n";
+        }
+
+
+        // --------------------------------------------------------
+        // Enviar frame BGRA para FFmpeg/NVENC
+        // --------------------------------------------------------
+
+        if (!g_h264Encoder.EncodeFrame(
+                frame.pixels.data(),
+                static_cast<uint32_t>(
+                    frame.pixels.size())))
+        {
+            std::cout
+                << "H264: falha ao codificar frame.\n";
+
+            g_h264Encoder.Stop();
+
+            g_encoderWidth = 0;
+            g_encoderHeight = 0;
+
+            continue;
+        }
+
+
+        // --------------------------------------------------------
+        // Recuperar dados MPEG-TS produzidos pelo FFmpeg
+        // --------------------------------------------------------
+
+        std::vector<unsigned char> encodedData;
+
+
+        if (g_h264Encoder.GetEncodedData(
+                encodedData))
+        {
+            if (!encodedData.empty())
+            {
+                // ------------------------------------------------
+                // Enviar MPEG-TS através do UDP
+                // ------------------------------------------------
+
+                if (!g_udpServer.SendVideoData(
+                        encodedData.data(),
+                        static_cast<uint32_t>(
+                            encodedData.size()),
+                        frame.width,
+                        frame.height))
+                {
+                    std::cout
+                        << "UDP: falha ao enviar "
+                        << "video H264.\n";
+
+                    g_udpReceiverConnected =
+                        false;
+
+                    g_h264Encoder.Stop();
+
+                    g_encoderWidth = 0;
+                    g_encoderHeight = 0;
+                }
             }
         }
     }
 
 
-    // ========================================================
-    // Apresentar
-    // ========================================================
+    // ============================================================
+    // FINALIZAR ENCODER
+    // ============================================================
 
-    g_swapChain->Present(
-        1,
-        0
-    );
+    if (g_h264Encoder.IsRunning())
+    {
+        g_h264Encoder.Stop();
+    }
+
+
+    g_encoderWidth = 0;
+    g_encoderHeight = 0;
+
+
+    std::cout
+        << "Thread H264 encoder encerrada.\n";
 }
 
 
 // ============================================================
-// Converter ID3D11Device -> IDirect3DDevice
+// D3D11 DEVICE
 // ============================================================
 
-WGD3D11::IDirect3DDevice CreateDirect3DDevice(
-    ID3D11Device* d3dDevice)
+bool CreateD3DDevice()
+{
+    UINT creationFlags =
+        D3D11_CREATE_DEVICE_BGRA_SUPPORT;
+
+
+#ifdef _DEBUG
+
+    creationFlags |=
+        D3D11_CREATE_DEVICE_DEBUG;
+
+#endif
+
+
+    D3D_FEATURE_LEVEL featureLevels[] =
+    {
+        D3D_FEATURE_LEVEL_11_1,
+        D3D_FEATURE_LEVEL_11_0
+    };
+
+
+    D3D_FEATURE_LEVEL featureLevel{};
+
+
+    HRESULT hr =
+        D3D11CreateDevice(
+            nullptr,
+            D3D_DRIVER_TYPE_HARDWARE,
+            nullptr,
+            creationFlags,
+            featureLevels,
+            ARRAYSIZE(featureLevels),
+            D3D11_SDK_VERSION,
+            g_d3dDevice.put(),
+            &featureLevel,
+            g_d3dContext.put()
+        );
+
+
+    if (FAILED(hr))
+    {
+        std::cout
+            << "D3D11CreateDevice falhou. HRESULT: 0x"
+            << std::hex
+            << hr
+            << std::dec
+            << "\n";
+
+        return false;
+    }
+
+
+    std::cout
+        << "D3D11 Device criada.\n";
+
+
+    std::cout
+        << "Feature Level: 0x"
+        << std::hex
+        << featureLevel
+        << std::dec
+        << "\n";
+
+
+    // ------------------------------------------------------------
+    // Informações da GPU
+    // ------------------------------------------------------------
+
+    com_ptr<IDXGIDevice> dxgiDevice;
+
+
+    hr =
+        g_d3dDevice->QueryInterface(
+            dxgiDevice.put()
+        );
+
+
+    if (SUCCEEDED(hr))
+    {
+        com_ptr<IDXGIAdapter> adapter;
+
+
+        if (SUCCEEDED(
+                dxgiDevice->GetAdapter(
+                    adapter.put()
+                )))
+        {
+            DXGI_ADAPTER_DESC desc{};
+
+
+            if (SUCCEEDED(
+                    adapter->GetDesc(
+                        &desc
+                    )))
+            {
+                std::wcout
+                    << L"GPU: "
+                    << desc.Description
+                    << L"\n";
+            }
+        }
+    }
+
+
+    return true;
+}
+
+
+// ============================================================
+// GET WINRT DIRECT3D DEVICE
+// ============================================================
+
+winrt::Windows::Graphics::DirectX::Direct3D11::IDirect3DDevice
+CreateWinRTDirect3DDevice()
 {
     com_ptr<IDXGIDevice> dxgiDevice;
 
-    check_hresult(
-        d3dDevice->QueryInterface(
-            IID_PPV_ARGS(dxgiDevice.put())
+
+    winrt::check_hresult(
+        g_d3dDevice->QueryInterface(
+            dxgiDevice.put()
         )
     );
 
 
-    com_ptr<::IInspectable> inspectableDevice;
+    winrt::Windows::Graphics::DirectX::Direct3D11::IDirect3DDevice device{
+        nullptr
+    };
 
-    check_hresult(
+
+    HRESULT hr =
         CreateDirect3D11DeviceFromDXGIDevice(
             dxgiDevice.get(),
-            inspectableDevice.put()
-        )
-    );
+            reinterpret_cast<IInspectable**>(
+                put_abi(device)
+            )
+        );
 
 
-    return inspectableDevice.as<
-        WGD3D11::IDirect3DDevice>();
+    winrt::check_hresult(hr);
+
+
+    return device;
 }
 
 
 // ============================================================
-// Obter ID3D11Texture2D a partir do Frame
+// GET D3D11 TEXTURE FROM CAPTURE FRAME
 // ============================================================
 
-com_ptr<ID3D11Texture2D> GetTextureFromFrame(
-    WGC::Direct3D11CaptureFrame const& frame)
+com_ptr<ID3D11Texture2D>
+GetTextureFromSurface(
+    IDirect3DSurface surface)
 {
-    auto surface =
-        frame.Surface();
+    com_ptr<IDirect3DDxgiInterfaceAccessCustom>
+        dxgiAccess;
 
 
-    auto access =
-        surface.as<
-            IDirect3DDxgiInterfaceAccessCustom>();
+    HRESULT hr =
+        reinterpret_cast<IUnknown*>(
+            winrt::get_abi(surface)
+        )->QueryInterface(
+            __uuidof(
+                IDirect3DDxgiInterfaceAccessCustom
+            ),
+            dxgiAccess.put_void()
+        );
+
+
+    if (FAILED(hr))
+    {
+        std::cout
+            << "QueryInterface DXGI access falhou.\n";
+
+        return nullptr;
+    }
 
 
     com_ptr<ID3D11Texture2D> texture;
 
 
-    check_hresult(
-        access->GetInterface(
+    hr =
+        dxgiAccess->GetInterface(
             __uuidof(ID3D11Texture2D),
             texture.put_void()
-        )
-    );
+        );
+
+
+    if (FAILED(hr))
+    {
+        std::cout
+            << "GetInterface ID3D11Texture2D falhou.\n";
+
+        return nullptr;
+    }
 
 
     return texture;
 }
 
+
+// ============================================================
+// COPY GPU TEXTURE -> CPU BGRA
+// ============================================================
+
 bool CopyTextureToPixels(
-    ID3D11Texture2D* sourceTexture,
-    UINT width,
-    UINT height,
-    std::vector<unsigned char>& pixels)
+    ID3D11Texture2D* texture,
+    std::vector<unsigned char>& pixels,
+    uint32_t& width,
+    uint32_t& height)
 {
-    if (!sourceTexture)
+    if (!texture)
         return false;
 
-    D3D11_TEXTURE2D_DESC sourceDesc{};
 
-    sourceTexture->GetDesc(
-        &sourceDesc
+    D3D11_TEXTURE2D_DESC desc{};
+
+
+    texture->GetDesc(
+        &desc
     );
 
+
+    width =
+        desc.Width;
+
+
+    height =
+        desc.Height;
+
+
+    if (width == 0 ||
+        height == 0)
+    {
+        return false;
+    }
+
+
     D3D11_TEXTURE2D_DESC stagingDesc =
-        sourceDesc;
+        desc;
+
 
     stagingDesc.Usage =
         D3D11_USAGE_STAGING;
 
+
     stagingDesc.BindFlags =
         0;
+
 
     stagingDesc.CPUAccessFlags =
         D3D11_CPU_ACCESS_READ;
 
+
     stagingDesc.MiscFlags =
         0;
 
-    stagingDesc.ArraySize =
-        1;
-
-    stagingDesc.MipLevels =
-        1;
 
     com_ptr<ID3D11Texture2D> stagingTexture;
+
 
     HRESULT hr =
         g_d3dDevice->CreateTexture2D(
@@ -565,23 +664,28 @@ bool CopyTextureToPixels(
             stagingTexture.put()
         );
 
-    if (FAILED(hr))
-        return false;
 
-    // ==========================================
-    // GPU → staging texture
-    // ==========================================
+    if (FAILED(hr))
+    {
+        std::cout
+            << "CreateTexture2D staging falhou. HRESULT: 0x"
+            << std::hex
+            << hr
+            << std::dec
+            << "\n";
+
+        return false;
+    }
+
 
     g_d3dContext->CopyResource(
         stagingTexture.get(),
-        sourceTexture
+        texture
     );
 
-    // ==========================================
-    // Map para CPU
-    // ==========================================
 
     D3D11_MAPPED_SUBRESOURCE mapped{};
+
 
     hr =
         g_d3dContext->Map(
@@ -592,187 +696,133 @@ bool CopyTextureToPixels(
             &mapped
         );
 
-    if (FAILED(hr))
-        return false;
 
-    const UINT bytesPerPixel = 4;
+    if (FAILED(hr))
+    {
+        std::cout
+            << "Map staging texture falhou. HRESULT: 0x"
+            << std::hex
+            << hr
+            << std::dec
+            << "\n";
+
+        return false;
+    }
+
 
     const size_t rowSize =
-        static_cast<size_t>(width) *
-        bytesPerPixel;
+        static_cast<size_t>(width) * 4;
 
-    const size_t imageSize =
+
+    const size_t totalSize =
         rowSize *
         static_cast<size_t>(height);
 
-    pixels.resize(imageSize);
 
-    // ==========================================
-    // Remover RowPitch
-    // ==========================================
+    pixels.resize(
+        totalSize
+    );
 
-    for (UINT y = 0; y < height; y++)
+
+    const unsigned char* source =
+        static_cast<const unsigned char*>(
+            mapped.pData
+        );
+
+
+    unsigned char* destination =
+        pixels.data();
+
+
+    for (uint32_t y = 0;
+         y < height;
+         ++y)
     {
-        const unsigned char* sourceRow =
-            static_cast<const unsigned char*>(
-                mapped.pData
-            ) +
-            static_cast<size_t>(y) *
-            mapped.RowPitch;
-
-        unsigned char* destinationRow =
-            pixels.data() +
-            static_cast<size_t>(y) *
-            rowSize;
-
         memcpy(
-            destinationRow,
-            sourceRow,
+            destination + y * rowSize,
+            source + y * mapped.RowPitch,
             rowSize
         );
     }
+
 
     g_d3dContext->Unmap(
         stagingTexture.get(),
         0
     );
+
 
     return true;
 }
 
+
 // ============================================================
-// Salvar textura D3D11 como BMP
+// SAVE TEXTURE AS BMP
 // ============================================================
 
-bool SaveTextureAsBMP(
-    ID3D11Texture2D* sourceTexture,
-    UINT width,
-    UINT height)
+#pragma pack(push, 1)
+
+struct BMPFileHeader
 {
-    if (!sourceTexture)
-        return false;
+    uint16_t bfType;
+    uint32_t bfSize;
+    uint16_t bfReserved1;
+    uint16_t bfReserved2;
+    uint32_t bfOffBits;
+};
 
 
-    D3D11_TEXTURE2D_DESC sourceDesc{};
+struct BMPInfoHeader
+{
+    uint32_t biSize;
+    int32_t biWidth;
+    int32_t biHeight;
+    uint16_t biPlanes;
+    uint16_t biBitCount;
+    uint32_t biCompression;
+    uint32_t biSizeImage;
+    int32_t biXPelsPerMeter;
+    int32_t biYPelsPerMeter;
+    uint32_t biClrUsed;
+    uint32_t biClrImportant;
+};
 
-    sourceTexture->GetDesc(
-        &sourceDesc
-    );
-
-
-    D3D11_TEXTURE2D_DESC stagingDesc =
-        sourceDesc;
-
-
-    stagingDesc.Usage =
-        D3D11_USAGE_STAGING;
-
-    stagingDesc.BindFlags =
-        0;
-
-    stagingDesc.CPUAccessFlags =
-        D3D11_CPU_ACCESS_READ;
-
-    stagingDesc.MiscFlags =
-        0;
-
-    stagingDesc.ArraySize =
-        1;
-
-    stagingDesc.MipLevels =
-        1;
+#pragma pack(pop)
 
 
-    com_ptr<ID3D11Texture2D> stagingTexture;
+void SaveTextureAsBMP(
+    ID3D11Texture2D* texture,
+    const wchar_t* filename)
+{
+    if (!texture)
+        return;
 
 
-    HRESULT hr =
-        g_d3dDevice->CreateTexture2D(
-            &stagingDesc,
-            nullptr,
-            stagingTexture.put()
-        );
+    std::vector<unsigned char> pixels;
+
+    uint32_t width = 0;
+    uint32_t height = 0;
 
 
-    if (FAILED(hr))
-        return false;
-
-
-    g_d3dContext->CopyResource(
-        stagingTexture.get(),
-        sourceTexture
-    );
-
-
-    D3D11_MAPPED_SUBRESOURCE mapped{};
-
-
-    hr =
-        g_d3dContext->Map(
-            stagingTexture.get(),
-            0,
-            D3D11_MAP_READ,
-            0,
-            &mapped
-        );
-
-
-    if (FAILED(hr))
-        return false;
-
-
-    const UINT bytesPerPixel =
-        4;
-
-
-    const size_t rowSize =
-        static_cast<size_t>(width) *
-        bytesPerPixel;
-
-
-    const size_t imageSize =
-        rowSize *
-        static_cast<size_t>(height);
-
-
-    std::vector<unsigned char> pixels(
-        imageSize
-    );
-
-
-    for (UINT y = 0; y < height; y++)
+    if (!CopyTextureToPixels(
+            texture,
+            pixels,
+            width,
+            height))
     {
-        const unsigned char* sourceRow =
-            static_cast<const unsigned char*>(
-                mapped.pData
-            ) +
-            static_cast<size_t>(y) *
-            mapped.RowPitch;
-
-
-        unsigned char* destinationRow =
-            pixels.data() +
-            static_cast<size_t>(y) *
-            rowSize;
-
-
-        memcpy(
-            destinationRow,
-            sourceRow,
-            rowSize
-        );
+        return;
     }
 
 
-    g_d3dContext->Unmap(
-        stagingTexture.get(),
-        0
-    );
+    BMPFileHeader fileHeader{};
+
+    BMPInfoHeader infoHeader{};
 
 
-    BITMAPFILEHEADER fileHeader{};
-
-    BITMAPINFOHEADER infoHeader{};
+    const uint32_t imageSize =
+        width *
+        height *
+        4;
 
 
     fileHeader.bfType =
@@ -780,31 +830,25 @@ bool SaveTextureAsBMP(
 
 
     fileHeader.bfOffBits =
-        sizeof(BITMAPFILEHEADER) +
-        sizeof(BITMAPINFOHEADER);
+        sizeof(BMPFileHeader) +
+        sizeof(BMPInfoHeader);
 
 
     fileHeader.bfSize =
         fileHeader.bfOffBits +
-        static_cast<DWORD>(
-            imageSize
-        );
+        imageSize;
 
 
     infoHeader.biSize =
-        sizeof(BITMAPINFOHEADER);
+        sizeof(BMPInfoHeader);
 
 
     infoHeader.biWidth =
-        static_cast<LONG>(
-            width
-        );
+        static_cast<int32_t>(width);
 
 
     infoHeader.biHeight =
-        -static_cast<LONG>(
-            height
-        );
+        -static_cast<int32_t>(height);
 
 
     infoHeader.biPlanes =
@@ -820,19 +864,22 @@ bool SaveTextureAsBMP(
 
 
     infoHeader.biSizeImage =
-        static_cast<DWORD>(
-            imageSize
-        );
+        imageSize;
 
 
     std::ofstream file(
-        "captured_frame.bmp",
+        filename,
         std::ios::binary
     );
 
 
     if (!file)
-        return false;
+    {
+        std::cout
+            << "Nao foi possivel salvar BMP.\n";
+
+        return;
+    }
 
 
     file.write(
@@ -855,53 +902,462 @@ bool SaveTextureAsBMP(
         reinterpret_cast<const char*>(
             pixels.data()
         ),
-        static_cast<std::streamsize>(
-            pixels.size()
-        )
+        pixels.size()
     );
 
 
-    file.close();
-
-
-    return true;
+    std::cout
+        << "Frame salvo em BMP: "
+        << width
+        << "x"
+        << height
+        << "\n";
 }
 
 
 // ============================================================
-// Thread do servidor TCP
+// UDP SERVER THREAD
 // ============================================================
 
-void ServerThread()
+void UdpServerThread()
 {
-    if (!g_tcpServer.Start(5000))
+    std::cout
+        << "Iniciando servidor UDP...\n";
+
+
+    if (!g_udpServer.Start(5001))
     {
-        g_serverStarted =
+        std::cout
+            << "Falha ao iniciar servidor UDP.\n";
+
+        g_udpServerStarted =
             false;
 
         return;
     }
 
 
-    g_serverStarted =
+    g_udpServerStarted =
         true;
 
 
-    // ========================================================
-    // Esperar o receiver conectar
-    // ========================================================
+    std::cout
+        << "Servidor UDP iniciado na porta 5001.\n";
 
-    if (g_tcpServer.WaitForClient())
+
+    std::cout
+        << "Aguardando HELLO do receiver UDP...\n";
+
+
+    while (g_udpServerStarted)
     {
-        g_receiverConnected =
+        if (!g_udpReceiverConnected)
+        {
+            if (g_udpServer.WaitForClient())
+            {
+                if (!g_udpServerStarted)
+                    break;
+
+
+                g_udpReceiverConnected =
+                    true;
+
+
+                std::cout
+                    << "\n========================================\n"
+                    << "RECEIVER UDP CONECTADO!\n"
+                    << "H264 NVENC -> MPEG-TS -> UDP\n"
+                    << "========================================\n";
+            }
+        }
+        else
+        {
+            std::this_thread::sleep_for(
+                std::chrono::milliseconds(100)
+            );
+        }
+    }
+
+
+    std::cout
+        << "Thread UDP encerrada.\n";
+}
+
+
+// ============================================================
+// FRAME ARRIVED
+// ============================================================
+
+void OnFrameArrived(
+    Direct3D11CaptureFramePool const& sender,
+    winrt::Windows::Foundation::IInspectable const&)
+{
+    if (!g_captureRunning)
+        return;
+
+
+    auto frame =
+        sender.TryGetNextFrame();
+
+
+    if (!frame)
+        return;
+
+
+    auto surface =
+        frame.Surface();
+
+
+    if (!surface)
+        return;
+
+
+    com_ptr<ID3D11Texture2D> texture =
+        GetTextureFromSurface(
+            surface
+        );
+
+
+    if (!texture)
+        return;
+
+
+    g_lastCapturedTexture =
+        texture;
+
+
+    // ----------------------------------------------------------
+    // Atualizar tamanho
+    // ----------------------------------------------------------
+
+    D3D11_TEXTURE2D_DESC desc{};
+
+
+    texture->GetDesc(
+        &desc
+    );
+
+
+    g_captureWidth =
+        desc.Width;
+
+
+    g_captureHeight =
+        desc.Height;
+
+
+    // ----------------------------------------------------------
+    // Estatísticas
+    // ----------------------------------------------------------
+
+    g_frameCount++;
+
+
+    g_fpsFrameCounter++;
+
+
+    ULONGLONG now =
+        GetTickCount64();
+
+
+    if (g_fpsStartTime == 0)
+    {
+        g_fpsStartTime =
+            now;
+    }
+
+
+    if (now - g_fpsStartTime >= 1000)
+    {
+        g_captureFps =
+            static_cast<double>(
+                g_fpsFrameCounter
+            );
+
+
+        g_fpsFrameCounter =
+            0;
+
+
+        g_fpsStartTime =
+            now;
+    }
+
+
+    // ----------------------------------------------------------
+    // Precisamos de CPU pixels somente se houver receiver
+    // ----------------------------------------------------------
+
+    bool needPixels =
+        g_udpReceiverConnected;
+
+
+    if (needPixels)
+    {
+        std::vector<unsigned char> pixels;
+
+        uint32_t width = 0;
+        uint32_t height = 0;
+
+
+        if (CopyTextureToPixels(
+                texture.get(),
+                pixels,
+                width,
+                height))
+        {
+            // --------------------------------------------------
+            // UDP + H264
+            // --------------------------------------------------
+
+            {
+                std::lock_guard<std::mutex> lock(
+                    g_encodeMutex
+                );
+
+
+                // ----------------------------------------------
+                // Não acumulamos frames.
+                //
+                // O encoder sempre recebe o frame mais recente.
+                // Se houver um frame antigo esperando, ele será
+                // substituído.
+                //
+                // Isso ajuda a manter a latência baixa.
+                // ----------------------------------------------
+
+                g_pendingEncodeFrame.pixels =
+                    std::move(
+                        pixels
+                    );
+
+
+                g_pendingEncodeFrame.width =
+                    width;
+
+
+                g_pendingEncodeFrame.height =
+                    height;
+
+
+                g_pendingEncodeFrame.valid =
+                    true;
+            }
+
+
+            g_encodeCv.notify_one();
+        }
+    }
+
+
+    // ----------------------------------------------------------
+    // Atualizar janela
+    // ----------------------------------------------------------
+
+    if (g_hwnd)
+    {
+        wchar_t title[256]{};
+
+
+        swprintf_s(
+            title,
+            L"STREAM PROJECT - "
+            L"Capturando: %s | "
+            L"Resolucao: %ux%u | "
+            L"Frames: %llu | "
+            L"FPS: %.1f | "
+            L"UDP: %s | "
+            L"H264: %s",
+            g_captureRunning
+                ? L"SIM"
+                : L"NAO",
+            g_captureWidth,
+            g_captureHeight,
+            g_frameCount.load(),
+            g_captureFps,
+            g_udpReceiverConnected
+                ? L"Conectado"
+                : L"Aguardando",
+            g_h264Encoder.IsRunning()
+                ? L"ON"
+                : L"OFF"
+        );
+
+
+        SetWindowTextW(
+            g_hwnd,
+            title
+        );
+
+
+        InvalidateRect(
+            g_hwnd,
+            nullptr,
+            FALSE
+        );
+    }
+}
+
+
+// ============================================================
+// CREATE CAPTURE - ASYNC
+// ============================================================
+
+winrt::fire_and_forget StartCaptureAsync()
+{
+    try
+    {
+        auto device =
+            CreateWinRTDirect3DDevice();
+
+
+        GraphicsCapturePicker picker;
+
+
+        picker.as<IInitializeWithWindow>()->Initialize(
+            g_hwnd
+        );
+
+
+        // --------------------------------------------------------
+        // IMPORTANTE:
+        //
+        // Não usamos .get().
+        //
+        // O thread principal continua processando as mensagens
+        // do Windows enquanto o usuário escolhe a janela.
+        // --------------------------------------------------------
+
+        auto item =
+            co_await picker.PickSingleItemAsync();
+
+
+        if (!item)
+        {
+            std::cout
+                << "Nenhuma janela selecionada.\n";
+
+
+            PostMessageW(
+                g_hwnd,
+                WM_CLOSE,
+                0,
+                0
+            );
+
+
+            co_return;
+        }
+
+
+        g_captureItem =
+            item;
+
+
+        auto size =
+            item.Size();
+
+
+        g_captureWidth =
+            size.Width;
+
+
+        g_captureHeight =
+            size.Height;
+
+
+        std::cout
+            << "Captura selecionada: "
+            << g_captureWidth
+            << "x"
+            << g_captureHeight
+            << "\n";
+
+
+        // --------------------------------------------------------
+        // Criar Frame Pool
+        // --------------------------------------------------------
+
+        g_framePool =
+            Direct3D11CaptureFramePool::CreateFreeThreaded(
+                device,
+                DirectXPixelFormat::B8G8R8A8UIntNormalized,
+                3,
+                size
+            );
+
+
+        // --------------------------------------------------------
+        // Criar sessão
+        // --------------------------------------------------------
+
+        g_captureSession =
+            g_framePool.CreateCaptureSession(
+                item
+            );
+
+
+        // --------------------------------------------------------
+        // Frame callback
+        // --------------------------------------------------------
+
+        g_frameArrivedToken =
+            g_framePool.FrameArrived(
+                &OnFrameArrived
+            );
+
+
+        g_captureRunning =
             true;
+
+
+        g_fpsStartTime =
+            GetTickCount64();
+
+
+        g_fpsFrameCounter =
+            0;
+
+
+        // --------------------------------------------------------
+        // Iniciar captura
+        // --------------------------------------------------------
+
+        g_captureSession.StartCapture();
+
+
+        std::cout
+            << "Captura iniciada!\n";
+    }
+    catch (const winrt::hresult_error& error)
+    {
+        std::wcerr
+            << L"Erro ao iniciar captura: "
+            << error.message()
+            << L"\n";
 
 
         if (g_hwnd)
         {
-            PostMessage(
+            PostMessageW(
                 g_hwnd,
-                WM_APP + 1,
+                WM_CLOSE,
+                0,
+                0
+            );
+        }
+    }
+    catch (...)
+    {
+        std::cout
+            << "Erro desconhecido ao iniciar captura.\n";
+
+
+        if (g_hwnd)
+        {
+            PostMessageW(
+                g_hwnd,
+                WM_CLOSE,
                 0,
                 0
             );
@@ -911,7 +1367,7 @@ void ServerThread()
 
 
 // ============================================================
-// Window Procedure
+// WINDOW PROC
 // ============================================================
 
 LRESULT CALLBACK WindowProc(
@@ -922,17 +1378,62 @@ LRESULT CALLBACK WindowProc(
 {
     switch (uMsg)
     {
+    // ========================================================
+    // INICIAR CAPTURA
+    // ========================================================
+
+    case WM_APP + 1:
+    {
+        StartCaptureAsync();
+
+        return 0;
+    }
+
+
+    // ========================================================
+    // PAINT
+    // ========================================================
+
     case WM_PAINT:
     {
-        PAINTSTRUCT ps;
+        PAINTSTRUCT ps{};
 
-        BeginPaint(
+
+        HDC hdc =
+            BeginPaint(
+                hwnd,
+                &ps
+            );
+
+
+        RECT rect{};
+
+
+        GetClientRect(
             hwnd,
-            &ps
+            &rect
         );
 
 
-        Render();
+        FillRect(
+            hdc,
+            &rect,
+            static_cast<HBRUSH>(
+                GetStockObject(
+                    BLACK_BRUSH
+                )
+            )
+        );
+
+
+        // ------------------------------------------------------
+        // A janela do sender permanece preta.
+        //
+        // A captura acontece na GPU e é enviada para:
+        //
+        // BGRA -> H264 NVENC -> MPEG-TS -> UDP
+        //
+        // ------------------------------------------------------
 
 
         EndPaint(
@@ -945,58 +1446,134 @@ LRESULT CALLBACK WindowProc(
     }
 
 
-    case WM_SIZE:
-    {
-        UINT width =
-            LOWORD(lParam);
-
-        UINT height =
-            HIWORD(lParam);
-
-
-        ResizeSwapChain(
-            width,
-            height
-        );
-
-
-        return 0;
-    }
-
-
-    case WM_APP + 1:
-    {
-        InvalidateRect(
-            hwnd,
-            nullptr,
-            TRUE
-        );
-
-
-        return 0;
-    }
-
+    // ========================================================
+    // DESTROY
+    // ========================================================
 
     case WM_DESTROY:
     {
-        g_tcpServer.Stop();
+        std::cout
+            << "\nEncerrando Stream Project...\n";
 
-        g_receiverConnected =
+
+        // ------------------------------------------------------
+        // Parar captura
+        // ------------------------------------------------------
+
+        g_captureRunning =
             false;
+
+
+        if (g_captureSession)
+        {
+            g_captureSession.Close();
+
+            g_captureSession =
+                nullptr;
+        }
+
+
+        if (g_framePool)
+        {
+            if (g_frameArrivedToken.value != 0)
+            {
+                try
+                {
+                    g_framePool.FrameArrived(
+                        g_frameArrivedToken
+                    );
+                }
+                catch (...)
+                {
+                }
+            }
+
+
+            g_framePool.Close();
+
+            g_framePool =
+                nullptr;
+        }
+
+
+        // ------------------------------------------------------
+        // Parar encoder
+        // ------------------------------------------------------
+
+        g_encoderRunning =
+            false;
+
+
+        g_encodeCv.notify_all();
+
+
+        if (g_encoderThread.joinable())
+        {
+            g_encoderThread.join();
+        }
+
+
+        g_h264Encoder.Stop();
+
+
+        // ------------------------------------------------------
+        // Parar UDP
+        // ------------------------------------------------------
+
+        g_udpReceiverConnected =
+            false;
+
+
+        g_udpServerStarted =
+            false;
+
+
+        // ------------------------------------------------------
+        // Muito importante:
+        //
+        // WaitForClient() pode estar bloqueado no recvfrom().
+        //
+        // Stop() fecha o socket e libera a thread.
+        // ------------------------------------------------------
+
+        g_udpServer.Stop();
+
+
+        // ------------------------------------------------------
+        // Esperar thread UDP
+        // ------------------------------------------------------
+
+        if (g_udpThread.joinable())
+        {
+            g_udpThread.join();
+        }
+
+
+        // ------------------------------------------------------
+        // Limpar D3D
+        // ------------------------------------------------------
 
         g_lastCapturedTexture =
             nullptr;
 
-        g_renderTargetView =
-            nullptr;
 
         g_swapChain =
             nullptr;
 
 
-        PostQuitMessage(
-            0
-        );
+        g_renderTargetView =
+            nullptr;
+
+
+        g_d3dContext =
+            nullptr;
+
+
+        g_d3dDevice =
+            nullptr;
+
+
+        PostQuitMessage(0);
 
 
         return 0;
@@ -1004,7 +1581,7 @@ LRESULT CALLBACK WindowProc(
     }
 
 
-    return DefWindowProc(
+    return DefWindowProcW(
         hwnd,
         uMsg,
         wParam,
@@ -1014,7 +1591,7 @@ LRESULT CALLBACK WindowProc(
 
 
 // ============================================================
-// WinMain
+// WINMAIN
 // ============================================================
 
 int WINAPI wWinMain(
@@ -1023,538 +1600,259 @@ int WINAPI wWinMain(
     PWSTR,
     int nCmdShow)
 {
-    try
+    std::cout
+        << "=============================================\n"
+        << "       STREAM PROJECT - SERVER\n"
+        << "=============================================\n"
+        << "H264 NVENC + MPEG-TS + UDP\n"
+        << "=============================================\n\n";
+
+
+    // =========================================================
+    // WINSOCK
+    // =========================================================
+
+    WSADATA wsaData{};
+
+
+    int wsaResult =
+        WSAStartup(
+            MAKEWORD(2, 2),
+            &wsaData
+        );
+
+
+    if (wsaResult != 0)
     {
-        // ====================================================
-        // Inicializar WinRT
-        // ====================================================
-
-        init_apartment(
-            apartment_type::single_threaded
-        );
-
-
-        // ====================================================
-        // Criar janela
-        // ====================================================
-
-        const wchar_t CLASS_NAME[] =
-            L"StreamProjectWindow";
-
-
-        WNDCLASS wc{};
-
-        wc.lpfnWndProc =
-            WindowProc;
-
-        wc.hInstance =
-            hInstance;
-
-        wc.lpszClassName =
-            CLASS_NAME;
-
-
-        RegisterClass(
-            &wc
-        );
-
-
-        g_hwnd =
-            CreateWindowEx(
-                0,
-                CLASS_NAME,
-                L"Stream Project",
-                WS_OVERLAPPEDWINDOW,
-                CW_USEDEFAULT,
-                CW_USEDEFAULT,
-                800,
-                600,
-                nullptr,
-                nullptr,
-                hInstance,
-                nullptr
-            );
-
-
-        if (!g_hwnd)
-        {
-            MessageBox(
-                nullptr,
-                L"Falha ao criar a janela Win32.",
-                L"STREAM PROJECT",
-                MB_ICONERROR
-            );
-
-
-            return 1;
-        }
-
-
-        ShowWindow(
-            g_hwnd,
-            nCmdShow
-        );
-
-
-        UpdateWindow(
-            g_hwnd
-        );
-
-
-        // ====================================================
-        // Verificar Graphics Capture
-        // ====================================================
-
-        if (!WGC::GraphicsCaptureSession::IsSupported())
-        {
-            MessageBox(
-                g_hwnd,
-                L"Windows Graphics Capture não é suportado.",
-                L"STREAM PROJECT",
-                MB_ICONERROR
-            );
-
-
-            return 1;
-        }
-
-
-        // ====================================================
-        // Criar D3D11
-        // ====================================================
-
-        UINT creationFlags =
-            D3D11_CREATE_DEVICE_BGRA_SUPPORT;
-
-
-        D3D_FEATURE_LEVEL featureLevel{};
-
-
-        HRESULT hr =
-            D3D11CreateDevice(
-                nullptr,
-                D3D_DRIVER_TYPE_HARDWARE,
-                nullptr,
-                creationFlags,
-                nullptr,
-                0,
-                D3D11_SDK_VERSION,
-                g_d3dDevice.put(),
-                &featureLevel,
-                g_d3dContext.put()
-            );
-
-
-        if (FAILED(hr))
-        {
-            MessageBox(
-                g_hwnd,
-                L"Falha ao criar o dispositivo D3D11.",
-                L"STREAM PROJECT",
-                MB_ICONERROR
-            );
-
-
-            return 1;
-        }
-
-
-        // ====================================================
-        // Criar Swap Chain
-        // ====================================================
-
-        if (!InitializeSwapChain())
-        {
-            MessageBox(
-                g_hwnd,
-                L"Falha ao criar o Swap Chain D3D11.",
-                L"STREAM PROJECT",
-                MB_ICONERROR
-            );
-
-
-            return 1;
-        }
-
-
-        // ====================================================
-        // Iniciar servidor TCP
-        // ====================================================
-
-        std::thread(
-            ServerThread
-        ).detach();
-
-
-        // ====================================================
-        // Converter D3D11 Device
-        // ====================================================
-
-        auto direct3DDevice =
-            CreateDirect3DDevice(
-                g_d3dDevice.get()
-            );
-
-
-        // ====================================================
-        // GraphicsCapturePicker
-        // ====================================================
-
-        auto picker =
-            WGC::GraphicsCapturePicker();
-
-
-        auto initializeWithWindow =
-            picker.as<::IInitializeWithWindow>();
-
-
-        hr =
-            initializeWithWindow->Initialize(
-                g_hwnd
-            );
-
-
-        if (FAILED(hr))
-        {
-            MessageBox(
-                g_hwnd,
-                L"Falha ao inicializar o GraphicsCapturePicker.",
-                L"STREAM PROJECT",
-                MB_ICONERROR
-            );
-
-
-            return 1;
-        }
-
-
-        // ====================================================
-        // Abrir Picker
-        // ====================================================
-
-        auto asyncOperation =
-            picker.PickSingleItemAsync();
-
-
-        // ====================================================
-        // Resultado
-        // ====================================================
-
-        asyncOperation.Completed(
-            [direct3DDevice](
-                auto const& operation,
-                auto const&)
-            {
-                try
-                {
-                    auto item =
-                        operation.GetResults();
-
-
-                    if (!item)
-                    {
-                        MessageBox(
-                            g_hwnd,
-                            L"Nenhuma janela foi selecionada.",
-                            L"STREAM PROJECT",
-                            MB_OK
-                        );
-
-
-                        return;
-                    }
-
-
-                    auto size =
-                        item.Size();
-
-
-                    g_captureWidth =
-                        size.Width;
-
-                    g_captureHeight =
-                        size.Height;
-
-
-                    // ========================================
-                    // Frame Pool
-                    // ========================================
-
-                    g_framePool =
-                        WGC::Direct3D11CaptureFramePool::CreateFreeThreaded(
-                            direct3DDevice,
-                            WGD::DirectXPixelFormat::B8G8R8A8UIntNormalized,
-                            2,
-                            size
-                        );
-
-
-                    // ========================================
-                    // Sessão
-                    // ========================================
-
-                    g_captureSession =
-                        g_framePool.CreateCaptureSession(
-                            item
-                        );
-
-
-                    // ========================================
-                    // Frames
-                    // ========================================
-
-                    g_framePool.FrameArrived(
-                        [](
-                            WGC::Direct3D11CaptureFramePool const& sender,
-                            winrt::Windows::Foundation::IInspectable const&)
-                        {
-                            try
-                            {
-                                auto frame =
-                                    sender.TryGetNextFrame();
-
-
-                                if (!frame)
-                                    return;
-
-
-                                // ====================================
-                                // Contabilizar frame
-                                // ====================================
-
-                                int frameNumber =
-                                    ++g_frameCount;
-
-
-                                // ====================================
-                                // Tamanho atual
-                                // ====================================
-
-                                auto contentSize =
-                                    frame.ContentSize();
-
-
-                                g_captureWidth =
-                                    contentSize.Width;
-
-                                g_captureHeight =
-                                    contentSize.Height;
-
-
-                                // ====================================
-                                // Obter textura
-                                // ====================================
-
-                                auto texture =
-                                    GetTextureFromFrame(
-                                        frame
-                                    );
-
-
-                                if (texture)
-                                {
-                                    // Guardar último frame
-                                    g_lastCapturedTexture =
-                                        texture;
-
-                                    g_textureAvailable =
-                                        true;
-                                }
-
-                                // ====================================
-                                // Enviar pixels diretamente pela rede
-                                // ====================================
-
-                                if (
-                                    texture &&
-                                    g_receiverConnected)
-                                {
-                                    ULONGLONG currentTime =
-                                        GetTickCount64();
-
-                                    if (
-                                        currentTime -
-                                        g_lastFrameSendTime >=
-                                        FRAME_SEND_INTERVAL_MS)
-                                    {
-                                        std::vector<unsigned char> pixels;
-
-                                        if (CopyTextureToPixels(
-                                            texture.get(),
-                                            contentSize.Width,
-                                            contentSize.Height,
-                                            pixels))
-                                        {
-                                            if (g_tcpServer.SendFramePixels(
-                                                pixels.data(),
-                                                static_cast<uint32_t>(
-                                                    pixels.size()
-                                                ),
-                                                contentSize.Width,
-                                                contentSize.Height))
-                                            {
-                                                g_lastFrameSendTime =
-                                                    currentTime;
-                                            }
-                                            else
-                                            {
-                                                g_receiverConnected =
-                                                    false;
-                                            }
-                                        }
-                                    }
-                                }
-
-
-                                // ====================================
-                                // FPS
-                                // ====================================
-
-                                ULONGLONG now =
-                                    GetTickCount64();
-
-
-                                if (g_lastFpsUpdate == 0)
-                                {
-                                    g_lastFpsUpdate =
-                                        now;
-
-                                    g_lastFrameCount =
-                                        frameNumber;
-                                }
-                                else if (
-                                    now - g_lastFpsUpdate >= 1000)
-                                {
-                                    ULONGLONG elapsed =
-                                        now -
-                                        g_lastFpsUpdate;
-
-
-                                    int frames =
-                                        frameNumber -
-                                        g_lastFrameCount;
-
-
-                                    g_fps =
-                                        static_cast<double>(
-                                            frames
-                                        ) *
-                                        1000.0 /
-                                        static_cast<double>(
-                                            elapsed
-                                        );
-
-
-                                    g_lastFpsUpdate =
-                                        now;
-
-                                    g_lastFrameCount =
-                                        frameNumber;
-                                }
-
-
-                                // ====================================
-                                // Atualizar interface
-                                // ====================================
-
-                                InvalidateRect(
-                                    g_hwnd,
-                                    nullptr,
-                                    FALSE
-                                );
-                            }
-                            catch (...)
-                            {
-                            }
-                        }
-                    );
-
-
-                    // ========================================
-                    // Iniciar captura
-                    // ========================================
-
-                    g_captureSession.StartCapture();
-
-
-                    InvalidateRect(
-                        g_hwnd,
-                        nullptr,
-                        TRUE
-                    );
-                }
-                catch (const hresult_error& ex)
-                {
-                    MessageBox(
-                        g_hwnd,
-                        ex.message().c_str(),
-                        L"WinRT Error",
-                        MB_ICONERROR
-                    );
-                }
-                catch (...)
-                {
-                    MessageBox(
-                        g_hwnd,
-                        L"Erro desconhecido ao iniciar a captura.",
-                        L"STREAM PROJECT",
-                        MB_ICONERROR
-                    );
-                }
-            }
-        );
-
-
-        // ====================================================
-        // Message Loop
-        // ====================================================
-
-        MSG msg{};
-
-
-        while (
-            GetMessage(
-                &msg,
-                nullptr,
-                0,
-                0
-            ) > 0)
-        {
-            TranslateMessage(
-                &msg
-            );
-
-
-            DispatchMessage(
-                &msg
-            );
-        }
-
-
-        return 0;
-    }
-    catch (const hresult_error& ex)
-    {
-        MessageBox(
-            nullptr,
-            ex.message().c_str(),
-            L"WinRT Error",
-            MB_ICONERROR
-        );
-
+        std::cout
+            << "WSAStartup falhou. Erro: "
+            << wsaResult
+            << "\n";
 
         return 1;
     }
-    catch (...)
+
+
+    // =========================================================
+    // D3D11
+    // =========================================================
+
+    if (!CreateD3DDevice())
     {
-        MessageBox(
+        WSACleanup();
+
+        return 1;
+    }
+
+
+    // =========================================================
+    // WINDOW CLASS
+    // =========================================================
+
+    const wchar_t CLASS_NAME[] =
+        L"StreamProjectWindow";
+
+
+    WNDCLASSW wc{};
+
+
+    wc.lpfnWndProc =
+        WindowProc;
+
+
+    wc.hInstance =
+        hInstance;
+
+
+    wc.lpszClassName =
+        CLASS_NAME;
+
+
+    wc.hCursor =
+        LoadCursor(
             nullptr,
-            L"Erro desconhecido.",
+            IDC_ARROW
+        );
+
+
+    wc.hbrBackground =
+        static_cast<HBRUSH>(
+            GetStockObject(
+                BLACK_BRUSH
+            )
+        );
+
+
+    if (!RegisterClassW(&wc))
+    {
+        std::cout
+            << "RegisterClassW falhou.\n";
+
+
+        WSACleanup();
+
+        return 1;
+    }
+
+
+    // =========================================================
+    // WINDOW
+    // =========================================================
+
+    g_hwnd =
+        CreateWindowExW(
+            0,
+            CLASS_NAME,
             L"STREAM PROJECT",
-            MB_ICONERROR
+            WS_OVERLAPPEDWINDOW,
+            CW_USEDEFAULT,
+            CW_USEDEFAULT,
+            1000,
+            700,
+            nullptr,
+            nullptr,
+            hInstance,
+            nullptr
         );
 
 
+    if (!g_hwnd)
+    {
+        std::cout
+            << "CreateWindowExW falhou.\n";
+
+
+        WSACleanup();
+
         return 1;
     }
+
+
+    ShowWindow(
+        g_hwnd,
+        nCmdShow
+    );
+
+
+    UpdateWindow(
+        g_hwnd
+    );
+
+
+    // =========================================================
+    // UDP SERVER THREAD
+    // =========================================================
+
+    g_udpThread =
+        std::thread(
+            UdpServerThread
+        );
+
+
+    // =========================================================
+    // H264 ENCODER THREAD
+    // =========================================================
+
+    g_encoderRunning =
+        true;
+
+
+    g_encoderThread =
+        std::thread(
+            EncoderThread
+        );
+
+
+    // =========================================================
+    // INICIAR CAPTURA
+    // =========================================================
+    //
+    // Não chamamos StartCaptureAsync() diretamente.
+    //
+    // Enviamos uma mensagem para a própria janela para que a
+    // captura seja iniciada já dentro do message loop.
+    //
+    // Isso garante que o GraphicsCapturePicker tenha uma UI
+    // responsiva.
+    // =========================================================
+
+    PostMessageW(
+        g_hwnd,
+        WM_APP + 1,
+        0,
+        0
+    );
+
+
+    // =========================================================
+    // MESSAGE LOOP
+    // =========================================================
+
+    MSG msg{};
+
+
+    while (
+        GetMessageW(
+            &msg,
+            nullptr,
+            0,
+            0
+        ) > 0)
+    {
+        TranslateMessage(
+            &msg
+        );
+
+
+        DispatchMessageW(
+            &msg
+        );
+    }
+
+
+    // =========================================================
+    // CLEANUP
+    // =========================================================
+
+    g_encoderRunning =
+        false;
+
+
+    g_encodeCv.notify_all();
+
+
+    if (g_encoderThread.joinable())
+    {
+        g_encoderThread.join();
+    }
+
+
+    g_h264Encoder.Stop();
+
+
+    g_udpServerStarted =
+        false;
+
+
+    g_udpReceiverConnected =
+        false;
+
+
+    g_udpServer.Stop();
+
+
+    if (g_udpThread.joinable())
+    {
+        g_udpThread.join();
+    }
+
+
+    WSACleanup();
+
+
+    std::cout
+        << "Stream Project encerrado.\n";
+
+
+    return 0;
 }
