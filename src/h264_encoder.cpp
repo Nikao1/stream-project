@@ -12,6 +12,7 @@ H264Encoder::H264Encoder()
       m_process(nullptr),
       m_stdinWrite(nullptr),
       m_stdoutRead(nullptr),
+      m_currentAccessUnitKeyframe(false),
       m_running(false)
 {
 }
@@ -301,13 +302,16 @@ bool H264Encoder::StartProcess()
         "-zerolatency 1 "
 
         // ----------------------------------------------------
-        // MPEG-TS
+        // H264 ANNEX B PURO (elementary stream)
+        //
+        // Sem container. Cada NAL unit é delimitada por start
+        // codes (00 00 01 / 00 00 00 01), o que permite montar
+        // o framing por frame no lado do UDP/receiver sem o
+        // overhead e a fragilidade do MPEG-TS sobre transporte
+        // não confiável.
         // ----------------------------------------------------
 
-        "-f mpegts "
-        "-muxdelay 0 "
-        "-muxpreload 0 "
-        "-flush_packets 1 "
+        "-f h264 "
 
         "pipe:1";
 
@@ -451,7 +455,14 @@ bool H264Encoder::StartProcess()
         );
 
 
-        m_encodedData.clear();
+        m_nalBuffer.clear();
+
+        m_currentAccessUnit.clear();
+
+        m_currentAccessUnitKeyframe =
+            false;
+
+        m_frameQueue.clear();
     }
 
 
@@ -583,6 +594,229 @@ bool H264Encoder::EncodeFrame(
 
 
 // ============================================================
+// FindStartCode
+// ============================================================
+//
+// Procura o próximo start code Annex B (00 00 01 ou 00 00 00 01)
+// a partir de "from". Retorna o offset do primeiro byte do
+// start code, ou SIZE_MAX se não encontrar (NAL ainda incompleta,
+// aguardando mais dados do FFmpeg).
+//
+// scLen recebe o tamanho do start code encontrado (3 ou 4).
+// ============================================================
+
+namespace
+{
+    constexpr size_t kNotFound =
+        static_cast<size_t>(-1);
+
+
+    size_t FindStartCode(
+        const std::vector<unsigned char>& buffer,
+        size_t from,
+        size_t& scLen)
+    {
+        if (buffer.size() < 3)
+        {
+            return kNotFound;
+        }
+
+
+        for (size_t i = from;
+             i + 3 <= buffer.size();
+             ++i)
+        {
+            if (buffer[i] != 0 ||
+                buffer[i + 1] != 0)
+            {
+                continue;
+            }
+
+
+            if (buffer[i + 2] == 1)
+            {
+                scLen = 3;
+                return i;
+            }
+
+
+            if (i + 4 <= buffer.size() &&
+                buffer[i + 2] == 0 &&
+                buffer[i + 3] == 1)
+            {
+                scLen = 4;
+                return i;
+            }
+        }
+
+
+        return kNotFound;
+    }
+}
+
+
+// ============================================================
+// ExtractAccessUnits
+// ============================================================
+//
+// Percorre m_nalBuffer, separa as NAL units já completas
+// (delimitadas por start codes) e agrupa em access units
+// (frames).
+//
+// PREMISSA: cada frame gerado pelo NVENC nesta configuração
+// (sem slicing) produz no máximo uma NAL unit de video (VCL,
+// tipo 1 ou 5), opcionalmente precedida por SPS(7)/PPS(8)/SEI(6)
+// nos keyframes. Por isso: fechamos o access unit atual assim
+// que encontramos uma NAL VCL.
+//
+// Chamado com m_outputMutex já travado.
+// ============================================================
+
+void H264Encoder::ExtractAccessUnits()
+{
+    size_t scLen = 0;
+
+
+    size_t nalStart =
+        FindStartCode(
+            m_nalBuffer,
+            0,
+            scLen
+        );
+
+
+    if (nalStart == kNotFound)
+    {
+        return;
+    }
+
+
+    for (;;)
+    {
+        size_t nextScLen = 0;
+
+
+        size_t nextStart =
+            FindStartCode(
+                m_nalBuffer,
+                nalStart + scLen,
+                nextScLen
+            );
+
+
+        if (nextStart == kNotFound)
+        {
+            // A NAL atual ainda não terminou - pode chegar
+            // mais dado do FFmpeg na próxima leitura.
+            break;
+        }
+
+
+        // ----------------------------------------------------
+        // Tipo da NAL (5 bits menos significativos do primeiro
+        // byte após o start code).
+        // ----------------------------------------------------
+
+        uint8_t nalType =
+            m_nalBuffer[nalStart + scLen] &
+            0x1F;
+
+
+        bool isVcl =
+            (nalType >= 1 &&
+             nalType <= 5);
+
+
+        bool isParamSet =
+            (nalType == 7 ||  // SPS
+             nalType == 8);   // PPS
+
+
+        if (nalType == 5 ||
+            isParamSet)
+        {
+            m_currentAccessUnitKeyframe =
+                true;
+        }
+
+
+        // ----------------------------------------------------
+        // Adiciona essa NAL (start code + payload) ao access
+        // unit em montagem.
+        // ----------------------------------------------------
+
+        m_currentAccessUnit.insert(
+            m_currentAccessUnit.end(),
+            m_nalBuffer.begin() + nalStart,
+            m_nalBuffer.begin() + nextStart
+        );
+
+
+        nalStart = nextStart;
+        scLen = nextScLen;
+
+
+        if (isVcl)
+        {
+            // ------------------------------------------------
+            // Fecha o access unit: é um frame completo.
+            // ------------------------------------------------
+
+            EncodedFrame frame;
+
+            frame.data =
+                std::move(
+                    m_currentAccessUnit
+                );
+
+            frame.isKeyframe =
+                m_currentAccessUnitKeyframe;
+
+
+            m_frameQueue.push_back(
+                std::move(frame)
+            );
+
+
+            m_currentAccessUnit.clear();
+
+            m_currentAccessUnitKeyframe =
+                false;
+
+
+            // --------------------------------------------------
+            // Limite de segurança: se o envio UDP não consegue
+            // acompanhar o encoder, descartamos os frames mais
+            // antigos (favorece latência baixa em vez de atraso
+            // acumulado).
+            // --------------------------------------------------
+
+            constexpr size_t MAX_QUEUED_FRAMES =
+                2;
+
+
+            while (m_frameQueue.size() >
+                   MAX_QUEUED_FRAMES)
+            {
+                m_frameQueue.pop_front();
+            }
+        }
+    }
+
+
+    // ========================================================
+    // Remove do buffer os bytes já processados. O que sobra é
+    // o começo de uma NAL ainda incompleta.
+    // ========================================================
+
+    m_nalBuffer.erase(
+        m_nalBuffer.begin(),
+        m_nalBuffer.begin() + nalStart
+    );
+}
+
+
+// ============================================================
 // ReaderThread
 // ============================================================
 
@@ -645,7 +879,8 @@ void H264Encoder::ReaderThread()
 
 
         // ====================================================
-        // Guardar MPEG-TS produzido pelo FFmpeg
+        // Acumular bytes Annex B crus e tentar extrair frames
+        // completos.
         // ====================================================
 
         {
@@ -654,8 +889,8 @@ void H264Encoder::ReaderThread()
             );
 
 
-            m_encodedData.insert(
-                m_encodedData.end(),
+            m_nalBuffer.insert(
+                m_nalBuffer.end(),
 
                 buffer,
 
@@ -664,27 +899,28 @@ void H264Encoder::ReaderThread()
             );
 
 
+            ExtractAccessUnits();
+
+
             // ------------------------------------------------
-            // Limite de segurança.
-            //
-            // 8 MB é suficiente para impedir crescimento
-            // infinito caso o envio UDP fique muito lento.
+            // Limite de segurança para o buffer de bytes ainda
+            // não agrupados (não deveria crescer muito, já que
+            // é drenado a cada NAL completa).
             // ------------------------------------------------
 
-            constexpr size_t MAX_BUFFER =
-                8 * 1024 * 1024;
+            constexpr size_t MAX_NAL_BUFFER =
+                4 * 1024 * 1024;
 
 
-            if (m_encodedData.size() >
-                MAX_BUFFER)
+            if (m_nalBuffer.size() >
+                MAX_NAL_BUFFER)
             {
                 std::cerr
-                    << "\nH264Encoder: buffer de saida "
-                    << "excedeu 8 MB. "
-                    << "Limpando buffer antigo.\n";
+                    << "\nH264Encoder: buffer Annex B "
+                    << "excedeu 4 MB. Limpando.\n";
 
 
-                m_encodedData.clear();
+                m_nalBuffer.clear();
             }
         }
     }
@@ -696,26 +932,30 @@ void H264Encoder::ReaderThread()
 
 
 // ============================================================
-// GetEncodedData
+// GetFrame
 // ============================================================
 
-bool H264Encoder::GetEncodedData(
-    std::vector<unsigned char>& output)
+bool H264Encoder::GetFrame(
+    EncodedFrame& outFrame)
 {
     std::lock_guard<std::mutex> lock(
         m_outputMutex
     );
 
 
-    if (m_encodedData.empty())
+    if (m_frameQueue.empty())
     {
         return false;
     }
 
 
-    output.swap(
-        m_encodedData
-    );
+    outFrame =
+        std::move(
+            m_frameQueue.front()
+        );
+
+
+    m_frameQueue.pop_front();
 
 
     return true;
@@ -841,7 +1081,14 @@ void H264Encoder::Stop()
         );
 
 
-        m_encodedData.clear();
+        m_nalBuffer.clear();
+
+        m_currentAccessUnit.clear();
+
+        m_currentAccessUnitKeyframe =
+            false;
+
+        m_frameQueue.clear();
     }
 }
 

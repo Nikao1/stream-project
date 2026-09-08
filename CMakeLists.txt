@@ -10,6 +10,25 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 
+# ================================================================
+# libopus (via FetchContent - baixa e compila junto com o projeto)
+# ================================================================
+
+include(FetchContent)
+
+set(OPUS_BUILD_SHARED_LIBRARY OFF CACHE BOOL "" FORCE)
+set(OPUS_BUILD_TESTING OFF CACHE BOOL "" FORCE)
+set(OPUS_BUILD_PROGRAMS OFF CACHE BOOL "" FORCE)
+
+FetchContent_Declare(
+    opus
+    GIT_REPOSITORY https://github.com/xiph/opus.git
+    GIT_TAG        v1.5.2
+)
+
+FetchContent_MakeAvailable(opus)
+
+
 add_executable(stream-client WIN32
     src/main.cpp
 
@@ -21,6 +40,15 @@ add_executable(stream-client WIN32
 
     src/h264_encoder.cpp
     src/h264_encoder.h
+
+    src/audio_capture.cpp
+    src/audio_capture.h
+
+    src/audio_encoder.cpp
+    src/audio_encoder.h
+
+    src/udp_audio_server.cpp
+    src/udp_audio_server.h
 )
 
 
@@ -29,10 +57,26 @@ add_executable(stream-receiver
 
     src/h264_decoder.cpp
     src/h264_decoder.h
+
+    # TODO: descomentar quando audio_decoder/audio_playback
+    # forem implementados (próximo passo do roadmap de audio)
+    # src/audio_decoder.cpp
+    # src/audio_decoder.h
+    #
+    # src/audio_playback.cpp
+    # src/audio_playback.h
 )
 
 
 target_compile_definitions(stream-client PRIVATE
+    UNICODE
+    _UNICODE
+    WIN32_LEAN_AND_MEAN
+    NOMINMAX
+)
+
+
+target_compile_definitions(stream-receiver PRIVATE
     UNICODE
     _UNICODE
     WIN32_LEAN_AND_MEAN
@@ -45,9 +89,13 @@ target_link_libraries(stream-client PRIVATE
     dxgi
     windowsapp
     ws2_32
+    ole32
+    opus
 )
 
 
 target_link_libraries(stream-receiver PRIVATE
     ws2_32
+    ole32
+    opus
 )

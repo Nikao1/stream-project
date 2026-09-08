@@ -1,0 +1,1720 @@
+diff --git a/src/h264_decoder.cpp b/src/h264_decoder.cpp
+index 05c0d97..f564f5f 100644
+--- a/src/h264_decoder.cpp
++++ b/src/h264_decoder.cpp
+@@ -234,10 +234,15 @@ bool H264Decoder::StartProcess()
+         "-flags low_delay "
+ 
+         // ----------------------------------------------------
+-        // Entrada MPEG-TS
++        // Entrada H264 Annex B puro (sem container)
++        //
++        // O receiver só escreve neste pipe frames completos
++        // e íntegros (já reassemblados a partir dos fragmentos
++        // UDP), então o demuxer nunca vê dado corrompido por
++        // perda de pacote.
+         // ----------------------------------------------------
+ 
+-        "-f mpegts "
++        "-f h264 "
+         "-i pipe:0 "
+ 
+         // ----------------------------------------------------
+diff --git a/src/h264_encoder.cpp b/src/h264_encoder.cpp
+index 8c69f05..ce04513 100644
+--- a/src/h264_encoder.cpp
++++ b/src/h264_encoder.cpp
+@@ -12,6 +12,7 @@ H264Encoder::H264Encoder()
+       m_process(nullptr),
+       m_stdinWrite(nullptr),
+       m_stdoutRead(nullptr),
++      m_currentAccessUnitKeyframe(false),
+       m_running(false)
+ {
+ }
+@@ -301,13 +302,16 @@ bool H264Encoder::StartProcess()
+         "-zerolatency 1 "
+ 
+         // ----------------------------------------------------
+-        // MPEG-TS
++        // H264 ANNEX B PURO (elementary stream)
++        //
++        // Sem container. Cada NAL unit é delimitada por start
++        // codes (00 00 01 / 00 00 00 01), o que permite montar
++        // o framing por frame no lado do UDP/receiver sem o
++        // overhead e a fragilidade do MPEG-TS sobre transporte
++        // não confiável.
+         // ----------------------------------------------------
+ 
+-        "-f mpegts "
+-        "-muxdelay 0 "
+-        "-muxpreload 0 "
+-        "-flush_packets 1 "
++        "-f h264 "
+ 
+         "pipe:1";
+ 
+@@ -582,6 +586,229 @@ bool H264Encoder::EncodeFrame(
+ }
+ 
+ 
++// ============================================================
++// FindStartCode
++// ============================================================
++//
++// Procura o próximo start code Annex B (00 00 01 ou 00 00 00 01)
++// a partir de "from". Retorna o offset do primeiro byte do
++// start code, ou SIZE_MAX se não encontrar (NAL ainda incompleta,
++// aguardando mais dados do FFmpeg).
++//
++// scLen recebe o tamanho do start code encontrado (3 ou 4).
++// ============================================================
++
++namespace
++{
++    constexpr size_t kNotFound =
++        static_cast<size_t>(-1);
++
++
++    size_t FindStartCode(
++        const std::vector<unsigned char>& buffer,
++        size_t from,
++        size_t& scLen)
++    {
++        if (buffer.size() < 3)
++        {
++            return kNotFound;
++        }
++
++
++        for (size_t i = from;
++             i + 3 <= buffer.size();
++             ++i)
++        {
++            if (buffer[i] != 0 ||
++                buffer[i + 1] != 0)
++            {
++                continue;
++            }
++
++
++            if (buffer[i + 2] == 1)
++            {
++                scLen = 3;
++                return i;
++            }
++
++
++            if (i + 4 <= buffer.size() &&
++                buffer[i + 2] == 0 &&
++                buffer[i + 3] == 1)
++            {
++                scLen = 4;
++                return i;
++            }
++        }
++
++
++        return kNotFound;
++    }
++}
++
++
++// ============================================================
++// ExtractAccessUnits
++// ============================================================
++//
++// Percorre m_nalBuffer, separa as NAL units já completas
++// (delimitadas por start codes) e agrupa em access units
++// (frames).
++//
++// PREMISSA: cada frame gerado pelo NVENC nesta configuração
++// (sem slicing) produz no máximo uma NAL unit de video (VCL,
++// tipo 1 ou 5), opcionalmente precedida por SPS(7)/PPS(8)/SEI(6)
++// nos keyframes. Por isso: fechamos o access unit atual assim
++// que encontramos uma NAL VCL.
++//
++// Chamado com m_outputMutex já travado.
++// ============================================================
++
++void H264Encoder::ExtractAccessUnits()
++{
++    size_t scLen = 0;
++
++
++    size_t nalStart =
++        FindStartCode(
++            m_nalBuffer,
++            0,
++            scLen
++        );
++
++
++    if (nalStart == kNotFound)
++    {
++        return;
++    }
++
++
++    for (;;)
++    {
++        size_t nextScLen = 0;
++
++
++        size_t nextStart =
++            FindStartCode(
++                m_nalBuffer,
++                nalStart + scLen,
++                nextScLen
++            );
++
++
++        if (nextStart == kNotFound)
++        {
++            // A NAL atual ainda não terminou - pode chegar
++            // mais dado do FFmpeg na próxima leitura.
++            break;
++        }
++
++
++        // ----------------------------------------------------
++        // Tipo da NAL (5 bits menos significativos do primeiro
++        // byte após o start code).
++        // ----------------------------------------------------
++
++        uint8_t nalType =
++            m_nalBuffer[nalStart + scLen] &
++            0x1F;
++
++
++        bool isVcl =
++            (nalType >= 1 &&
++             nalType <= 5);
++
++
++        bool isParamSet =
++            (nalType == 7 ||  // SPS
++             nalType == 8);   // PPS
++
++
++        if (nalType == 5 ||
++            isParamSet)
++        {
++            m_currentAccessUnitKeyframe =
++                true;
++        }
++
++
++        // ----------------------------------------------------
++        // Adiciona essa NAL (start code + payload) ao access
++        // unit em montagem.
++        // ----------------------------------------------------
++
++        m_currentAccessUnit.insert(
++            m_currentAccessUnit.end(),
++            m_nalBuffer.begin() + nalStart,
++            m_nalBuffer.begin() + nextStart
++        );
++
++
++        nalStart = nextStart;
++        scLen = nextScLen;
++
++
++        if (isVcl)
++        {
++            // ------------------------------------------------
++            // Fecha o access unit: é um frame completo.
++            // ------------------------------------------------
++
++            EncodedFrame frame;
++
++            frame.data =
++                std::move(
++                    m_currentAccessUnit
++                );
++
++            frame.isKeyframe =
++                m_currentAccessUnitKeyframe;
++
++
++            m_frameQueue.push_back(
++                std::move(frame)
++            );
++
++
++            m_currentAccessUnit.clear();
++
++            m_currentAccessUnitKeyframe =
++                false;
++
++
++            // --------------------------------------------------
++            // Limite de segurança: se o envio UDP não consegue
++            // acompanhar o encoder, descartamos os frames mais
++            // antigos (favorece latência baixa em vez de atraso
++            // acumulado).
++            // --------------------------------------------------
++
++            constexpr size_t MAX_QUEUED_FRAMES =
++                6;
++
++
++            while (m_frameQueue.size() >
++                   MAX_QUEUED_FRAMES)
++            {
++                m_frameQueue.pop_front();
++            }
++        }
++    }
++
++
++    // ========================================================
++    // Remove do buffer os bytes já processados. O que sobra é
++    // o começo de uma NAL ainda incompleta.
++    // ========================================================
++
++    m_nalBuffer.erase(
++        m_nalBuffer.begin(),
++        m_nalBuffer.begin() + nalStart
++    );
++}
++
++
+ // ============================================================
+ // ReaderThread
+ // ============================================================
+@@ -645,7 +872,8 @@ void H264Encoder::ReaderThread()
+ 
+ 
+         // ====================================================
+-        // Guardar MPEG-TS produzido pelo FFmpeg
++        // Acumular bytes Annex B crus e tentar extrair frames
++        // completos.
+         // ====================================================
+ 
+         {
+@@ -654,8 +882,8 @@ void H264Encoder::ReaderThread()
+             );
+ 
+ 
+-            m_encodedData.insert(
+-                m_encodedData.end(),
++            m_nalBuffer.insert(
++                m_nalBuffer.end(),
+ 
+                 buffer,
+ 
+@@ -664,27 +892,28 @@ void H264Encoder::ReaderThread()
+             );
+ 
+ 
++            ExtractAccessUnits();
++
++
+             // ------------------------------------------------
+-            // Limite de segurança.
+-            //
+-            // 8 MB é suficiente para impedir crescimento
+-            // infinito caso o envio UDP fique muito lento.
++            // Limite de segurança para o buffer de bytes ainda
++            // não agrupados (não deveria crescer muito, já que
++            // é drenado a cada NAL completa).
+             // ------------------------------------------------
+ 
+-            constexpr size_t MAX_BUFFER =
+-                8 * 1024 * 1024;
++            constexpr size_t MAX_NAL_BUFFER =
++                4 * 1024 * 1024;
+ 
+ 
+-            if (m_encodedData.size() >
+-                MAX_BUFFER)
++            if (m_nalBuffer.size() >
++                MAX_NAL_BUFFER)
+             {
+                 std::cerr
+-                    << "\nH264Encoder: buffer de saida "
+-                    << "excedeu 8 MB. "
+-                    << "Limpando buffer antigo.\n";
++                    << "\nH264Encoder: buffer Annex B "
++                    << "excedeu 4 MB. Limpando.\n";
+ 
+ 
+-                m_encodedData.clear();
++                m_nalBuffer.clear();
+             }
+         }
+     }
+@@ -696,26 +925,30 @@ void H264Encoder::ReaderThread()
+ 
+ 
+ // ============================================================
+-// GetEncodedData
++// GetFrame
+ // ============================================================
+ 
+-bool H264Encoder::GetEncodedData(
+-    std::vector<unsigned char>& output)
++bool H264Encoder::GetFrame(
++    EncodedFrame& outFrame)
+ {
+     std::lock_guard<std::mutex> lock(
+         m_outputMutex
+     );
+ 
+ 
+-    if (m_encodedData.empty())
++    if (m_frameQueue.empty())
+     {
+         return false;
+     }
+ 
+ 
+-    output.swap(
+-        m_encodedData
+-    );
++    outFrame =
++        std::move(
++            m_frameQueue.front()
++        );
++
++
++    m_frameQueue.pop_front();
+ 
+ 
+     return true;
+@@ -841,7 +1074,14 @@ void H264Encoder::Stop()
+         );
+ 
+ 
+-        m_encodedData.clear();
++        m_nalBuffer.clear();
++
++        m_currentAccessUnit.clear();
++
++        m_currentAccessUnitKeyframe =
++            false;
++
++        m_frameQueue.clear();
+     }
+ }
+ 
+diff --git a/src/h264_encoder.h b/src/h264_encoder.h
+index d8ec09c..5111954 100644
+--- a/src/h264_encoder.h
++++ b/src/h264_encoder.h
+@@ -4,10 +4,27 @@
+ 
+ #include <cstdint>
+ #include <vector>
++#include <deque>
+ #include <thread>
+ #include <mutex>
+ #include <atomic>
+ 
++// ============================================================
++// EncodedFrame
++//
++// Um frame H264 completo (access unit) em Annex B, pronto
++// para ser fragmentado e enviado pela rede.
++//
++// Para um keyframe, "data" inclui SPS + PPS + slice IDR.
++// Para um frame delta, "data" é só o slice.
++// ============================================================
++
++struct EncodedFrame
++{
++    std::vector<unsigned char> data;
++    bool isKeyframe = false;
++};
++
+ class H264Encoder
+ {
+ public:
+@@ -26,8 +43,11 @@ public:
+         uint32_t dataSize
+     );
+ 
+-    bool GetEncodedData(
+-        std::vector<unsigned char>& output
++    // Retorna um frame completo por chamada. Chamar em loop
++    // até retornar false para esvaziar a fila (pode haver
++    // mais de um frame pronto entre uma chamada e outra).
++    bool GetFrame(
++        EncodedFrame& outFrame
+     );
+ 
+     void Stop();
+@@ -39,6 +59,11 @@ private:
+ 
+     void ReaderThread();
+ 
++    // Consome m_nalBuffer, monta access units completos e
++    // empilha em m_frameQueue. Chamado com m_outputMutex já
++    // travado.
++    void ExtractAccessUnits();
++
+     uint32_t m_width;
+     uint32_t m_height;
+     uint32_t m_fps;
+@@ -52,7 +77,15 @@ private:
+ 
+     std::mutex m_outputMutex;
+ 
+-    std::vector<unsigned char> m_encodedData;
++    // Bytes crus do Annex B ainda não agrupados em access units.
++    std::vector<unsigned char> m_nalBuffer;
++
++    // Access unit sendo montado no momento.
++    std::vector<unsigned char> m_currentAccessUnit;
++    bool m_currentAccessUnitKeyframe;
++
++    // Frames completos, prontos para GetFrame().
++    std::deque<EncodedFrame> m_frameQueue;
+ 
+     std::atomic<bool> m_running;
+ };
+\ No newline at end of file
+diff --git a/src/main.cpp b/src/main.cpp
+index 7174a4e..c6087e9 100644
+--- a/src/main.cpp
++++ b/src/main.cpp
+@@ -416,43 +416,53 @@ void EncoderThread()
+ 
+ 
+         // --------------------------------------------------------
+-        // Recuperar dados MPEG-TS produzidos pelo FFmpeg
++        // Recuperar frames H264 completos produzidos pelo FFmpeg.
++        //
++        // Pode haver mais de um frame pronto na fila (ex: se o
++        // laço de captura demorou um pouco), então drenamos tudo.
+         // --------------------------------------------------------
+ 
+-        std::vector<unsigned char> encodedData;
++        EncodedFrame encodedFrame;
+ 
+ 
+-        if (g_h264Encoder.GetEncodedData(
+-                encodedData))
++        while (g_h264Encoder.GetFrame(
++                encodedFrame))
+         {
+-            if (!encodedData.empty())
++            if (encodedFrame.data.empty())
+             {
+-                // ------------------------------------------------
+-                // Enviar MPEG-TS através do UDP
+-                // ------------------------------------------------
++                continue;
++            }
+ 
+-                if (!g_udpServer.SendVideoData(
+-                        encodedData.data(),
+-                        static_cast<uint32_t>(
+-                            encodedData.size()),
+-                        frame.width,
+-                        frame.height))
+-                {
+-                    std::cout
+-                        << "UDP: falha ao enviar "
+-                        << "video H264.\n";
+ 
++            // ------------------------------------------------
++            // Enviar o frame H264 fragmentado via UDP
++            // ------------------------------------------------
+ 
+-                    g_udpReceiverConnected =
+-                        false;
++            if (!g_udpServer.SendVideoFrame(
++                    encodedFrame.data.data(),
++                    static_cast<uint32_t>(
++                        encodedFrame.data.size()),
++                    frame.width,
++                    frame.height,
++                    encodedFrame.isKeyframe))
++            {
++                std::cout
++                    << "UDP: falha ao enviar "
++                    << "video H264.\n";
+ 
+ 
+-                    g_h264Encoder.Stop();
++                g_udpReceiverConnected =
++                    false;
+ 
+ 
+-                    g_encoderWidth = 0;
+-                    g_encoderHeight = 0;
+-                }
++                g_h264Encoder.Stop();
++
++
++                g_encoderWidth = 0;
++                g_encoderHeight = 0;
++
++
++                break;
+             }
+         }
+     }
+diff --git a/src/receiver.cpp b/src/receiver.cpp
+index ebd8699..ebe8baf 100644
+--- a/src/receiver.cpp
++++ b/src/receiver.cpp
+@@ -14,6 +14,7 @@
+ #include <cstring>
+ 
+ #include "h264_decoder.h"
++#include "video_protocol.h"
+ 
+ #pragma comment(lib, "ws2_32.lib")
+ 
+@@ -30,51 +31,9 @@ constexpr uint16_t SERVER_UDP_PORT =
+ 
+ 
+ // ============================================================
+-// Protocolo UDP
+-//
+-// Header:
+-//
+-// magic       4 bytes
+-// sequence    4 bytes
+-// payloadSize 4 bytes
+-// width       4 bytes
+-// height      4 bytes
+-// flags       4 bytes
+-//
+-// Total = 24 bytes
++// Protocolo UDP (orientado a frame) - ver video_protocol.h
+ // ============================================================
+ 
+-#pragma pack(push, 1)
+-
+-struct UdpVideoPacketHeader
+-{
+-    uint32_t magic;
+-    uint32_t sequence;
+-    uint32_t payloadSize;
+-    uint32_t width;
+-    uint32_t height;
+-    uint32_t flags;
+-};
+-
+-#pragma pack(pop)
+-
+-
+-constexpr uint32_t UDP_MAGIC =
+-    0x5354524D;
+-
+-
+-constexpr uint32_t UDP_HEADER_SIZE =
+-    sizeof(UdpVideoPacketHeader);
+-
+-
+-constexpr uint32_t UDP_PACKET_SIZE =
+-    1400;
+-
+-
+-constexpr uint32_t UDP_PAYLOAD_SIZE =
+-    UDP_PACKET_SIZE -
+-    UDP_HEADER_SIZE;
+-
+ 
+ // ============================================================
+ // Buffer UDP
+@@ -176,18 +135,46 @@ ULONGLONG g_fpsStartTime =
+ 
+ 
+ // ============================================================
+-// Estatísticas UDP
++// Reassembly de frame
++//
++// Mantemos apenas o frame "atual" sendo montado. Se chegar um
++// fragmento de um frameId mais novo antes do atual completar,
++// o atual é descartado (favorece latência baixa: preferimos
++// pular um frame a acumular atraso).
+ // ============================================================
+ 
+-uint32_t g_lastSequence =
+-    0;
++struct PendingFrame
++{
++    uint32_t frameId = 0;
++    uint32_t frameSize = 0;
++    uint32_t fragCount = 0;
++    uint32_t width = 0;
++    uint32_t height = 0;
++    bool isKeyframe = false;
++    bool active = false;
++
++    std::vector<unsigned char> data;
++    std::vector<bool> fragReceived;
++    uint32_t fragReceivedCount = 0;
++};
+ 
++PendingFrame g_pendingFrame;
+ 
+-bool g_haveSequence =
++
++// ============================================================
++// Estatísticas
++// ============================================================
++
++uint32_t g_lastCompletedFrameId =
++    0;
++
++bool g_haveCompletedFrame =
+     false;
+ 
++uint64_t g_framesCompleted =
++    0;
+ 
+-uint64_t g_lostPackets =
++uint64_t g_framesDropped =
+     0;
+ 
+ 
+@@ -285,7 +272,7 @@ void ProcessDecodedFrame()
+ 
+             swprintf_s(
+                 title,
+-                L"Stream Receiver UDP - H264 - FPS: %d - Frame: %llu - %ux%u - Lost: %llu",
++                L"Stream Receiver UDP - H264 - FPS: %d - Frame: %llu - %ux%u - Dropped: %llu",
+                 g_fps.load(),
+                 static_cast<unsigned long long>(
+                     g_frameNumber
+@@ -293,7 +280,7 @@ void ProcessDecodedFrame()
+                 width,
+                 height,
+                 static_cast<unsigned long long>(
+-                    g_lostPackets
++                    g_framesDropped
+                 )
+             );
+ 
+@@ -317,6 +304,68 @@ void ProcessDecodedFrame()
+ }
+ 
+ 
++// ============================================================
++// StartNewPendingFrame
++// ============================================================
++//
++// Descarta o que estiver em montagem (se houver) e inicia a
++// montagem de um novo frame a partir do header recebido.
++// ============================================================
++
++void StartNewPendingFrame(
++    const VideoFrameFragmentHeader& header)
++{
++    if (g_pendingFrame.active &&
++        g_pendingFrame.fragReceivedCount <
++            g_pendingFrame.fragCount)
++    {
++        // Havia um frame incompleto em montagem: foi
++        // "atropelado" por um frame mais novo. Conta como
++        // descartado.
++
++        g_framesDropped++;
++    }
++
++
++    g_pendingFrame.frameId =
++        header.frameId;
++
++    g_pendingFrame.frameSize =
++        header.frameSize;
++
++    g_pendingFrame.fragCount =
++        header.fragCount;
++
++    g_pendingFrame.width =
++        header.width;
++
++    g_pendingFrame.height =
++        header.height;
++
++    g_pendingFrame.isKeyframe =
++        (header.flags &
++         VIDEO_FLAG_KEYFRAME) != 0;
++
++    g_pendingFrame.active =
++        true;
++
++    g_pendingFrame.fragReceivedCount =
++        0;
++
++
++    g_pendingFrame.data.assign(
++        header.frameSize,
++        0
++    );
++
++
++    g_pendingFrame.fragReceived.assign(
++        header.fragCount,
++        false
++    );
++}
++
++
+ // ============================================================
+ // Processar pacote UDP
+ // ============================================================
+@@ -332,7 +381,7 @@ void ProcessUdpPacket(
+     if (
+         packetSize <
+         static_cast<int>(
+-            UDP_HEADER_SIZE
++            VIDEO_HEADER_SIZE
+         ))
+     {
+         return;
+@@ -343,7 +392,7 @@ void ProcessUdpPacket(
+     // Ler header
+     // ========================================================
+ 
+-    UdpVideoPacketHeader header{};
++    VideoFrameFragmentHeader header{};
+ 
+ 
+     std::memcpy(
+@@ -357,73 +406,68 @@ void ProcessUdpPacket(
+     // Converter ordem de bytes
+     // ========================================================
+ 
+-    uint32_t magic =
++    header.magic =
+         ntohl(header.magic);
+ 
++    header.frameId =
++        ntohl(header.frameId);
+ 
+-    uint32_t sequence =
+-        ntohl(header.sequence);
++    header.fragIndex =
++        ntohl(header.fragIndex);
+ 
++    header.fragCount =
++        ntohl(header.fragCount);
+ 
+-    uint32_t payloadSize =
+-        ntohl(header.payloadSize);
++    header.frameSize =
++        ntohl(header.frameSize);
+ 
++    header.fragSize =
++        ntohl(header.fragSize);
+ 
+-    uint32_t width =
++    header.width =
+         ntohl(header.width);
+ 
+-
+-    uint32_t height =
++    header.height =
+         ntohl(header.height);
+ 
+-
+-    uint32_t flags =
++    header.flags =
+         ntohl(header.flags);
+ 
+ 
+-    (void)flags;
+-
+-
+     // ========================================================
+-    // Magic
++    // Validações básicas
+     // ========================================================
+ 
+-    if (
+-        magic !=
+-        UDP_MAGIC)
++    if (header.magic !=
++        VIDEO_PROTOCOL_MAGIC)
+     {
+         return;
+     }
+ 
+ 
+-    // ========================================================
+-    // Payload
+-    // ========================================================
+-
+-    if (
+-        payloadSize == 0 ||
+-        payloadSize >
+-            UDP_PAYLOAD_SIZE)
++    if (header.fragCount == 0 ||
++        header.fragIndex >=
++            header.fragCount)
+     {
+         return;
+     }
+ 
+ 
+-    // ========================================================
+-    // Resolução
+-    // ========================================================
+-
+-    if (
+-        width == 0 ||
+-        height == 0)
++    if (header.frameSize == 0 ||
++        header.fragSize == 0 ||
++        header.fragSize >
++            VIDEO_UDP_PAYLOAD_SIZE)
+     {
+         return;
+     }
+ 
+ 
+-    // ========================================================
+-    // Evitar resoluções absurdas
+-    // ========================================================
++    if (header.width == 0 ||
++        header.height == 0)
++    {
++        return;
++    }
++
+ 
+     constexpr uint32_t MAX_WIDTH =
+         7680;
+@@ -432,27 +476,21 @@ void ProcessUdpPacket(
+         4320;
+ 
+ 
+-    if (
+-        width > MAX_WIDTH ||
+-        height > MAX_HEIGHT)
++    if (header.width > MAX_WIDTH ||
++        header.height > MAX_HEIGHT)
+     {
+         return;
+     }
+ 
+ 
+-    // ========================================================
+-    // Tamanho real do pacote
+-    // ========================================================
+-
+     const int expectedSize =
+         static_cast<int>(
+-            UDP_HEADER_SIZE +
+-            payloadSize
++            VIDEO_HEADER_SIZE +
++            header.fragSize
+         );
+ 
+ 
+-    if (
+-        packetSize !=
++    if (packetSize !=
+         expectedSize)
+     {
+         return;
+@@ -464,75 +502,51 @@ void ProcessUdpPacket(
+     // ========================================================
+ 
+     if (
+-        width != g_frameWidth ||
+-        height != g_frameHeight)
++        header.width != g_frameWidth ||
++        header.height != g_frameHeight)
+     {
+         std::cout
+             << "\n========================================\n"
+             << "Nova resolucao recebida: "
+-            << width
++            << header.width
+             << "x"
+-            << height
++            << header.height
+             << "\n"
+             << "Reiniciando decoder H264...\n"
+             << "========================================\n";
+ 
+ 
+-        // ====================================================
+-        // Parar decoder anterior
+-        // ====================================================
+-
+         g_decoder.Stop();
+ 
+ 
+-        // ====================================================
+-        // Iniciar decoder
+-        //
+-        // H264Decoder::Start() recebe somente:
+-        //
+-        // width
+-        // height
+-        //
+-        // O FPS nao e necessario aqui.
+-        // ====================================================
+-
+         if (!g_decoder.Start(
+-                width,
+-                height))
++                header.width,
++                header.height))
+         {
+             std::cout
+                 << "Falha ao iniciar decoder H264.\n";
+ 
+ 
+-            g_frameWidth =
+-                0;
+-
+-
+-            g_frameHeight =
+-                0;
+-
++            g_frameWidth = 0;
++            g_frameHeight = 0;
+ 
+             return;
+         }
+ 
+ 
+-        // ====================================================
+-        // Atualizar resolução
+-        // ====================================================
+-
+         g_frameWidth =
+-            width;
+-
++            header.width;
+ 
+         g_frameHeight =
+-            height;
++            header.height;
+ 
+ 
+-        // ====================================================
+-        // Resetar sequência
+-        // ====================================================
++        // Qualquer reassembly em andamento não serve mais.
+ 
+-        g_haveSequence =
++        g_pendingFrame =
++            PendingFrame{};
++
++        g_haveCompletedFrame =
+             false;
+ 
+ 
+@@ -542,78 +556,128 @@ void ProcessUdpPacket(
+ 
+ 
+     // ========================================================
+-    // Detectar perda/desordem de pacote
++    // Descartar fragmentos de frames antigos (já concluídos
++    // ou já abandonados).
+     // ========================================================
+ 
+-    if (g_haveSequence)
++    if (g_haveCompletedFrame &&
++        header.frameId <=
++            g_lastCompletedFrameId)
+     {
+-        uint32_t expected =
+-            g_lastSequence + 1;
++        return;
++    }
+ 
+ 
+-        if (sequence != expected)
+-        {
+-            uint32_t lost =
+-                0;
++    // ========================================================
++    // Novo frame começando?
++    // ========================================================
+ 
++    if (g_pendingFrame.active &&
++        header.frameId <
++            g_pendingFrame.frameId)
++    {
++        // Fragmento atrasado de um frame mais antigo que já
++        // foi substituído pela montagem atual - ignora, não
++        // reinicia a montagem em andamento.
+ 
+-            if (sequence > expected)
+-            {
+-                lost =
+-                    sequence -
+-                    expected;
+-            }
++        return;
++    }
+ 
+ 
+-            g_lostPackets +=
+-                lost;
++    if (!g_pendingFrame.active ||
++        header.frameId !=
++            g_pendingFrame.frameId)
++    {
++        StartNewPendingFrame(
++            header
++        );
++    }
+ 
+ 
+-            std::cout
+-                << "\nUDP: perda/desordem detectada."
+-                << "\nEsperado: "
+-                << expected
+-                << "\nRecebido: "
+-                << sequence
+-                << "\nPacotes perdidos estimados: "
+-                << lost
+-                << "\nTotal perdido: "
+-                << g_lostPackets
+-                << "\n";
+-        }
++    // ========================================================
++    // Fragmento duplicado?
++    // ========================================================
++
++    if (g_pendingFrame.fragReceived[
++            header.fragIndex])
++    {
++        return;
+     }
+ 
+ 
+-    g_lastSequence =
+-        sequence;
++    // ========================================================
++    // Copiar o payload deste fragmento na posição certa
++    // ========================================================
+ 
++    const uint32_t fragOffset =
++        header.fragIndex *
++        VIDEO_UDP_PAYLOAD_SIZE;
+ 
+-    g_haveSequence =
+-        true;
++
++    if (fragOffset +
++            header.fragSize >
++        g_pendingFrame.frameSize)
++    {
++        // Header inconsistente - ignora o pacote.
++        return;
++    }
++
++
++    std::memcpy(
++        g_pendingFrame.data.data() +
++            fragOffset,
++
++        buffer +
++            VIDEO_HEADER_SIZE,
++
++        header.fragSize
++    );
++
++
++    g_pendingFrame.fragReceived[
++        header.fragIndex] = true;
++
++    g_pendingFrame.fragReceivedCount++;
+ 
+ 
+     // ========================================================
+-    // Payload MPEG-TS
++    // Frame ainda incompleto: aguarda mais fragmentos.
+     // ========================================================
+ 
+-    const char* payload =
+-        buffer +
+-        UDP_HEADER_SIZE;
++    if (g_pendingFrame.fragReceivedCount <
++        g_pendingFrame.fragCount)
++    {
++        return;
++    }
+ 
+ 
+     // ========================================================
+-    // Enviar MPEG-TS diretamente para FFmpeg
+-    //
+-    // IMPORTANTE:
++    // FRAME COMPLETO - entregar ao decoder.
+     //
+-    // Não reconstruímos frame H264 aqui.
+-    //
+-    // O MPEG-TS continua sendo um stream.
++    // Só chegamos aqui quando 100% dos fragmentos foram
++    // recebidos, então o decoder nunca vê um frame parcial
++    // ou corrompido por perda de pacote.
+     // ========================================================
+ 
++    g_lastCompletedFrameId =
++        g_pendingFrame.frameId;
++
++    g_haveCompletedFrame =
++        true;
++
++    g_framesCompleted++;
++
++    g_pendingFrame.active =
++        false;
++
++
+     if (!g_decoder.WriteData(
+-            payload,
+-            payloadSize))
++            reinterpret_cast<const char*>(
++                g_pendingFrame.data.data()
++            ),
++            static_cast<uint32_t>(
++                g_pendingFrame.data.size()
++            )))
+     {
+         std::cout
+             << "\nDecoder: falha ao escrever dados.\n";
+@@ -700,7 +764,7 @@ void ReceiverThread()
+ 
+ 
+     std::vector<char> buffer(
+-        UDP_PACKET_SIZE
++        VIDEO_UDP_PACKET_SIZE
+     );
+ 
+ 
+diff --git a/src/udp_server.cpp b/src/udp_server.cpp
+index dd77d96..49b15ca 100644
+--- a/src/udp_server.cpp
++++ b/src/udp_server.cpp
+@@ -1,4 +1,5 @@
+ #include "udp_server.h"
++#include "video_protocol.h"
+ 
+ #include <winsock2.h>
+ #include <ws2tcpip.h>
+@@ -13,41 +14,12 @@
+ // ============================================================
+ // UDP
+ // ============================================================
+-
+-constexpr uint32_t UDP_PACKET_SIZE =
+-    1400;
+-
+-
+-// ============================================================
+-// UDP HEADER
+-// ============================================================
+-//
+-// magic       4 bytes
+-// sequence    4 bytes
+-// payloadSize 4 bytes
+-// width       4 bytes
+-// height      4 bytes
+-// flags       4 bytes
+ //
+-// Total: 24 bytes
+-//
+-// O payload contém pedaços do fluxo MPEG-TS produzido
+-// pelo FFmpeg/NVENC.
++// O protocolo (header de 36 bytes, orientado a frame) está
++// definido em video_protocol.h e é compartilhado com o
++// receiver.
+ // ============================================================
+ 
+-constexpr uint32_t UDP_HEADER_SIZE =
+-    24;
+-
+-
+-constexpr uint32_t UDP_PAYLOAD_SIZE =
+-    UDP_PACKET_SIZE -
+-    UDP_HEADER_SIZE;
+-
+-
+-constexpr uint32_t UDP_MAGIC =
+-    0x5354524D; // "STRM"
+-
+-
+ constexpr int UDP_SEND_BUFFER_SIZE =
+     64 * 1024 * 1024;
+ 
+@@ -60,7 +32,7 @@ UdpServer::UdpServer()
+     : m_socket(INVALID_SOCKET),
+       m_clientAddress{},
+       m_clientKnown(false),
+-      m_sequence(0)
++      m_frameId(0)
+ {
+ }
+ 
+@@ -200,7 +172,7 @@ bool UdpServer::Start(
+         {};
+ 
+ 
+-    m_sequence =
++    m_frameId =
+         0;
+ 
+ 
+@@ -318,10 +290,10 @@ bool UdpServer::WaitForClient()
+ 
+ 
+     // --------------------------------------------------------
+-    // Resetar sequence para nova conexao
++    // Resetar frameId para nova conexao
+     // --------------------------------------------------------
+ 
+-    m_sequence =
++    m_frameId =
+         0;
+ 
+ 
+@@ -355,41 +327,44 @@ bool UdpServer::WaitForClient()
+ 
+ 
+ // ============================================================
+-// SendVideoData
++// SendVideoFrame
+ // ============================================================
+ //
+-// Recebe bytes MPEG-TS produzidos pelo FFmpeg.
+-//
+-// Exemplo:
++// Recebe um frame H264 (Annex B) completo e o fragmenta em
++// pacotes UDP de no máximo 1400 bytes, todos marcados com o
++// mesmo frameId.
+ //
+-// H264Encoder
++// H264Encoder::GetFrame()
+ //      |
+ //      v
+-// MPEG-TS bytes
++// frame Annex B completo (SPS/PPS/IDR ou só slice)
+ //      |
+ //      v
+-// SendVideoData()
++// SendVideoFrame()
+ //      |
+-//      +--> UDP packet 0
+-//      +--> UDP packet 1
+-//      +--> UDP packet 2
++//      +--> UDP fragmento 0/N  (frameId = X)
++//      +--> UDP fragmento 1/N  (frameId = X)
+ //      +--> ...
++//      +--> UDP fragmento N-1/N (frameId = X)
+ //
+-// Cada pacote possui no maximo 1400 bytes.
++// O receiver só entrega o frame ao decoder quando os N
++// fragmentos chegarem; caso contrário, descarta o frame
++// inteiro (nunca escreve dado parcial/corrompido).
+ // ============================================================
+ 
+-bool UdpServer::SendVideoData(
+-    const void* data,
+-    uint32_t dataSize,
++bool UdpServer::SendVideoFrame(
++    const void* frameData,
++    uint32_t frameSize,
+     uint32_t width,
+-    uint32_t height)
++    uint32_t height,
++    bool isKeyframe)
+ {
+     if (
+         m_socket ==
+             INVALID_SOCKET ||
+         !m_clientKnown ||
+-        !data ||
+-        dataSize == 0 ||
++        !frameData ||
++        frameSize == 0 ||
+         width == 0 ||
+         height == 0)
+     {
+@@ -400,163 +375,118 @@ bool UdpServer::SendVideoData(
+     const unsigned char* bytes =
+         static_cast<
+             const unsigned char*
+-        >(data);
+-
+-
+-    uint32_t offset =
+-        0;
++        >(frameData);
+ 
+ 
+     // --------------------------------------------------------
+-    // Reutilizar o mesmo buffer de pacote.
+-    //
+-    // Isso evita criar/destruir um vector a cada sendto().
++    // Quantos fragmentos esse frame vai precisar.
+     // --------------------------------------------------------
+ 
+-    std::vector<unsigned char> packet(
+-        UDP_PACKET_SIZE
+-    );
++    uint32_t fragCount =
++        (frameSize +
++         VIDEO_UDP_PAYLOAD_SIZE -
++         1) /
++        VIDEO_UDP_PAYLOAD_SIZE;
+ 
+ 
+-    while (offset < dataSize)
++    if (fragCount == 0)
+     {
+-        // ----------------------------------------------------
+-        // Quanto ainda falta enviar
+-        // ----------------------------------------------------
+-
+-        uint32_t remaining =
+-            dataSize -
+-            offset;
+-
+-
+-        // ----------------------------------------------------
+-        // Tamanho deste payload
+-        // ----------------------------------------------------
+-
+-        uint32_t payloadSize =
+-            remaining <
+-                UDP_PAYLOAD_SIZE
+-            ? remaining
+-            : UDP_PAYLOAD_SIZE;
+-
+-
+-        // ====================================================
+-        // HEADER
+-        // ====================================================
+-
+-        uint32_t magic =
+-            htonl(
+-                UDP_MAGIC
+-            );
++        fragCount = 1;
++    }
+ 
+ 
+-        uint32_t sequence =
+-            htonl(
+-                m_sequence++
+-            );
++    uint32_t frameId =
++        m_frameId++;
+ 
+ 
+-        uint32_t networkPayloadSize =
+-            htonl(
+-                payloadSize
+-            );
++    uint32_t flags =
++        isKeyframe
++        ? VIDEO_FLAG_KEYFRAME
++        : 0;
+ 
+ 
+-        uint32_t networkWidth =
+-            htonl(
+-                width
+-            );
+-
++    // --------------------------------------------------------
++    // Reutilizar o mesmo buffer de pacote entre fragmentos.
++    // --------------------------------------------------------
+ 
+-        uint32_t networkHeight =
+-            htonl(
+-                height
+-            );
++    std::vector<unsigned char> packet(
++        VIDEO_UDP_PACKET_SIZE
++    );
+ 
+ 
+-        // flags = 0
+-        uint32_t flags =
+-            htonl(0);
++    uint32_t offset =
++        0;
+ 
+ 
+-        // ----------------------------------------------------
+-        // magic
+-        // ----------------------------------------------------
++    for (uint32_t fragIndex = 0;
++         fragIndex < fragCount;
++         ++fragIndex)
++    {
++        uint32_t remaining =
++            frameSize -
++            offset;
+ 
+-        std::memcpy(
+-            packet.data() + 0,
+-            &magic,
+-            sizeof(uint32_t)
+-        );
+ 
++        uint32_t fragSize =
++            remaining <
++                VIDEO_UDP_PAYLOAD_SIZE
++            ? remaining
++            : VIDEO_UDP_PAYLOAD_SIZE;
+ 
+-        // ----------------------------------------------------
+-        // sequence
+-        // ----------------------------------------------------
+ 
+-        std::memcpy(
+-            packet.data() + 4,
+-            &sequence,
+-            sizeof(uint32_t)
+-        );
++        // ====================================================
++        // HEADER
++        // ====================================================
+ 
++        VideoFrameFragmentHeader header{};
+ 
+-        // ----------------------------------------------------
+-        // payloadSize
+-        // ----------------------------------------------------
++        header.magic =
++            htonl(VIDEO_PROTOCOL_MAGIC);
+ 
+-        std::memcpy(
+-            packet.data() + 8,
+-            &networkPayloadSize,
+-            sizeof(uint32_t)
+-        );
++        header.frameId =
++            htonl(frameId);
+ 
++        header.fragIndex =
++            htonl(fragIndex);
+ 
+-        // ----------------------------------------------------
+-        // width
+-        // ----------------------------------------------------
++        header.fragCount =
++            htonl(fragCount);
+ 
+-        std::memcpy(
+-            packet.data() + 12,
+-            &networkWidth,
+-            sizeof(uint32_t)
+-        );
++        header.frameSize =
++            htonl(frameSize);
+ 
++        header.fragSize =
++            htonl(fragSize);
+ 
+-        // ----------------------------------------------------
+-        // height
+-        // ----------------------------------------------------
++        header.width =
++            htonl(width);
+ 
+-        std::memcpy(
+-            packet.data() + 16,
+-            &networkHeight,
+-            sizeof(uint32_t)
+-        );
++        header.height =
++            htonl(height);
+ 
++        header.flags =
++            htonl(flags);
+ 
+-        // ----------------------------------------------------
+-        // flags
+-        // ----------------------------------------------------
+ 
+         std::memcpy(
+-            packet.data() + 20,
+-            &flags,
+-            sizeof(uint32_t)
++            packet.data(),
++            &header,
++            VIDEO_HEADER_SIZE
+         );
+ 
+ 
+         // ====================================================
+-        // PAYLOAD MPEG-TS
++        // PAYLOAD
+         // ====================================================
+ 
+         std::memcpy(
+             packet.data() +
+-                UDP_HEADER_SIZE,
++                VIDEO_HEADER_SIZE,
+ 
+             bytes +
+                 offset,
+ 
+-            payloadSize
++            fragSize
+         );
+ 
+ 
+@@ -566,8 +496,8 @@ bool UdpServer::SendVideoData(
+ 
+         int packetSize =
+             static_cast<int>(
+-                UDP_HEADER_SIZE +
+-                payloadSize
++                VIDEO_HEADER_SIZE +
++                fragSize
+             );
+ 
+ 
+@@ -622,10 +552,6 @@ bool UdpServer::SendVideoData(
+         }
+ 
+ 
+-        // ----------------------------------------------------
+-        // Garantir que o datagrama inteiro foi enviado
+-        // ----------------------------------------------------
+-
+         if (sent != packetSize)
+         {
+             std::cout
+@@ -642,12 +568,8 @@ bool UdpServer::SendVideoData(
+         }
+ 
+ 
+-        // ----------------------------------------------------
+-        // Avancar no fluxo MPEG-TS
+-        // ----------------------------------------------------
+-
+         offset +=
+-            payloadSize;
++            fragSize;
+     }
+ 
+ 
+@@ -695,6 +617,6 @@ void UdpServer::Stop()
+     }
+ 
+ 
+-    m_sequence =
++    m_frameId =
+         0;
+ }
+\ No newline at end of file
+diff --git a/src/udp_server.h b/src/udp_server.h
+index 8f8e99c..cdc540f 100644
+--- a/src/udp_server.h
++++ b/src/udp_server.h
+@@ -17,11 +17,14 @@ public:
+ 
+     bool WaitForClient();
+ 
+-    bool SendVideoData(
+-        const void* data,
+-        uint32_t dataSize,
++    // Fragmenta e envia um frame H264 (Annex B) completo,
++    // usando o protocolo orientado a frame (video_protocol.h).
++    bool SendVideoFrame(
++        const void* frameData,
++        uint32_t frameSize,
+         uint32_t width,
+-        uint32_t height
++        uint32_t height,
++        bool isKeyframe
+     );
+ 
+     void Stop();
+@@ -34,5 +37,5 @@ private:
+ 
+     bool m_clientKnown;
+ 
+-    uint32_t m_sequence;
++    uint32_t m_frameId;
+ };
+\ No newline at end of file
+diff --git a/src/video_protocol.h b/src/video_protocol.h
+new file mode 100644
+index 0000000..a5d2cf5
+--- /dev/null
++++ b/src/video_protocol.h
+@@ -0,0 +1,70 @@
++#pragma once
++
++#include <cstdint>
++
++// ============================================================
++// PROTOCOLO UDP DE VIDEO - ORIENTADO A FRAME
++// ============================================================
++//
++// Substitui o esquema antigo (bytes MPEG-TS fatiados sem
++// noção de frame). Agora cada pacote UDP carrega um FRAGMENTO
++// de um FRAME H.264 (Annex B) específico, identificado por
++// frameId.
++//
++// O receiver só entrega o frame para o decoder quando todos
++// os fragmentos daquele frameId chegaram. Se faltar algum
++// fragmento, o frame inteiro é descartado (nunca é escrito
++// parcialmente/corrompido no decoder).
++//
++// Header (36 bytes):
++//
++// magic       4 bytes  - identifica o protocolo ("STR2")
++// frameId     4 bytes  - identificador incremental do frame
++// fragIndex   4 bytes  - índice deste fragmento (0-based)
++// fragCount   4 bytes  - quantidade total de fragmentos do frame
++// frameSize   4 bytes  - tamanho total do frame (todos os fragmentos)
++// fragSize    4 bytes  - tamanho do payload deste fragmento
++// width       4 bytes  - largura do frame
++// height      4 bytes  - altura do frame
++// flags       4 bytes  - bit0 = keyframe (contém SPS/PPS/IDR)
++//
++// Total: 36 bytes
++// ============================================================
++
++#pragma pack(push, 1)
++
++struct VideoFrameFragmentHeader
++{
++    uint32_t magic;
++    uint32_t frameId;
++    uint32_t fragIndex;
++    uint32_t fragCount;
++    uint32_t frameSize;
++    uint32_t fragSize;
++    uint32_t width;
++    uint32_t height;
++    uint32_t flags;
++};
++
++#pragma pack(pop)
++
++
++constexpr uint32_t VIDEO_PROTOCOL_MAGIC =
++    0x53545232; // "STR2" - v2 do protocolo (framing por frame)
++
++
++constexpr uint32_t VIDEO_HEADER_SIZE =
++    sizeof(VideoFrameFragmentHeader);
++
++
++constexpr uint32_t VIDEO_UDP_PACKET_SIZE =
++    1400;
++
++
++constexpr uint32_t VIDEO_UDP_PAYLOAD_SIZE =
++    VIDEO_UDP_PACKET_SIZE -
++    VIDEO_HEADER_SIZE;
++
++
++constexpr uint32_t VIDEO_FLAG_KEYFRAME =
++    0x1;

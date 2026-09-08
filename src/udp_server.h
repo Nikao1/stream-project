@@ -17,11 +17,14 @@ public:
 
     bool WaitForClient();
 
-    bool SendVideoData(
-        const void* data,
-        uint32_t dataSize,
+    // Fragmenta e envia um frame H264 (Annex B) completo,
+    // usando o protocolo orientado a frame (video_protocol.h).
+    bool SendVideoFrame(
+        const void* frameData,
+        uint32_t frameSize,
         uint32_t width,
-        uint32_t height
+        uint32_t height,
+        bool isKeyframe
     );
 
     void Stop();
@@ -34,5 +37,5 @@ private:
 
     bool m_clientKnown;
 
-    uint32_t m_sequence;
+    uint32_t m_frameId;
 };

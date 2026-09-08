@@ -1,6 +1,3 @@
-#define UNICODE
-#define _UNICODE
-
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <windows.h>
@@ -14,6 +11,7 @@
 #include <cstring>
 
 #include "h264_decoder.h"
+#include "video_protocol.h"
 
 #pragma comment(lib, "ws2_32.lib")
 
@@ -30,50 +28,8 @@ constexpr uint16_t SERVER_UDP_PORT =
 
 
 // ============================================================
-// Protocolo UDP
-//
-// Header:
-//
-// magic       4 bytes
-// sequence    4 bytes
-// payloadSize 4 bytes
-// width       4 bytes
-// height      4 bytes
-// flags       4 bytes
-//
-// Total = 24 bytes
+// Protocolo UDP (orientado a frame) - ver video_protocol.h
 // ============================================================
-
-#pragma pack(push, 1)
-
-struct UdpVideoPacketHeader
-{
-    uint32_t magic;
-    uint32_t sequence;
-    uint32_t payloadSize;
-    uint32_t width;
-    uint32_t height;
-    uint32_t flags;
-};
-
-#pragma pack(pop)
-
-
-constexpr uint32_t UDP_MAGIC =
-    0x5354524D;
-
-
-constexpr uint32_t UDP_HEADER_SIZE =
-    sizeof(UdpVideoPacketHeader);
-
-
-constexpr uint32_t UDP_PACKET_SIZE =
-    1400;
-
-
-constexpr uint32_t UDP_PAYLOAD_SIZE =
-    UDP_PACKET_SIZE -
-    UDP_HEADER_SIZE;
 
 
 // ============================================================
@@ -176,18 +132,46 @@ ULONGLONG g_fpsStartTime =
 
 
 // ============================================================
-// Estatísticas UDP
+// Reassembly de frame
+//
+// Mantemos apenas o frame "atual" sendo montado. Se chegar um
+// fragmento de um frameId mais novo antes do atual completar,
+// o atual é descartado (favorece latência baixa: preferimos
+// pular um frame a acumular atraso).
 // ============================================================
 
-uint32_t g_lastSequence =
+struct PendingFrame
+{
+    uint32_t frameId = 0;
+    uint32_t frameSize = 0;
+    uint32_t fragCount = 0;
+    uint32_t width = 0;
+    uint32_t height = 0;
+    bool isKeyframe = false;
+    bool active = false;
+
+    std::vector<unsigned char> data;
+    std::vector<bool> fragReceived;
+    uint32_t fragReceivedCount = 0;
+};
+
+PendingFrame g_pendingFrame;
+
+
+// ============================================================
+// Estatísticas
+// ============================================================
+
+uint32_t g_lastCompletedFrameId =
     0;
 
-
-bool g_haveSequence =
+bool g_haveCompletedFrame =
     false;
 
+uint64_t g_framesCompleted =
+    0;
 
-uint64_t g_lostPackets =
+uint64_t g_framesDropped =
     0;
 
 
@@ -285,7 +269,7 @@ void ProcessDecodedFrame()
 
             swprintf_s(
                 title,
-                L"Stream Receiver UDP - H264 - FPS: %d - Frame: %llu - %ux%u - Lost: %llu",
+                L"Stream Receiver UDP - H264 - FPS: %d - Frame: %llu - %ux%u - Dropped: %llu",
                 g_fps.load(),
                 static_cast<unsigned long long>(
                     g_frameNumber
@@ -293,7 +277,7 @@ void ProcessDecodedFrame()
                 width,
                 height,
                 static_cast<unsigned long long>(
-                    g_lostPackets
+                    g_framesDropped
                 )
             );
 
@@ -318,6 +302,68 @@ void ProcessDecodedFrame()
 
 
 // ============================================================
+// StartNewPendingFrame
+// ============================================================
+//
+// Descarta o que estiver em montagem (se houver) e inicia a
+// montagem de um novo frame a partir do header recebido.
+// ============================================================
+
+void StartNewPendingFrame(
+    const VideoFrameFragmentHeader& header)
+{
+    if (g_pendingFrame.active &&
+        g_pendingFrame.fragReceivedCount <
+            g_pendingFrame.fragCount)
+    {
+        // Havia um frame incompleto em montagem: foi
+        // "atropelado" por um frame mais novo. Conta como
+        // descartado.
+
+        g_framesDropped++;
+    }
+
+
+    g_pendingFrame.frameId =
+        header.frameId;
+
+    g_pendingFrame.frameSize =
+        header.frameSize;
+
+    g_pendingFrame.fragCount =
+        header.fragCount;
+
+    g_pendingFrame.width =
+        header.width;
+
+    g_pendingFrame.height =
+        header.height;
+
+    g_pendingFrame.isKeyframe =
+        (header.flags &
+         VIDEO_FLAG_KEYFRAME) != 0;
+
+    g_pendingFrame.active =
+        true;
+
+    g_pendingFrame.fragReceivedCount =
+        0;
+
+
+    g_pendingFrame.data.assign(
+        header.frameSize,
+        0
+    );
+
+
+    g_pendingFrame.fragReceived.assign(
+        header.fragCount,
+        false
+    );
+}
+
+
+// ============================================================
 // Processar pacote UDP
 // ============================================================
 
@@ -332,7 +378,7 @@ void ProcessUdpPacket(
     if (
         packetSize <
         static_cast<int>(
-            UDP_HEADER_SIZE
+            VIDEO_HEADER_SIZE
         ))
     {
         return;
@@ -343,7 +389,7 @@ void ProcessUdpPacket(
     // Ler header
     // ========================================================
 
-    UdpVideoPacketHeader header{};
+    VideoFrameFragmentHeader header{};
 
 
     std::memcpy(
@@ -357,73 +403,68 @@ void ProcessUdpPacket(
     // Converter ordem de bytes
     // ========================================================
 
-    uint32_t magic =
+    header.magic =
         ntohl(header.magic);
 
+    header.frameId =
+        ntohl(header.frameId);
 
-    uint32_t sequence =
-        ntohl(header.sequence);
+    header.fragIndex =
+        ntohl(header.fragIndex);
 
+    header.fragCount =
+        ntohl(header.fragCount);
 
-    uint32_t payloadSize =
-        ntohl(header.payloadSize);
+    header.frameSize =
+        ntohl(header.frameSize);
 
+    header.fragSize =
+        ntohl(header.fragSize);
 
-    uint32_t width =
+    header.width =
         ntohl(header.width);
 
-
-    uint32_t height =
+    header.height =
         ntohl(header.height);
 
-
-    uint32_t flags =
+    header.flags =
         ntohl(header.flags);
 
 
-    (void)flags;
-
-
     // ========================================================
-    // Magic
+    // Validações básicas
     // ========================================================
 
-    if (
-        magic !=
-        UDP_MAGIC)
+    if (header.magic !=
+        VIDEO_PROTOCOL_MAGIC)
     {
         return;
     }
 
 
-    // ========================================================
-    // Payload
-    // ========================================================
-
-    if (
-        payloadSize == 0 ||
-        payloadSize >
-            UDP_PAYLOAD_SIZE)
+    if (header.fragCount == 0 ||
+        header.fragIndex >=
+            header.fragCount)
     {
         return;
     }
 
 
-    // ========================================================
-    // Resolução
-    // ========================================================
-
-    if (
-        width == 0 ||
-        height == 0)
+    if (header.frameSize == 0 ||
+        header.fragSize == 0 ||
+        header.fragSize >
+            VIDEO_UDP_PAYLOAD_SIZE)
     {
         return;
     }
 
 
-    // ========================================================
-    // Evitar resoluções absurdas
-    // ========================================================
+    if (header.width == 0 ||
+        header.height == 0)
+    {
+        return;
+    }
+
 
     constexpr uint32_t MAX_WIDTH =
         7680;
@@ -432,27 +473,21 @@ void ProcessUdpPacket(
         4320;
 
 
-    if (
-        width > MAX_WIDTH ||
-        height > MAX_HEIGHT)
+    if (header.width > MAX_WIDTH ||
+        header.height > MAX_HEIGHT)
     {
         return;
     }
 
 
-    // ========================================================
-    // Tamanho real do pacote
-    // ========================================================
-
     const int expectedSize =
         static_cast<int>(
-            UDP_HEADER_SIZE +
-            payloadSize
+            VIDEO_HEADER_SIZE +
+            header.fragSize
         );
 
 
-    if (
-        packetSize !=
+    if (packetSize !=
         expectedSize)
     {
         return;
@@ -464,75 +499,51 @@ void ProcessUdpPacket(
     // ========================================================
 
     if (
-        width != g_frameWidth ||
-        height != g_frameHeight)
+        header.width != g_frameWidth ||
+        header.height != g_frameHeight)
     {
         std::cout
             << "\n========================================\n"
             << "Nova resolucao recebida: "
-            << width
+            << header.width
             << "x"
-            << height
+            << header.height
             << "\n"
             << "Reiniciando decoder H264...\n"
             << "========================================\n";
 
 
-        // ====================================================
-        // Parar decoder anterior
-        // ====================================================
-
         g_decoder.Stop();
 
 
-        // ====================================================
-        // Iniciar decoder
-        //
-        // H264Decoder::Start() recebe somente:
-        //
-        // width
-        // height
-        //
-        // O FPS nao e necessario aqui.
-        // ====================================================
-
         if (!g_decoder.Start(
-                width,
-                height))
+                header.width,
+                header.height))
         {
             std::cout
                 << "Falha ao iniciar decoder H264.\n";
 
 
-            g_frameWidth =
-                0;
-
-
-            g_frameHeight =
-                0;
-
+            g_frameWidth = 0;
+            g_frameHeight = 0;
 
             return;
         }
 
 
-        // ====================================================
-        // Atualizar resolução
-        // ====================================================
-
         g_frameWidth =
-            width;
-
+            header.width;
 
         g_frameHeight =
-            height;
+            header.height;
 
 
-        // ====================================================
-        // Resetar sequência
-        // ====================================================
+        // Qualquer reassembly em andamento não serve mais.
 
-        g_haveSequence =
+        g_pendingFrame =
+            PendingFrame{};
+
+        g_haveCompletedFrame =
             false;
 
 
@@ -542,78 +553,128 @@ void ProcessUdpPacket(
 
 
     // ========================================================
-    // Detectar perda/desordem de pacote
+    // Descartar fragmentos de frames antigos (já concluídos
+    // ou já abandonados).
     // ========================================================
 
-    if (g_haveSequence)
+    if (g_haveCompletedFrame &&
+        header.frameId <=
+            g_lastCompletedFrameId)
     {
-        uint32_t expected =
-            g_lastSequence + 1;
-
-
-        if (sequence != expected)
-        {
-            uint32_t lost =
-                0;
-
-
-            if (sequence > expected)
-            {
-                lost =
-                    sequence -
-                    expected;
-            }
-
-
-            g_lostPackets +=
-                lost;
-
-
-            std::cout
-                << "\nUDP: perda/desordem detectada."
-                << "\nEsperado: "
-                << expected
-                << "\nRecebido: "
-                << sequence
-                << "\nPacotes perdidos estimados: "
-                << lost
-                << "\nTotal perdido: "
-                << g_lostPackets
-                << "\n";
-        }
+        return;
     }
 
 
-    g_lastSequence =
-        sequence;
+    // ========================================================
+    // Novo frame começando?
+    // ========================================================
+
+    if (g_pendingFrame.active &&
+        header.frameId <
+            g_pendingFrame.frameId)
+    {
+        // Fragmento atrasado de um frame mais antigo que já
+        // foi substituído pela montagem atual - ignora, não
+        // reinicia a montagem em andamento.
+
+        return;
+    }
 
 
-    g_haveSequence =
+    if (!g_pendingFrame.active ||
+        header.frameId !=
+            g_pendingFrame.frameId)
+    {
+        StartNewPendingFrame(
+            header
+        );
+    }
+
+
+    // ========================================================
+    // Fragmento duplicado?
+    // ========================================================
+
+    if (g_pendingFrame.fragReceived[
+            header.fragIndex])
+    {
+        return;
+    }
+
+
+    // ========================================================
+    // Copiar o payload deste fragmento na posição certa
+    // ========================================================
+
+    const uint32_t fragOffset =
+        header.fragIndex *
+        VIDEO_UDP_PAYLOAD_SIZE;
+
+
+    if (fragOffset +
+            header.fragSize >
+        g_pendingFrame.frameSize)
+    {
+        // Header inconsistente - ignora o pacote.
+        return;
+    }
+
+
+    std::memcpy(
+        g_pendingFrame.data.data() +
+            fragOffset,
+
+        buffer +
+            VIDEO_HEADER_SIZE,
+
+        header.fragSize
+    );
+
+
+    g_pendingFrame.fragReceived[
+        header.fragIndex] = true;
+
+    g_pendingFrame.fragReceivedCount++;
+
+
+    // ========================================================
+    // Frame ainda incompleto: aguarda mais fragmentos.
+    // ========================================================
+
+    if (g_pendingFrame.fragReceivedCount <
+        g_pendingFrame.fragCount)
+    {
+        return;
+    }
+
+
+    // ========================================================
+    // FRAME COMPLETO - entregar ao decoder.
+    //
+    // Só chegamos aqui quando 100% dos fragmentos foram
+    // recebidos, então o decoder nunca vê um frame parcial
+    // ou corrompido por perda de pacote.
+    // ========================================================
+
+    g_lastCompletedFrameId =
+        g_pendingFrame.frameId;
+
+    g_haveCompletedFrame =
         true;
 
+    g_framesCompleted++;
 
-    // ========================================================
-    // Payload MPEG-TS
-    // ========================================================
+    g_pendingFrame.active =
+        false;
 
-    const char* payload =
-        buffer +
-        UDP_HEADER_SIZE;
-
-
-    // ========================================================
-    // Enviar MPEG-TS diretamente para FFmpeg
-    //
-    // IMPORTANTE:
-    //
-    // Não reconstruímos frame H264 aqui.
-    //
-    // O MPEG-TS continua sendo um stream.
-    // ========================================================
 
     if (!g_decoder.WriteData(
-            payload,
-            payloadSize))
+            reinterpret_cast<const char*>(
+                g_pendingFrame.data.data()
+            ),
+            static_cast<uint32_t>(
+                g_pendingFrame.data.size()
+            )))
     {
         std::cout
             << "\nDecoder: falha ao escrever dados.\n";
@@ -700,7 +761,7 @@ void ReceiverThread()
 
 
     std::vector<char> buffer(
-        UDP_PACKET_SIZE
+        VIDEO_UDP_PACKET_SIZE
     );
 
 
@@ -949,6 +1010,19 @@ LRESULT CALLBACK WindowProc(
 {
     switch (uMsg)
     {
+    case WM_ERASEBKGND:
+    {
+        // ========================================================
+        // Evita o "flash" de limpeza de fundo do Windows antes do
+        // WM_PAINT rodar - o WM_PAINT já cuida de preencher tudo
+        // (com double buffer), então esse erase default é
+        // redundante e é uma das causas do flicker.
+        // ========================================================
+
+        return 1;
+    }
+
+
     case WM_PAINT:
     {
         PAINTSTRUCT ps{};
@@ -989,12 +1063,99 @@ LRESULT CALLBACK WindowProc(
             clientRect.top;
 
 
+        if (windowWidth <= 0 ||
+            windowHeight <= 0)
+        {
+            EndPaint(
+                hwnd,
+                &ps
+            );
+
+            return 0;
+        }
+
+
         // ====================================================
-        // Fundo preto
+        // DOUBLE BUFFER
+        //
+        // Tudo é desenhado num bitmap fora da tela primeiro.
+        // Só no final copiamos o resultado pronto pra tela
+        // (BitBlt), de uma vez só - sem "flash" de fundo preto
+        // visível entre frames.
+        // ====================================================
+
+        static HDC memDC =
+            nullptr;
+
+        static HBITMAP memBitmap =
+            nullptr;
+
+        static HBITMAP oldBitmap =
+            nullptr;
+
+        static int memWidth =
+            0;
+
+        static int memHeight =
+            0;
+
+
+        if (!memDC ||
+            memWidth != windowWidth ||
+            memHeight != windowHeight)
+        {
+            if (memDC)
+            {
+                SelectObject(
+                    memDC,
+                    oldBitmap
+                );
+
+                DeleteObject(
+                    memBitmap
+                );
+
+                DeleteDC(
+                    memDC
+                );
+            }
+
+
+            memDC =
+                CreateCompatibleDC(
+                    hdc
+                );
+
+            memBitmap =
+                CreateCompatibleBitmap(
+                    hdc,
+                    windowWidth,
+                    windowHeight
+                );
+
+            oldBitmap =
+                static_cast<HBITMAP>(
+                    SelectObject(
+                        memDC,
+                        memBitmap
+                    )
+                );
+
+
+            memWidth =
+                windowWidth;
+
+            memHeight =
+                windowHeight;
+        }
+
+
+        // ====================================================
+        // Fundo preto (no buffer fora da tela)
         // ====================================================
 
         FillRect(
-            hdc,
+            memDC,
             &clientRect,
             static_cast<HBRUSH>(
                 GetStockObject(
@@ -1019,9 +1180,7 @@ LRESULT CALLBACK WindowProc(
         if (
             !g_framePixels.empty() &&
             width > 0 &&
-            height > 0 &&
-            windowWidth > 0 &&
-            windowHeight > 0)
+            height > 0)
         {
             BITMAPINFO bitmapInfo{};
 
@@ -1143,17 +1302,17 @@ LRESULT CALLBACK WindowProc(
             // =================================================
 
             SetStretchBltMode(
-                hdc,
-                HALFTONE
+                memDC,
+                COLORONCOLOR
             );
 
 
             // =================================================
-            // Renderizar BGRA
+            // Renderizar BGRA (no buffer fora da tela)
             // =================================================
 
             StretchDIBits(
-                hdc,
+                memDC,
 
                 drawX,
                 drawY,
@@ -1181,6 +1340,29 @@ LRESULT CALLBACK WindowProc(
                 SRCCOPY
             );
         }
+
+
+        // ====================================================
+        // Copiar o buffer pronto pra tela - uma única operação,
+        // sem estados intermediários visíveis.
+        // ====================================================
+
+        BitBlt(
+            hdc,
+
+            0,
+            0,
+
+            windowWidth,
+            windowHeight,
+
+            memDC,
+
+            0,
+            0,
+
+            SRCCOPY
+        );
 
 
         EndPaint(

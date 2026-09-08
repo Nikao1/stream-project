@@ -1,5 +1,9 @@
 #include "udp_server.h"
 #include "h264_encoder.h"
+#include "udp_audio_server.h"
+#include "audio_capture.h"
+#include "audio_encoder.h"
+#include "audio_protocol.h"
 
 #include <winsock2.h>
 #include <ws2tcpip.h>
@@ -60,6 +64,12 @@ UdpServer g_udpServer;
 
 H264Encoder g_h264Encoder;
 
+UdpAudioServer g_udpAudioServer;
+
+AudioCapture g_audioCapture;
+
+AudioEncoder g_audioEncoder;
+
 
 // ============================================================
 // GRAPHICS CAPTURE
@@ -97,6 +107,13 @@ std::atomic<bool> g_udpServerStarted{ false };
 std::atomic<bool> g_udpReceiverConnected{ false };
 
 std::thread g_udpThread;
+
+std::atomic<bool> g_audioServerStarted{ false };
+std::atomic<bool> g_audioReceiverConnected{ false };
+std::atomic<bool> g_audioSendRunning{ false };
+
+std::thread g_audioServerThread;
+std::thread g_audioSendThread;
 
 
 // ============================================================
@@ -210,6 +227,10 @@ void CreateDebugConsole()
 void EncoderThread();
 
 void UdpServerThread();
+
+void UdpAudioServerThread();
+
+void AudioSendThread();
 
 winrt::fire_and_forget StartCaptureAsync();
 
@@ -416,43 +437,53 @@ void EncoderThread()
 
 
         // --------------------------------------------------------
-        // Recuperar dados MPEG-TS produzidos pelo FFmpeg
+        // Recuperar frames H264 completos produzidos pelo FFmpeg.
+        //
+        // Pode haver mais de um frame pronto na fila (ex: se o
+        // laço de captura demorou um pouco), então drenamos tudo.
         // --------------------------------------------------------
 
-        std::vector<unsigned char> encodedData;
+        EncodedFrame encodedFrame;
 
 
-        if (g_h264Encoder.GetEncodedData(
-                encodedData))
+        while (g_h264Encoder.GetFrame(
+                encodedFrame))
         {
-            if (!encodedData.empty())
+            if (encodedFrame.data.empty())
             {
-                // ------------------------------------------------
-                // Enviar MPEG-TS através do UDP
-                // ------------------------------------------------
-
-                if (!g_udpServer.SendVideoData(
-                        encodedData.data(),
-                        static_cast<uint32_t>(
-                            encodedData.size()),
-                        frame.width,
-                        frame.height))
-                {
-                    std::cout
-                        << "UDP: falha ao enviar "
-                        << "video H264.\n";
+                continue;
+            }
 
 
-                    g_udpReceiverConnected =
-                        false;
+            // ------------------------------------------------
+            // Enviar o frame H264 fragmentado via UDP
+            // ------------------------------------------------
+
+            if (!g_udpServer.SendVideoFrame(
+                    encodedFrame.data.data(),
+                    static_cast<uint32_t>(
+                        encodedFrame.data.size()),
+                    frame.width,
+                    frame.height,
+                    encodedFrame.isKeyframe))
+            {
+                std::cout
+                    << "UDP: falha ao enviar "
+                    << "video H264.\n";
 
 
-                    g_h264Encoder.Stop();
+                g_udpReceiverConnected =
+                    false;
 
 
-                    g_encoderWidth = 0;
-                    g_encoderHeight = 0;
-                }
+                g_h264Encoder.Stop();
+
+
+                g_encoderWidth = 0;
+                g_encoderHeight = 0;
+
+
+                break;
             }
         }
     }
@@ -1124,6 +1155,187 @@ void UdpServerThread()
 
 
 // ============================================================
+// UDP AUDIO SERVER THREAD
+// ============================================================
+//
+// Espelha UdpServerThread(), mas em socket/porta próprios
+// (AUDIO_SERVER_UDP_PORT) - handshake HELLO independente do
+// vídeo.
+// ============================================================
+
+void UdpAudioServerThread()
+{
+    std::cout
+        << "Iniciando servidor UDP de audio...\n";
+
+
+    if (!g_udpAudioServer.Start(
+            AUDIO_SERVER_UDP_PORT))
+    {
+        std::cout
+            << "Falha ao iniciar servidor UDP de audio.\n";
+
+
+        g_audioServerStarted =
+            false;
+
+
+        return;
+    }
+
+
+    g_audioServerStarted =
+        true;
+
+
+    std::cout
+        << "Aguardando HELLO do receiver (audio)...\n";
+
+
+    while (g_audioServerStarted)
+    {
+        if (!g_audioReceiverConnected)
+        {
+            if (g_udpAudioServer.WaitForClient())
+            {
+                if (!g_audioServerStarted)
+                    break;
+
+
+                g_audioReceiverConnected =
+                    true;
+
+
+                std::cout
+                    << "\n========================================\n"
+                    << "RECEIVER DE AUDIO CONECTADO!\n"
+                    << "Opus -> UDP\n"
+                    << "========================================\n";
+            }
+        }
+        else
+        {
+            std::this_thread::sleep_for(
+                std::chrono::milliseconds(100)
+            );
+        }
+    }
+
+
+    std::cout
+        << "Thread UDP de audio encerrada.\n";
+}
+
+
+// ============================================================
+// AUDIO SEND THREAD
+// ============================================================
+//
+// Captura (WASAPI loopback) -> encode (Opus) -> envia (UDP,
+// socket próprio). Roda em thread separada da captura/envio
+// de vídeo de propósito, pra não competir por CPU no mesmo
+// laço e não ficar refém da cadência do vídeo.
+// ============================================================
+
+void AudioSendThread()
+{
+    if (!g_audioCapture.Start())
+    {
+        std::cout
+            << "AudioSendThread: falha ao iniciar "
+            << "captura de audio.\n";
+
+        return;
+    }
+
+
+    if (!g_audioEncoder.Start())
+    {
+        std::cout
+            << "AudioSendThread: falha ao iniciar "
+            << "encoder Opus.\n";
+
+        g_audioCapture.Stop();
+
+        return;
+    }
+
+
+    ULONGLONG startTime =
+        GetTickCount64();
+
+
+    while (g_audioSendRunning)
+    {
+        std::vector<float> pcmFrame;
+
+
+        bool gotFrame =
+            g_audioCapture.GetFrame(
+                pcmFrame
+            );
+
+
+        if (!gotFrame)
+        {
+            std::this_thread::sleep_for(
+                std::chrono::milliseconds(2)
+            );
+
+            continue;
+        }
+
+
+        if (!g_audioReceiverConnected)
+        {
+            // Sem receiver conectado ainda - descarta o
+            // audio capturado pra não acumular atraso.
+            continue;
+        }
+
+
+        std::vector<unsigned char> opusPacket;
+
+
+        if (!g_audioEncoder.Encode(
+                pcmFrame.data(),
+                opusPacket))
+        {
+            continue;
+        }
+
+
+        uint32_t timestampMs =
+            static_cast<uint32_t>(
+                GetTickCount64() -
+                startTime
+            );
+
+
+        if (!g_udpAudioServer.SendAudioPacket(
+                opusPacket.data(),
+                static_cast<uint32_t>(
+                    opusPacket.size()
+                ),
+                timestampMs))
+        {
+            g_audioReceiverConnected =
+                false;
+        }
+    }
+
+
+    g_audioEncoder.Stop();
+
+    g_audioCapture.Stop();
+
+
+    std::cout
+        << "Thread de envio de audio encerrada.\n";
+}
+
+
+// ============================================================
 // FRAME ARRIVED
 // ============================================================
 
@@ -1568,6 +1780,14 @@ LRESULT CALLBACK WindowProc(
     // PAINT
     // ========================================================
 
+    case WM_ERASEBKGND:
+    {
+        // Evita o "flash" de fundo antes do WM_PAINT (que já
+        // cuida de tudo com double buffer).
+        return 1;
+    }
+
+
     case WM_PAINT:
     {
         PAINTSTRUCT ps{};
@@ -1587,6 +1807,103 @@ LRESULT CALLBACK WindowProc(
             hwnd,
             &rect
         );
+
+
+        int windowWidth =
+            rect.right -
+            rect.left;
+
+
+        int windowHeight =
+            rect.bottom -
+            rect.top;
+
+
+        if (windowWidth <= 0 ||
+            windowHeight <= 0)
+        {
+            EndPaint(
+                hwnd,
+                &ps
+            );
+
+            return 0;
+        }
+
+
+        // ====================================================
+        // DOUBLE BUFFER
+        //
+        // Desenha tudo num bitmap fora da tela primeiro, e só
+        // no final copia o resultado pronto pra tela de uma
+        // vez (BitBlt) - elimina o flicker do fundo preto
+        // aparecendo antes do frame.
+        // ====================================================
+
+        static HDC memDC =
+            nullptr;
+
+        static HBITMAP memBitmap =
+            nullptr;
+
+        static HBITMAP oldBitmap =
+            nullptr;
+
+        static int memWidth =
+            0;
+
+        static int memHeight =
+            0;
+
+
+        if (!memDC ||
+            memWidth != windowWidth ||
+            memHeight != windowHeight)
+        {
+            if (memDC)
+            {
+                SelectObject(
+                    memDC,
+                    oldBitmap
+                );
+
+                DeleteObject(
+                    memBitmap
+                );
+
+                DeleteDC(
+                    memDC
+                );
+            }
+
+
+            memDC =
+                CreateCompatibleDC(
+                    hdc
+                );
+
+            memBitmap =
+                CreateCompatibleBitmap(
+                    hdc,
+                    windowWidth,
+                    windowHeight
+                );
+
+            oldBitmap =
+                static_cast<HBITMAP>(
+                    SelectObject(
+                        memDC,
+                        memBitmap
+                    )
+                );
+
+
+            memWidth =
+                windowWidth;
+
+            memHeight =
+                windowHeight;
+        }
 
 
         // ----------------------------------------------------
@@ -1632,7 +1949,7 @@ LRESULT CALLBACK WindowProc(
             height == 0)
         {
             FillRect(
-                hdc,
+                memDC,
                 &rect,
                 static_cast<HBRUSH>(
                     GetStockObject(
@@ -1675,105 +1992,119 @@ LRESULT CALLBACK WindowProc(
                 BI_RGB;
 
 
+            double scaleX =
+                static_cast<double>(
+                    windowWidth
+                ) /
+                static_cast<double>(
+                    width
+                );
+
+
+            double scaleY =
+                static_cast<double>(
+                    windowHeight
+                ) /
+                static_cast<double>(
+                    height
+                );
+
+
+            double scale =
+                (scaleX < scaleY)
+                    ? scaleX
+                    : scaleY;
+
+
+            int drawWidth =
+                static_cast<int>(
+                    width * scale
+                );
+
+
+            int drawHeight =
+                static_cast<int>(
+                    height * scale
+                );
+
+
+            int drawX =
+                (windowWidth -
+                 drawWidth) / 2;
+
+
+            int drawY =
+                (windowHeight -
+                 drawHeight) / 2;
+
+
             // ------------------------------------------------
-            // Dimensões da janela
+            // Fundo preto (no buffer fora da tela)
             // ------------------------------------------------
 
-            int windowWidth =
-                rect.right -
-                rect.left;
-
-
-            int windowHeight =
-                rect.bottom -
-                rect.top;
-
-
-            if (windowWidth > 0 &&
-                windowHeight > 0)
-            {
-                double scaleX =
-                    static_cast<double>(
-                        windowWidth
-                    ) /
-                    static_cast<double>(
-                        width
-                    );
-
-
-                double scaleY =
-                    static_cast<double>(
-                        windowHeight
-                    ) /
-                    static_cast<double>(
-                        height
-                    );
-
-
-                double scale =
-                    (scaleX < scaleY)
-                        ? scaleX
-                        : scaleY;
-
-
-                int drawWidth =
-                    static_cast<int>(
-                        width * scale
-                    );
-
-
-                int drawHeight =
-                    static_cast<int>(
-                        height * scale
-                    );
-
-
-                int drawX =
-                    (windowWidth -
-                     drawWidth) / 2;
-
-
-                int drawY =
-                    (windowHeight -
-                     drawHeight) / 2;
-
-
-                // ------------------------------------------------
-                // Fundo preto
-                // ------------------------------------------------
-
-                FillRect(
-                    hdc,
-                    &rect,
-                    static_cast<HBRUSH>(
-                        GetStockObject(
-                            BLACK_BRUSH
-                        )
+            FillRect(
+                memDC,
+                &rect,
+                static_cast<HBRUSH>(
+                    GetStockObject(
+                        BLACK_BRUSH
                     )
-                );
+                )
+            );
 
 
-                // ------------------------------------------------
-                // Desenhar frame
-                // ------------------------------------------------
+            // ------------------------------------------------
+            // Qualidade/velocidade da escala
+            // ------------------------------------------------
 
-                StretchDIBits(
-                    hdc,
-                    drawX,
-                    drawY,
-                    drawWidth,
-                    drawHeight,
-                    0,
-                    0,
-                    static_cast<int>(width),
-                    static_cast<int>(height),
-                    pixels.data(),
-                    &bmi,
-                    DIB_RGB_COLORS,
-                    SRCCOPY
-                );
-            }
+            SetStretchBltMode(
+                memDC,
+                COLORONCOLOR
+            );
+
+
+            // ------------------------------------------------
+            // Desenhar frame (no buffer fora da tela)
+            // ------------------------------------------------
+
+            StretchDIBits(
+                memDC,
+                drawX,
+                drawY,
+                drawWidth,
+                drawHeight,
+                0,
+                0,
+                static_cast<int>(width),
+                static_cast<int>(height),
+                pixels.data(),
+                &bmi,
+                DIB_RGB_COLORS,
+                SRCCOPY
+            );
         }
+
+
+        // ====================================================
+        // Copiar o buffer pronto pra tela - uma única operação.
+        // ====================================================
+
+        BitBlt(
+            hdc,
+
+            0,
+            0,
+
+            windowWidth,
+            windowHeight,
+
+            memDC,
+
+            0,
+            0,
+
+            SRCCOPY
+        );
 
 
         EndPaint(
@@ -1897,6 +2228,37 @@ LRESULT CALLBACK WindowProc(
         if (g_udpThread.joinable())
         {
             g_udpThread.join();
+        }
+
+
+        // ----------------------------------------------------
+        // Parar audio
+        // ----------------------------------------------------
+
+        g_audioReceiverConnected =
+            false;
+
+
+        g_audioServerStarted =
+            false;
+
+
+        g_audioSendRunning =
+            false;
+
+
+        g_udpAudioServer.Stop();
+
+
+        if (g_audioServerThread.joinable())
+        {
+            g_audioServerThread.join();
+        }
+
+
+        if (g_audioSendThread.joinable())
+        {
+            g_audioSendThread.join();
         }
 
 
@@ -2109,6 +2471,26 @@ int WINAPI wWinMain(
 
 
     // =========================================================
+    // AUDIO SERVER + SEND THREADS
+    // =========================================================
+
+    g_audioServerThread =
+        std::thread(
+            UdpAudioServerThread
+        );
+
+
+    g_audioSendRunning =
+        true;
+
+
+    g_audioSendThread =
+        std::thread(
+            AudioSendThread
+        );
+
+
+    // =========================================================
     // H264 ENCODER THREAD
     // =========================================================
 
@@ -2194,6 +2576,33 @@ int WINAPI wWinMain(
     if (g_udpThread.joinable())
     {
         g_udpThread.join();
+    }
+
+
+    g_audioServerStarted =
+        false;
+
+
+    g_audioReceiverConnected =
+        false;
+
+
+    g_audioSendRunning =
+        false;
+
+
+    g_udpAudioServer.Stop();
+
+
+    if (g_audioServerThread.joinable())
+    {
+        g_audioServerThread.join();
+    }
+
+
+    if (g_audioSendThread.joinable())
+    {
+        g_audioSendThread.join();
     }
 
 

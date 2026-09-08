@@ -234,10 +234,27 @@ bool H264Decoder::StartProcess()
         "-flags low_delay "
 
         // ----------------------------------------------------
-        // Entrada MPEG-TS
+        // Decodificacao por HARDWARE (D3D11VA)
+        //
+        // Sem isso, o FFmpeg decodifica H264 por software
+        // (CPU), o que costuma travar por volta de 30-45 FPS
+        // em 1080p dependendo do processador. D3D11VA usa o
+        // decoder de video dedicado da GPU (funciona com
+        // NVIDIA/AMD/Intel no Windows).
         // ----------------------------------------------------
 
-        "-f mpegts "
+        "-hwaccel d3d11va "
+
+        // ----------------------------------------------------
+        // Entrada H264 Annex B puro (sem container)
+        //
+        // O receiver só escreve neste pipe frames completos
+        // e íntegros (já reassemblados a partir dos fragmentos
+        // UDP), então o demuxer nunca vê dado corrompido por
+        // perda de pacote.
+        // ----------------------------------------------------
+
+        "-f h264 "
         "-i pipe:0 "
 
         // ----------------------------------------------------
