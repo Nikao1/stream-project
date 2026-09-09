@@ -4,9 +4,345 @@
 #include <mmdeviceapi.h>
 #include <audioclient.h>
 
+#define INITGUID
+#include <functiondiscoverykeys_devpkey.h>
+
 #include <iostream>
 
 #pragma comment(lib, "ole32.lib")
+
+
+// ============================================================
+// Helper: wstring -> string (pra imprimir no console, que já
+// usa std::cout em todo o resto do projeto - evitamos misturar
+// std::cin/std::wcin no mesmo stdin).
+// ============================================================
+
+namespace
+{
+    std::string NarrowString(
+        const std::wstring& wide)
+    {
+        if (wide.empty())
+        {
+            return std::string();
+        }
+
+
+        int size =
+            WideCharToMultiByte(
+                CP_UTF8,
+                0,
+                wide.c_str(),
+                -1,
+                nullptr,
+                0,
+                nullptr,
+                nullptr
+            );
+
+
+        std::string result(
+            size > 0
+            ? size - 1
+            : 0,
+            '\0'
+        );
+
+
+        if (size > 0)
+        {
+            WideCharToMultiByte(
+                CP_UTF8,
+                0,
+                wide.c_str(),
+                -1,
+                result.data(),
+                size,
+                nullptr,
+                nullptr
+            );
+        }
+
+
+        return result;
+    }
+}
+
+
+// ============================================================
+// SelectDeviceInteractively
+// ============================================================
+//
+// Lista os dispositivos de SAÍDA ativos e deixa escolher qual
+// vai ser a fonte do loopback. Útil pra testar client e
+// receiver na mesma máquina sem loop de feedback: aponte a
+// captura pra um Virtual Audio Cable (ex: VB-CABLE) em vez do
+// dispositivo real de saída que o receiver usa pra tocar.
+// ============================================================
+
+bool AudioCapture::SelectDeviceInteractively()
+{
+    HRESULT hr =
+        CoInitializeEx(
+            nullptr,
+            COINIT_MULTITHREADED
+        );
+
+
+    bool comInitializedHere =
+        SUCCEEDED(hr);
+
+
+    if (FAILED(hr) &&
+        hr != RPC_E_CHANGED_MODE)
+    {
+        std::cout
+            << "AudioCapture: CoInitializeEx falhou "
+            << "(selecao de dispositivo).\n";
+
+        return false;
+    }
+
+
+    IMMDeviceEnumerator* enumerator =
+        nullptr;
+
+
+    hr =
+        CoCreateInstance(
+            __uuidof(MMDeviceEnumerator),
+            nullptr,
+            CLSCTX_ALL,
+            __uuidof(IMMDeviceEnumerator),
+            reinterpret_cast<void**>(
+                &enumerator
+            )
+        );
+
+
+    if (FAILED(hr))
+    {
+        std::cout
+            << "AudioCapture: falha ao enumerar "
+            << "dispositivos. Usando padrao.\n";
+
+        if (comInitializedHere)
+            CoUninitialize();
+
+        return false;
+    }
+
+
+    IMMDeviceCollection* collection =
+        nullptr;
+
+
+    hr =
+        enumerator->EnumAudioEndpoints(
+            eRender,
+            DEVICE_STATE_ACTIVE,
+            &collection
+        );
+
+
+    if (FAILED(hr))
+    {
+        std::cout
+            << "AudioCapture: falha ao listar "
+            << "dispositivos. Usando padrao.\n";
+
+        enumerator->Release();
+
+        if (comInitializedHere)
+            CoUninitialize();
+
+        return false;
+    }
+
+
+    UINT count =
+        0;
+
+
+    collection->GetCount(
+        &count
+    );
+
+
+    std::cout
+        << "\n=== Dispositivos de SAIDA de audio "
+        << "disponiveis (fonte do loopback) ===\n"
+        << "0: (padrao do Windows - CUIDADO: causa loop "
+        << "se o receiver tocar no mesmo dispositivo "
+        << "nesta mesma maquina)\n";
+
+
+    std::vector<std::wstring> deviceIds;
+
+
+    for (UINT i = 0;
+         i < count;
+         ++i)
+    {
+        IMMDevice* dev =
+            nullptr;
+
+
+        if (FAILED(
+                collection->Item(
+                    i,
+                    &dev
+                )))
+        {
+            continue;
+        }
+
+
+        LPWSTR id =
+            nullptr;
+
+
+        dev->GetId(
+            &id
+        );
+
+
+        deviceIds.push_back(
+            id
+            ? std::wstring(id)
+            : std::wstring()
+        );
+
+
+        if (id)
+        {
+            CoTaskMemFree(id);
+        }
+
+
+        std::string name =
+            "(sem nome)";
+
+
+        IPropertyStore* store =
+            nullptr;
+
+
+        if (SUCCEEDED(
+                dev->OpenPropertyStore(
+                    STGM_READ,
+                    &store
+                )))
+        {
+            PROPVARIANT varName{};
+
+
+            if (SUCCEEDED(
+                    store->GetValue(
+                        PKEY_Device_FriendlyName,
+                        &varName
+                    )) &&
+                varName.pwszVal)
+            {
+                name =
+                    NarrowString(
+                        varName.pwszVal
+                    );
+            }
+
+
+            PropVariantClear(
+                &varName
+            );
+
+
+            store->Release();
+        }
+
+
+        std::cout
+            << (i + 1)
+            << ": "
+            << name
+            << "\n";
+
+
+        dev->Release();
+    }
+
+
+    std::cout
+        << "\nEscolha o dispositivo pra capturar (numero) "
+        << "e pressione Enter [0]: ";
+
+
+    std::string line;
+
+    std::getline(
+        std::cin,
+        line
+    );
+
+
+    int choice =
+        0;
+
+
+    try
+    {
+        if (!line.empty())
+        {
+            choice =
+                std::stoi(line);
+        }
+    }
+    catch (...)
+    {
+        choice =
+            0;
+    }
+
+
+    if (choice >= 1 &&
+        choice <=
+            static_cast<int>(
+                deviceIds.size()
+            ))
+    {
+        m_selectedDeviceId =
+            deviceIds[choice - 1];
+
+
+        std::cout
+            << "AudioCapture: usando dispositivo "
+            << choice
+            << " como fonte do loopback.\n\n";
+    }
+    else
+    {
+        m_selectedDeviceId.clear();
+
+
+        std::cout
+            << "AudioCapture: usando dispositivo "
+            << "padrao do Windows.\n\n";
+    }
+
+
+    collection->Release();
+
+    enumerator->Release();
+
+
+    if (comInitializedHere)
+    {
+        CoUninitialize();
+    }
+
+
+    return true;
+}
 
 
 // ============================================================
@@ -169,22 +505,47 @@ void AudioCapture::CaptureThread()
 
 
     // ============================================================
-    // Dispositivo de saída padrão (o que vai em loopback)
+    // Dispositivo: o selecionado manualmente (se houver), ou
+    // o de saida padrao do Windows (o que vai em loopback)
     // ============================================================
 
-    hr =
-        m_deviceEnumerator->GetDefaultAudioEndpoint(
-            eRender,
-            eConsole,
-            &m_device
-        );
+    if (!m_selectedDeviceId.empty())
+    {
+        hr =
+            m_deviceEnumerator->GetDevice(
+                m_selectedDeviceId.c_str(),
+                &m_device
+            );
+
+
+        if (FAILED(hr))
+        {
+            std::cout
+                << "AudioCapture: falha ao abrir "
+                << "dispositivo selecionado - caindo "
+                << "para o padrao. HRESULT: "
+                << hr
+                << "\n";
+        }
+    }
+
+
+    if (!m_device)
+    {
+        hr =
+            m_deviceEnumerator->GetDefaultAudioEndpoint(
+                eRender,
+                eConsole,
+                &m_device
+            );
+    }
 
 
     if (FAILED(hr))
     {
         std::cout
             << "AudioCapture: falha ao obter dispositivo "
-            << "de audio padrao. HRESULT: "
+            << "de audio. HRESULT: "
             << hr
             << "\n";
 

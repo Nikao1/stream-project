@@ -16,7 +16,7 @@
 // fragmento, o frame inteiro é descartado (nunca é escrito
 // parcialmente/corrompido no decoder).
 //
-// Header (36 bytes):
+// Header (40 bytes):
 //
 // magic       4 bytes  - identifica o protocolo ("STR2")
 // frameId     4 bytes  - identificador incremental do frame
@@ -27,8 +27,12 @@
 // width       4 bytes  - largura do frame
 // height      4 bytes  - altura do frame
 // flags       4 bytes  - bit0 = keyframe (contém SPS/PPS/IDR)
+// timestampMs 4 bytes  - momento da captura, relativo ao início
+//                        do stream (mesmo relógio usado pelo
+//                        áudio - ver audio_protocol.h) - usado
+//                        pra sincronização A/V no receiver
 //
-// Total: 36 bytes
+// Total: 40 bytes
 // ============================================================
 
 #pragma pack(push, 1)
@@ -44,6 +48,7 @@ struct VideoFrameFragmentHeader
     uint32_t width;
     uint32_t height;
     uint32_t flags;
+    uint32_t timestampMs;
 };
 
 #pragma pack(pop)

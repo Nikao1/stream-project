@@ -5,6 +5,7 @@
 #include <audioclient.h>
 
 #include <cstdint>
+#include <string>
 #include <vector>
 #include <deque>
 #include <thread>
@@ -19,18 +20,21 @@
 // de saída padrão, tipo o que o OBS usa pra "audio do
 // sistema").
 //
-// Entrega blocos fixos de PCM float32 estéreo, prontos pra
-// entrar no encoder Opus (GetFrame() devolve exatamente
-// AUDIO_FRAME_SAMPLES amostras por canal a cada chamada bem
-// sucedida).
+// Por padrão usa o dispositivo de saída PADRÃO do Windows.
+// Para testes na mesma máquina (client + receiver no mesmo
+// PC), isso causa um loop de feedback, já que o receiver
+// também toca no dispositivo padrão. Use
+// SelectDeviceInteractively() antes de Start() pra escolher
+// outro dispositivo manualmente (ex: um Virtual Audio Cable),
+// separando a fonte capturada da saída real dos alto-falantes.
 //
-// LIMITAÇÃO CONHECIDA: assume que o dispositivo padrão expõe
-// IEEE float. Se a taxa de amostragem nativa do dispositivo
-// não for 48kHz, o áudio ainda é enviado nessa taxa (sem
-// resample) - na prática a grande maioria dos dispositivos
-// Windows modernos já usa 48kHz nativamente, mas isso é uma
-// simplificação a revisar se algum dispositivo específico
-// soar errado (mais rápido/lento).
+// LIMITAÇÃO CONHECIDA: assume que o dispositivo escolhido
+// expõe IEEE float. Se a taxa de amostragem nativa do
+// dispositivo não for 48kHz, o áudio ainda é enviado nessa
+// taxa (sem resample) - na prática a grande maioria dos
+// dispositivos Windows modernos já usa 48kHz nativamente, mas
+// isso é uma simplificação a revisar se algum dispositivo
+// específico soar errado (mais rápido/lento).
 // ============================================================
 
 class AudioCapture
@@ -38,6 +42,12 @@ class AudioCapture
 public:
     AudioCapture();
     ~AudioCapture();
+
+    // Lista os dispositivos de SAÍDA ativos no console e deixa
+    // o usuário escolher qual vai ser a fonte do loopback
+    // (Enter = usar o padrão do Windows, comportamento antigo).
+    // Chamar antes de Start().
+    bool SelectDeviceInteractively();
 
     bool Start();
 
@@ -61,6 +71,9 @@ private:
     IAudioCaptureClient* m_captureClient;
 
     WAVEFORMATEX* m_mixFormat;
+
+    // Vazio = usar o dispositivo de saída padrão do Windows.
+    std::wstring m_selectedDeviceId;
 
     std::thread m_thread;
 

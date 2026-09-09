@@ -24,7 +24,8 @@ public:
         uint32_t frameSize,
         uint32_t width,
         uint32_t height,
-        bool isKeyframe
+        bool isKeyframe,
+        uint32_t timestampMs
     );
 
     void Stop();

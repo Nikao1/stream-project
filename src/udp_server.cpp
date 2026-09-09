@@ -357,7 +357,8 @@ bool UdpServer::SendVideoFrame(
     uint32_t frameSize,
     uint32_t width,
     uint32_t height,
-    bool isKeyframe)
+    bool isKeyframe,
+    uint32_t timestampMs)
 {
     if (
         m_socket ==
@@ -466,6 +467,9 @@ bool UdpServer::SendVideoFrame(
 
         header.flags =
             htonl(flags);
+
+        header.timestampMs =
+            htonl(timestampMs);
 
 
         std::memcpy(

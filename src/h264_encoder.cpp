@@ -269,8 +269,33 @@ bool H264Encoder::StartProcess()
 
         "-an "
         "-c:v h264_nvenc "
-        "-preset p1 "
+
+        // ----------------------------------------------------
+        // Preset/qualidade
+        //
+        // p1 e o mais rapido/pior qualidade do NVENC. Trocamos
+        // pra p4 (meio-termo) - o NVENC e um chip de encode
+        // dedicado, entao subir o preset custa muito pouca GPU
+        // (poucos ms a mais por frame), mas melhora bastante a
+        // qualidade em movimento. "tune ll" mantem baixa
+        // latencia independente do preset.
+        // ----------------------------------------------------
+
+        "-preset p4 "
         "-tune ll "
+
+        // ----------------------------------------------------
+        // Adaptive Quantization
+        //
+        // Aloca mais bits pras partes complexas/em movimento
+        // da imagem em vez de gastar igual em tudo - melhora
+        // bastante a qualidade percebida em movimento pro
+        // mesmo bitrate. Custo de GPU desprezivel.
+        // ----------------------------------------------------
+
+        "-spatial-aq 1 "
+        "-temporal-aq 1 "
+        "-aq-strength 8 "
 
         // ----------------------------------------------------
         // CBR

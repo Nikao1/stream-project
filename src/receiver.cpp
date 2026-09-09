@@ -154,6 +154,7 @@ struct PendingFrame
     uint32_t fragCount = 0;
     uint32_t width = 0;
     uint32_t height = 0;
+    uint32_t timestampMs = 0;
     bool isKeyframe = false;
     bool active = false;
 
@@ -163,6 +164,75 @@ struct PendingFrame
 };
 
 PendingFrame g_pendingFrame;
+
+
+// ============================================================
+// Sincronização A/V
+// ============================================================
+//
+// video e audio chegam com timestamps relativos à MESMA
+// origem de tempo no client (ver g_streamClockStart em
+// main.cpp). Aqui calibramos, no primeiro pacote (de
+// qualquer um dos dois streams) que chegar, a tradução desse
+// tempo do sender pro relógio local do receiver:
+//
+//   local_target_time = g_syncBaseline + sender_timestamp_ms
+//
+// O vídeo usa isso pra segurar a exibição de um frame até a
+// hora certa (em vez de mostrar assim que decodifica). O
+// áudio não precisa desse tratamento - o WASAPI já toca no
+// ritmo real (hardware clock), então só participamos da
+// calibração do relógio comum por ele também.
+// ============================================================
+
+std::mutex g_syncMutex;
+
+bool g_haveSyncBaseline =
+    false;
+
+ULONGLONG g_syncBaseline =
+    0;
+
+
+ULONGLONG EstablishSyncBaseline(
+    uint32_t senderTimestampMs)
+{
+    std::lock_guard<std::mutex> lock(
+        g_syncMutex
+    );
+
+
+    if (!g_haveSyncBaseline)
+    {
+        g_syncBaseline =
+            GetTickCount64() -
+            senderTimestampMs;
+
+        g_haveSyncBaseline =
+            true;
+    }
+
+
+    return g_syncBaseline;
+}
+
+
+// Timestamps dos frames de vídeo, na mesma ordem em que foram
+// entregues ao decoder (fila FIFO - o decoder não reordena).
+std::deque<uint32_t> g_videoTimestampQueue;
+
+
+struct PendingVideoFrame
+{
+    std::vector<unsigned char> pixels;
+    uint32_t width = 0;
+    uint32_t height = 0;
+    uint32_t timestampMs = 0;
+};
+
+// Frames já decodificados, aguardando a hora certa (segundo o
+// relógio sincronizado) de aparecer na tela.
+std::deque<PendingVideoFrame> g_pendingVideoFrames;
 
 
 // ============================================================
@@ -185,6 +255,8 @@ uint64_t g_framesDropped =
 // ============================================================
 // Processar frame decodificado
 // ============================================================
+
+void TryPresentPendingFrames();
 
 void ProcessDecodedFrame()
 {
@@ -217,8 +289,13 @@ void ProcessDecodedFrame()
 
 
         // ====================================================
-        // Atualizar frame exibido
+        // Timestamp correspondente (FIFO - mesma ordem em que
+        // os frames foram entregues ao decoder via WriteData).
         // ====================================================
+
+        uint32_t timestampMs =
+            0;
+
 
         {
             std::lock_guard<std::mutex> lock(
@@ -226,84 +303,215 @@ void ProcessDecodedFrame()
             );
 
 
-            g_framePixels =
-                std::move(
-                    decodedFrame
-                );
+            if (!g_videoTimestampQueue.empty())
+            {
+                timestampMs =
+                    g_videoTimestampQueue.front();
+
+                g_videoTimestampQueue.pop_front();
+            }
 
 
-            g_frameNumber++;
+            // ------------------------------------------------
+            // Enfileirar pra apresentação sincronizada, em vez
+            // de exibir imediatamente.
+            // ------------------------------------------------
+
+            PendingVideoFrame pending;
+
+            pending.pixels =
+                std::move(decodedFrame);
+
+            pending.width =
+                width;
+
+            pending.height =
+                height;
+
+            pending.timestampMs =
+                timestampMs;
+
+
+            g_pendingVideoFrames.push_back(
+                std::move(pending)
+            );
+
+
+            // ------------------------------------------------
+            // Limite de seguranca: se acumular demais (ex:
+            // calibracao de relogio ruim, ou decoder muito a
+            // frente do relogio de sincronizacao), descarta os
+            // mais antigos em vez de deixar o atraso crescer
+            // sem controle.
+            // ------------------------------------------------
+
+            constexpr size_t MAX_PENDING_VIDEO_FRAMES =
+                12;
+
+
+            while (g_pendingVideoFrames.size() >
+                   MAX_PENDING_VIDEO_FRAMES)
+            {
+                g_pendingVideoFrames.pop_front();
+
+                g_framesDropped++;
+            }
         }
 
 
-        // ====================================================
-        // FPS
-        // ====================================================
+        decodedFrame.clear();
+    }
 
-        g_fpsFrameCount++;
+
+    // ========================================================
+    // Libera pra exibição os frames cuja hora (segundo o
+    // relógio sincronizado com o áudio) já chegou.
+    // ========================================================
+
+    TryPresentPendingFrames();
+}
+
+
+// ============================================================
+// TryPresentPendingFrames
+// ============================================================
+//
+// Percorre g_pendingVideoFrames em ordem e promove pra exibição
+// (g_framePixels) todo frame cuja hora alvo já chegou, segundo
+// o relógio sincronizado (g_syncBaseline + timestampMs do
+// frame). Isso é o que efetivamente sincroniza o vídeo com o
+// áudio: em vez de mostrar assim que decodifica, ele espera a
+// vez certa.
+// ============================================================
+
+void TryPresentPendingFrames()
+{
+    bool presented =
+        false;
+
+
+    {
+        std::lock_guard<std::mutex> lock(
+            g_frameMutex
+        );
+
+
+        std::lock_guard<std::mutex> syncLock(
+            g_syncMutex
+        );
 
 
         ULONGLONG now =
             GetTickCount64();
 
 
-        if (
-            now -
-            g_fpsStartTime >=
-            1000)
+        while (!g_pendingVideoFrames.empty())
         {
-            g_fps =
-                g_fpsFrameCount;
+            PendingVideoFrame& front =
+                g_pendingVideoFrames.front();
 
 
-            g_fpsFrameCount =
-                0;
+            ULONGLONG targetTime =
+                g_syncBaseline +
+                front.timestampMs;
 
 
-            g_fpsStartTime =
-                now;
+            if (g_haveSyncBaseline &&
+                now < targetTime)
+            {
+                // Ainda não é a vez deste frame.
+                break;
+            }
+
+
+            g_framePixels =
+                std::move(
+                    front.pixels
+                );
+
+
+            g_pendingVideoFrames.pop_front();
+
+
+            g_frameNumber++;
+
+
+            presented =
+                true;
         }
+    }
 
 
-        // ====================================================
-        // Atualizar título
-        // ====================================================
-
-        if (g_hwnd)
-        {
-            wchar_t title[256]{};
+    if (!presented)
+    {
+        return;
+    }
 
 
-            swprintf_s(
-                title,
-                L"Stream Receiver UDP - H264 - FPS: %d - Frame: %llu - %ux%u - Dropped: %llu",
-                g_fps.load(),
-                static_cast<unsigned long long>(
-                    g_frameNumber
-                ),
-                width,
-                height,
-                static_cast<unsigned long long>(
-                    g_framesDropped
-                )
-            );
+    // ========================================================
+    // FPS
+    // ========================================================
+
+    g_fpsFrameCount++;
 
 
-            SetWindowTextW(
-                g_hwnd,
-                title
-            );
+    ULONGLONG now =
+        GetTickCount64();
 
 
-            InvalidateRect(
-                g_hwnd,
-                nullptr,
-                FALSE
-            );
-        }
+    if (
+        now -
+        g_fpsStartTime >=
+        1000)
+    {
+        g_fps =
+            g_fpsFrameCount;
 
 
-        decodedFrame.clear();
+        g_fpsFrameCount =
+            0;
+
+
+        g_fpsStartTime =
+            now;
+    }
+
+
+    // ========================================================
+    // Atualizar título + repintar
+    // ========================================================
+
+    if (g_hwnd)
+    {
+        wchar_t title[256]{};
+
+
+        swprintf_s(
+            title,
+            L"Stream Receiver UDP - H264 - FPS: %d - Frame: %llu - %ux%u - Dropped: %llu",
+            g_fps.load(),
+            static_cast<unsigned long long>(
+                g_frameNumber
+            ),
+            g_frameWidth,
+            g_frameHeight,
+            static_cast<unsigned long long>(
+                g_framesDropped
+            )
+        );
+
+
+        SetWindowTextW(
+            g_hwnd,
+            title
+        );
+
+
+        InvalidateRect(
+            g_hwnd,
+            nullptr,
+            FALSE
+        );
     }
 }
 
@@ -345,6 +553,9 @@ void StartNewPendingFrame(
 
     g_pendingFrame.height =
         header.height;
+
+    g_pendingFrame.timestampMs =
+        header.timestampMs;
 
     g_pendingFrame.isKeyframe =
         (header.flags &
@@ -436,6 +647,9 @@ void ProcessUdpPacket(
 
     header.flags =
         ntohl(header.flags);
+
+    header.timestampMs =
+        ntohl(header.timestampMs);
 
 
     // ========================================================
@@ -552,6 +766,18 @@ void ProcessUdpPacket(
 
         g_haveCompletedFrame =
             false;
+
+
+        {
+            std::lock_guard<std::mutex> lock(
+                g_frameMutex
+            );
+
+
+            g_videoTimestampQueue.clear();
+
+            g_pendingVideoFrames.clear();
+        }
 
 
         std::cout
@@ -673,6 +899,23 @@ void ProcessUdpPacket(
 
     g_pendingFrame.active =
         false;
+
+
+    EstablishSyncBaseline(
+        g_pendingFrame.timestampMs
+    );
+
+
+    {
+        std::lock_guard<std::mutex> lock(
+            g_frameMutex
+        );
+
+
+        g_videoTimestampQueue.push_back(
+            g_pendingFrame.timestampMs
+        );
+    }
 
 
     if (!g_decoder.WriteData(
@@ -1312,6 +1555,11 @@ void AudioReceiverThread()
                 << "STREAM DE AUDIO RECEBIDO!\n"
                 << "========================================\n\n";
         }
+
+
+        EstablishSyncBaseline(
+            header.timestampMs
+        );
 
 
         // ====================================================

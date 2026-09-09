@@ -70,6 +70,19 @@ AudioCapture g_audioCapture;
 
 AudioEncoder g_audioEncoder;
 
+// ------------------------------------------------------------
+// Relogio compartilhado entre video e audio.
+//
+// Definido UMA VEZ no inicio do programa. Ambos os pipelines
+// timestampam seus frames/pacotes como "GetTickCount64() -
+// g_streamClockStart", garantindo que os dois usem a MESMA
+// origem de tempo - isso e o que permite o receiver alinhar
+// video e audio (sincronizacao A/V).
+// ------------------------------------------------------------
+
+ULONGLONG g_streamClockStart =
+    0;
+
 
 // ============================================================
 // GRAPHICS CAPTURE
@@ -389,7 +402,7 @@ void EncoderThread()
                     frame.width,
                     frame.height,
                     60,
-                    8))
+                    16))
             {
                 std::cout
                     << "H264: falha ao iniciar encoder.\n";
@@ -459,13 +472,21 @@ void EncoderThread()
             // Enviar o frame H264 fragmentado via UDP
             // ------------------------------------------------
 
+            uint32_t videoTimestampMs =
+                static_cast<uint32_t>(
+                    GetTickCount64() -
+                    g_streamClockStart
+                );
+
+
             if (!g_udpServer.SendVideoFrame(
                     encodedFrame.data.data(),
                     static_cast<uint32_t>(
                         encodedFrame.data.size()),
                     frame.width,
                     frame.height,
-                    encodedFrame.isKeyframe))
+                    encodedFrame.isKeyframe,
+                    videoTimestampMs))
             {
                 std::cout
                     << "UDP: falha ao enviar "
@@ -1239,6 +1260,9 @@ void UdpAudioServerThread()
 
 void AudioSendThread()
 {
+    g_audioCapture.SelectDeviceInteractively();
+
+
     if (!g_audioCapture.Start())
     {
         std::cout
@@ -1259,10 +1283,6 @@ void AudioSendThread()
 
         return;
     }
-
-
-    ULONGLONG startTime =
-        GetTickCount64();
 
 
     while (g_audioSendRunning)
@@ -1308,7 +1328,7 @@ void AudioSendThread()
         uint32_t timestampMs =
             static_cast<uint32_t>(
                 GetTickCount64() -
-                startTime
+                g_streamClockStart
             );
 
 
@@ -2318,6 +2338,14 @@ int WINAPI wWinMain(
     // =========================================================
 
     CreateDebugConsole();
+
+
+    // =========================================================
+    // RELOGIO COMPARTILHADO (video + audio)
+    // =========================================================
+
+    g_streamClockStart =
+        GetTickCount64();
 
 
     std::cout
