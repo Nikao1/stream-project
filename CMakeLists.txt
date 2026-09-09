@@ -58,13 +58,11 @@ add_executable(stream-receiver
     src/h264_decoder.cpp
     src/h264_decoder.h
 
-    # TODO: descomentar quando audio_decoder/audio_playback
-    # forem implementados (próximo passo do roadmap de audio)
-    # src/audio_decoder.cpp
-    # src/audio_decoder.h
-    #
-    # src/audio_playback.cpp
-    # src/audio_playback.h
+    src/audio_decoder.cpp
+    src/audio_decoder.h
+
+    src/audio_playback.cpp
+    src/audio_playback.h
 )
 
 

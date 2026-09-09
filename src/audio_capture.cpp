@@ -3,7 +3,6 @@
 
 #include <mmdeviceapi.h>
 #include <audioclient.h>
-#include <functiondiscoverykeys_devpkey.h>
 
 #include <iostream>
 

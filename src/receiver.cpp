@@ -11,6 +11,9 @@
 #include <cstring>
 
 #include "h264_decoder.h"
+#include "audio_protocol.h"
+#include "audio_decoder.h"
+#include "audio_playback.h"
 #include "video_protocol.h"
 
 #pragma comment(lib, "ws2_32.lib")
@@ -78,6 +81,10 @@ g_streamReceived{ false };
 // ============================================================
 
 H264Decoder g_decoder;
+
+AudioDecoder g_audioDecoder;
+
+AudioPlayback g_audioPlayback;
 
 
 // ============================================================
@@ -999,6 +1006,404 @@ void ReceiverThread()
 
 
 // ============================================================
+// AudioReceiverThread
+// ============================================================
+//
+// Auto-contida: cria seu próprio socket UDP (porta
+// AUDIO_UDP_PORT), envia HELLO pro client (AUDIO_SERVER_UDP_PORT)
+// e recebe/decodifica/toca o áudio - tudo em thread e socket
+// independentes do vídeo, de propósito (evita que áudio fique
+// enfileirado atrás do processamento de frames de vídeo).
+// ============================================================
+
+void AudioReceiverThread()
+{
+    // ========================================================
+    // Socket
+    // ========================================================
+
+    SOCKET audioSocket =
+        socket(
+            AF_INET,
+            SOCK_DGRAM,
+            IPPROTO_UDP
+        );
+
+
+    if (audioSocket ==
+        INVALID_SOCKET)
+    {
+        std::cout
+            << "AudioReceiver: falha ao criar socket. "
+            << "Erro: "
+            << WSAGetLastError()
+            << "\n";
+
+        return;
+    }
+
+
+    sockaddr_in localAddress{};
+
+    localAddress.sin_family =
+        AF_INET;
+
+    localAddress.sin_addr.s_addr =
+        htonl(INADDR_ANY);
+
+    localAddress.sin_port =
+        htons(AUDIO_UDP_PORT);
+
+
+    if (bind(
+            audioSocket,
+            reinterpret_cast<sockaddr*>(
+                &localAddress
+            ),
+            sizeof(localAddress)
+        ) == SOCKET_ERROR)
+    {
+        std::cout
+            << "AudioReceiver: falha no bind. Erro: "
+            << WSAGetLastError()
+            << "\n";
+
+        closesocket(audioSocket);
+
+        return;
+    }
+
+
+    sockaddr_in serverAddress{};
+
+    serverAddress.sin_family =
+        AF_INET;
+
+    serverAddress.sin_port =
+        htons(AUDIO_SERVER_UDP_PORT);
+
+
+    inet_pton(
+        AF_INET,
+        "127.0.0.1",
+        &serverAddress.sin_addr
+    );
+
+
+    std::cout
+        << "AudioReceiver: escutando na porta "
+        << AUDIO_UDP_PORT
+        << ", servidor em 127.0.0.1:"
+        << AUDIO_SERVER_UDP_PORT
+        << "\n";
+
+
+    // ========================================================
+    // Decoder + playback
+    // ========================================================
+
+    if (!g_audioDecoder.Start())
+    {
+        std::cout
+            << "AudioReceiver: falha ao iniciar "
+            << "decoder Opus.\n";
+
+        closesocket(audioSocket);
+
+        return;
+    }
+
+
+    if (!g_audioPlayback.Start())
+    {
+        std::cout
+            << "AudioReceiver: falha ao iniciar "
+            << "reprodução.\n";
+
+        g_audioDecoder.Stop();
+
+        closesocket(audioSocket);
+
+        return;
+    }
+
+
+    // ========================================================
+    // Estado de sequência (deteccao de perda p/ PLC)
+    // ========================================================
+
+    bool haveSequence =
+        false;
+
+    uint32_t lastSequence =
+        0;
+
+    bool streamReceived =
+        false;
+
+
+    std::vector<char> buffer(
+        AUDIO_UDP_PACKET_SIZE
+    );
+
+
+    ULONGLONG lastHelloTime =
+        0;
+
+
+    while (g_running)
+    {
+        // ====================================================
+        // Reenviar HELLO periodicamente ate receber audio
+        // ====================================================
+
+        ULONGLONG now =
+            GetTickCount64();
+
+
+        if (!streamReceived &&
+            (lastHelloTime == 0 ||
+             now - lastHelloTime >= 1000))
+        {
+            sendto(
+                audioSocket,
+                "HELLO",
+                5,
+                0,
+                reinterpret_cast<sockaddr*>(
+                    &serverAddress
+                ),
+                sizeof(serverAddress)
+            );
+
+
+            lastHelloTime =
+                now;
+        }
+
+
+        // ====================================================
+        // Esperar dados por ate 200ms
+        // ====================================================
+
+        fd_set readSet{};
+
+        FD_ZERO(&readSet);
+
+        FD_SET(
+            audioSocket,
+            &readSet
+        );
+
+
+        timeval timeout{};
+
+        timeout.tv_sec = 0;
+
+        timeout.tv_usec = 200000;
+
+
+        int result =
+            select(
+                0,
+                &readSet,
+                nullptr,
+                nullptr,
+                &timeout
+            );
+
+
+        if (!g_running)
+            break;
+
+
+        if (result <= 0)
+            continue;
+
+
+        sockaddr_in fromAddress{};
+
+        int fromSize =
+            sizeof(fromAddress);
+
+
+        int received =
+            recvfrom(
+                audioSocket,
+                buffer.data(),
+                static_cast<int>(
+                    buffer.size()
+                ),
+                0,
+                reinterpret_cast<sockaddr*>(
+                    &fromAddress
+                ),
+                &fromSize
+            );
+
+
+        if (received <
+            static_cast<int>(
+                AUDIO_HEADER_SIZE
+            ))
+        {
+            continue;
+        }
+
+
+        // ====================================================
+        // Parse header
+        // ====================================================
+
+        AudioPacketHeader header{};
+
+        std::memcpy(
+            &header,
+            buffer.data(),
+            AUDIO_HEADER_SIZE
+        );
+
+
+        header.magic =
+            ntohl(header.magic);
+
+        header.sequence =
+            ntohl(header.sequence);
+
+        header.timestampMs =
+            ntohl(header.timestampMs);
+
+        header.payloadSize =
+            ntohl(header.payloadSize);
+
+
+        if (header.magic !=
+            AUDIO_PROTOCOL_MAGIC)
+        {
+            continue;
+        }
+
+
+        if (header.payloadSize == 0 ||
+            header.payloadSize >
+                AUDIO_UDP_MAX_PAYLOAD)
+        {
+            continue;
+        }
+
+
+        if (received !=
+            static_cast<int>(
+                AUDIO_HEADER_SIZE +
+                header.payloadSize))
+        {
+            continue;
+        }
+
+
+        if (!streamReceived)
+        {
+            streamReceived =
+                true;
+
+
+            std::cout
+                << "\n========================================\n"
+                << "STREAM DE AUDIO RECEBIDO!\n"
+                << "========================================\n\n";
+        }
+
+
+        // ====================================================
+        // Deteccao de perda -> PLC (packet loss concealment)
+        // ====================================================
+
+        if (haveSequence)
+        {
+            uint32_t expected =
+                lastSequence + 1;
+
+
+            if (header.sequence >
+                expected)
+            {
+                uint32_t missing =
+                    header.sequence -
+                    expected;
+
+
+                // Limite de seguranca - nao gera concealment
+                // absurdo em reconexoes/saltos grandes.
+
+                if (missing > 10)
+                {
+                    missing = 10;
+                }
+
+
+                for (uint32_t i = 0;
+                     i < missing;
+                     ++i)
+                {
+                    std::vector<float> concealed;
+
+
+                    if (g_audioDecoder.DecodeLost(
+                            concealed))
+                    {
+                        g_audioPlayback.PushSamples(
+                            concealed
+                        );
+                    }
+                }
+            }
+        }
+
+
+        haveSequence =
+            true;
+
+        lastSequence =
+            header.sequence;
+
+
+        // ====================================================
+        // Decode + tocar
+        // ====================================================
+
+        std::vector<float> pcm;
+
+
+        if (g_audioDecoder.Decode(
+                reinterpret_cast<const unsigned char*>(
+                    buffer.data() +
+                        AUDIO_HEADER_SIZE
+                ),
+                header.payloadSize,
+                pcm))
+        {
+            g_audioPlayback.PushSamples(
+                pcm
+            );
+        }
+    }
+
+
+    g_audioPlayback.Stop();
+
+    g_audioDecoder.Stop();
+
+    closesocket(
+        audioSocket
+    );
+
+
+    std::cout
+        << "\nThread de audio encerrada.\n";
+}
+
+
+// ============================================================
 // Window Procedure
 // ============================================================
 
@@ -1773,6 +2178,11 @@ int main()
     );
 
 
+    std::thread audioReceiverThread(
+        AudioReceiverThread
+    );
+
+
     // ========================================================
     // Message loop
     // ========================================================
@@ -1830,6 +2240,13 @@ int main()
         receiverThread.joinable())
     {
         receiverThread.join();
+    }
+
+
+    if (
+        audioReceiverThread.joinable())
+    {
+        audioReceiverThread.join();
     }
 
 
