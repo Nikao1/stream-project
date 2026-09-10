@@ -1,6 +1,7 @@
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <windows.h>
+#include <fstream>
 
 #include <iostream>
 #include <cstdint>
@@ -1652,8 +1653,227 @@ void AudioReceiverThread()
 
 
 // ============================================================
+// SaveCurrentFrameAsBmp
+// ============================================================
+//
+// Salva o frame que está sendo exibido no momento num arquivo
+// .bmp, direto dos bytes que o receiver realmente tem em mãos
+// - sem passar por print de tela, foto, nem nada que possa
+// alterar/falhar na captura. Ativado pela tecla S.
+// ============================================================
+
+void SaveCurrentFrameAsBmp()
+{
+    std::vector<unsigned char> pixelsCopy;
+
+    uint32_t width =
+        0;
+
+    uint32_t height =
+        0;
+
+
+    {
+        std::lock_guard<std::mutex> lock(
+            g_frameMutex
+        );
+
+
+        if (g_framePixels.empty() ||
+            g_frameWidth == 0 ||
+            g_frameHeight == 0)
+        {
+            std::cout
+                << "\nSaveCurrentFrameAsBmp: nenhum frame "
+                << "disponivel ainda.\n";
+
+            return;
+        }
+
+
+        pixelsCopy =
+            g_framePixels;
+
+        width =
+            g_frameWidth;
+
+        height =
+            g_frameHeight;
+    }
+
+
+    const size_t expectedSize =
+        static_cast<size_t>(width) *
+        static_cast<size_t>(height) *
+        4;
+
+
+    if (pixelsCopy.size() <
+        expectedSize)
+    {
+        std::cout
+            << "\nSaveCurrentFrameAsBmp: buffer de pixels "
+            << "menor que o esperado ("
+            << pixelsCopy.size()
+            << " < "
+            << expectedSize
+            << ").\n";
+
+        return;
+    }
+
+
+    BITMAPFILEHEADER fileHeader{};
+
+    BITMAPINFOHEADER infoHeader{};
+
+
+    infoHeader.biSize =
+        sizeof(BITMAPINFOHEADER);
+
+    infoHeader.biWidth =
+        static_cast<LONG>(width);
+
+    infoHeader.biHeight =
+        static_cast<LONG>(height); // positivo = bottom-up
+
+    infoHeader.biPlanes =
+        1;
+
+    infoHeader.biBitCount =
+        32;
+
+    infoHeader.biCompression =
+        BI_RGB;
+
+    infoHeader.biSizeImage =
+        static_cast<DWORD>(
+            expectedSize
+        );
+
+
+    fileHeader.bfType =
+        0x4D42; // 'BM'
+
+    fileHeader.bfOffBits =
+        sizeof(BITMAPFILEHEADER) +
+        sizeof(BITMAPINFOHEADER);
+
+    fileHeader.bfSize =
+        fileHeader.bfOffBits +
+        infoHeader.biSizeImage;
+
+
+    const wchar_t* outPath =
+        L"receiver_debug_frame.bmp";
+
+
+    std::ofstream file(
+        outPath,
+        std::ios::binary
+    );
+
+
+    if (!file)
+    {
+        std::cout
+            << "\nSaveCurrentFrameAsBmp: falha ao criar "
+            << "o arquivo.\n";
+
+        return;
+    }
+
+
+    file.write(
+        reinterpret_cast<const char*>(&fileHeader),
+        sizeof(fileHeader)
+    );
+
+    file.write(
+        reinterpret_cast<const char*>(&infoHeader),
+        sizeof(infoHeader)
+    );
+
+
+    // --------------------------------------------------------
+    // pixelsCopy está top-down (linha 0 = topo). BMP com altura
+    // positiva é bottom-up, então escrevemos as linhas na ordem
+    // inversa.
+    // --------------------------------------------------------
+
+    const size_t rowBytes =
+        static_cast<size_t>(width) *
+        4;
+
+
+    for (int y = static_cast<int>(height) - 1;
+         y >= 0;
+         --y)
+    {
+        const unsigned char* row =
+            pixelsCopy.data() +
+            static_cast<size_t>(y) *
+                rowBytes;
+
+
+        file.write(
+            reinterpret_cast<const char*>(row),
+            rowBytes
+        );
+    }
+
+
+    file.close();
+
+
+    wchar_t fullPath[MAX_PATH]{};
+
+
+    GetFullPathNameW(
+        outPath,
+        MAX_PATH,
+        fullPath,
+        nullptr
+    );
+
+
+    // --------------------------------------------------------
+    // Converter pra string estreita - evita misturar
+    // std::wcout com std::cout no mesmo stdin/stdout usado no
+    // resto do arquivo.
+    // --------------------------------------------------------
+
+    char narrowPath[MAX_PATH * 2]{};
+
+
+    WideCharToMultiByte(
+        CP_UTF8,
+        0,
+        fullPath,
+        -1,
+        narrowPath,
+        sizeof(narrowPath),
+        nullptr,
+        nullptr
+    );
+
+
+    std::cout
+        << "\nFrame salvo em: "
+        << narrowPath
+        << " ("
+        << width
+        << "x"
+        << height
+        << ")\n";
+}
+
+
+// ============================================================
 // Window Procedure
 // ============================================================
+
+void SaveCurrentFrameAsBmp();
 
 LRESULT CALLBACK WindowProc(
     HWND hwnd,
@@ -1905,6 +2125,49 @@ LRESULT CALLBACK WindowProc(
 
 
             // =================================================
+            // DEBUG: valores exatos usados no letterbox
+            //
+            // Throttled pra não spammar o console (uma vez por
+            // segundo).
+            // =================================================
+
+            {
+                static ULONGLONG lastDebugLog =
+                    0;
+
+
+                ULONGLONG nowDebug =
+                    GetTickCount64();
+
+
+                if (nowDebug -
+                    lastDebugLog >=
+                    1000)
+                {
+                    lastDebugLog =
+                        nowDebug;
+
+
+                    std::cout
+                        << "\n[DEBUG letterbox] "
+                        << "janela="
+                        << windowWidth
+                        << "x"
+                        << windowHeight
+                        << " imagem="
+                        << width
+                        << "x"
+                        << height
+                        << " imageAspect="
+                        << imageAspect
+                        << " windowAspect="
+                        << windowAspect
+                        << "\n";
+                }
+            }
+
+
+            // =================================================
             // Letterbox
             // =================================================
 
@@ -1947,6 +2210,50 @@ LRESULT CALLBACK WindowProc(
                         windowWidth -
                         drawWidth
                     ) / 2;
+            }
+
+
+            // =================================================
+            // DEBUG: retângulo final
+            // =================================================
+
+            {
+                static ULONGLONG lastDebugLog2 =
+                    0;
+
+
+                ULONGLONG nowDebug2 =
+                    GetTickCount64();
+
+
+                if (nowDebug2 -
+                    lastDebugLog2 >=
+                    1000)
+                {
+                    lastDebugLog2 =
+                        nowDebug2;
+
+
+                    std::cout
+                        << "[DEBUG letterbox] draw=("
+                        << drawX
+                        << ","
+                        << drawY
+                        << ") "
+                        << drawWidth
+                        << "x"
+                        << drawHeight
+                        << " memDC="
+                        << memWidth
+                        << "x"
+                        << memHeight
+                        << " pixelsBufSize="
+                        << g_framePixels.size()
+                        << " esperado="
+                        << (static_cast<size_t>(width) *
+                            height * 4)
+                        << "\n";
+                }
             }
 
 
@@ -2028,6 +2335,25 @@ LRESULT CALLBACK WindowProc(
     }
 
 
+    case WM_KEYDOWN:
+    {
+        // ====================================================
+        // Tecla S: salva o frame exibido no momento em BMP,
+        // sem passar por nenhuma ferramenta de print/foto -
+        // pra diagnosticar problemas visuais direto do pixel
+        // real que o receiver está desenhando.
+        // ====================================================
+
+        if (wParam == 'S')
+        {
+            SaveCurrentFrameAsBmp();
+        }
+
+
+        return 0;
+    }
+
+
     case WM_DESTROY:
     {
         // ====================================================
@@ -2084,6 +2410,19 @@ LRESULT CALLBACK WindowProc(
 
 int main()
 {
+    // ========================================================
+    // DPI AWARENESS
+    //
+    // Mantém a janela e os cálculos de letterbox corretos em
+    // monitores com escala. Precisa ser chamado antes de
+    // qualquer janela ser criada.
+    // ========================================================
+
+    SetProcessDpiAwarenessContext(
+        DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2
+    );
+
+
     std::cout
         << "========== RECEIVER H264 UDP ==========\n";
 

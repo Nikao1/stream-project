@@ -249,6 +249,8 @@ winrt::fire_and_forget StartCaptureAsync();
 
 bool CopyTextureToPixels(
     ID3D11Texture2D* texture,
+    uint32_t contentWidth,
+    uint32_t contentHeight,
     std::vector<unsigned char>& pixels,
     uint32_t& width,
     uint32_t& height
@@ -769,6 +771,8 @@ GetTextureFromSurface(
 
 bool CopyTextureToPixels(
     ID3D11Texture2D* texture,
+    uint32_t contentWidth,
+    uint32_t contentHeight,
     std::vector<unsigned char>& pixels,
     uint32_t& width,
     uint32_t& height)
@@ -785,12 +789,29 @@ bool CopyTextureToPixels(
     );
 
 
+    // --------------------------------------------------------
+    // Usar o tamanho de CONTEÚDO (frame.ContentSize(), vindo
+    // do chamador) em vez do tamanho bruto da textura.
+    //
+    // O buffer interno do Windows Graphics Capture pode ser
+    // maior que o conteúdo válido (ex: reaproveitado de um
+    // frame anterior maior, ou com padding de alinhamento) -
+    // ContentSize() é a fonte da verdade sobre quantos pixels
+    // realmente importam.
+    // --------------------------------------------------------
+
     width =
-        desc.Width;
+        (contentWidth > 0 &&
+         contentWidth <= desc.Width)
+        ? contentWidth
+        : desc.Width;
 
 
     height =
-        desc.Height;
+        (contentHeight > 0 &&
+         contentHeight <= desc.Height)
+        ? contentHeight
+        : desc.Height;
 
 
     if (width == 0 ||
@@ -801,7 +822,8 @@ bool CopyTextureToPixels(
 
 
     // --------------------------------------------------------
-    // Criar textura staging
+    // Criar textura staging (no tamanho cheio da textura de
+    // origem - só a REGIÃO de conteúdo é copiada pra ela)
     // --------------------------------------------------------
 
     D3D11_TEXTURE2D_DESC stagingDesc =
@@ -850,12 +872,29 @@ bool CopyTextureToPixels(
 
 
     // --------------------------------------------------------
-    // GPU -> staging
+    // GPU -> staging (só a região de CONTEÚDO válido, não a
+    // textura inteira - evita copiar padding/lixo)
     // --------------------------------------------------------
 
-    g_d3dContext->CopyResource(
+    D3D11_BOX sourceBox{};
+
+    sourceBox.left = 0;
+    sourceBox.top = 0;
+    sourceBox.front = 0;
+    sourceBox.right = width;
+    sourceBox.bottom = height;
+    sourceBox.back = 1;
+
+
+    g_d3dContext->CopySubresourceRegion(
         stagingTexture.get(),
-        texture
+        0,
+        0,
+        0,
+        0,
+        texture,
+        0,
+        &sourceBox
     );
 
 
@@ -994,6 +1033,8 @@ void SaveTextureAsBMP(
 
     if (!CopyTextureToPixels(
             texture,
+            0,
+            0,
             pixels,
             width,
             height))
@@ -1413,12 +1454,38 @@ void OnFrameArrived(
     );
 
 
+    // ----------------------------------------------------------
+    // ContentSize() é a fonte da verdade sobre quantos pixels
+    // da textura são conteúdo válido (o buffer bruto pode ser
+    // maior - ver comentário em CopyTextureToPixels).
+    // ----------------------------------------------------------
+
+    auto contentSize =
+        frame.ContentSize();
+
+
+    uint32_t contentWidth =
+        (contentSize.Width > 0 &&
+         static_cast<uint32_t>(contentSize.Width) <=
+             desc.Width)
+        ? static_cast<uint32_t>(contentSize.Width)
+        : desc.Width;
+
+
+    uint32_t contentHeight =
+        (contentSize.Height > 0 &&
+         static_cast<uint32_t>(contentSize.Height) <=
+             desc.Height)
+        ? static_cast<uint32_t>(contentSize.Height)
+        : desc.Height;
+
+
     g_captureWidth =
-        desc.Width;
+        contentWidth;
 
 
     g_captureHeight =
-        desc.Height;
+        contentHeight;
 
 
     // ----------------------------------------------------------
@@ -1470,6 +1537,8 @@ void OnFrameArrived(
 
     if (CopyTextureToPixels(
             texture.get(),
+            contentWidth,
+            contentHeight,
             pixels,
             width,
             height))
@@ -2336,6 +2405,29 @@ int WINAPI wWinMain(
     // =========================================================
     // CONSOLE DE DEBUG
     // =========================================================
+
+    // =========================================================
+    // DPI AWARENESS
+    // =========================================================
+    //
+    // CRÍTICO pra captura de tela em monitores com escala
+    // (125%, 150%, etc - comum em notebooks e monitores 4K).
+    //
+    // Sem isso, o Windows "virtualiza" o processo pra pensar
+    // que está rodando a 100% de escala, fazendo APIs de
+    // tamanho de tela/janela (incluindo o Graphics Capture
+    // Picker) reportarem dimensões diferentes das que a GPU
+    // realmente captura em pixels físicos - causando a
+    // distorção/esticamento na imagem recebida.
+    //
+    // Precisa ser chamado ANTES de qualquer janela ser criada
+    // ou qualquer API de DPI ser consultada.
+    // =========================================================
+
+    SetProcessDpiAwarenessContext(
+        DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2
+    );
+
 
     CreateDebugConsole();
 

@@ -276,6 +276,28 @@ bool H264Decoder::StartProcess()
         "-fps_mode passthrough "
 
         // ----------------------------------------------------
+        // Forcar o tamanho de saida exato
+        //
+        // Sem isso, o FFmpeg pode devolver o frame decodificado
+        // com a altura "arredondada" pro multiplo de 16 mais
+        // proximo (ex: 1080 -> 1088), que e como o H264 codifica
+        // internamente por macroblocos - especialmente comum
+        // com decode por hardware (D3D11VA), onde a superficie
+        // de decode geralmente precisa desse alinhamento.
+        //
+        // Le-se os bytes do pipe assumindo m_width*m_height*4
+        // por frame (ver ReaderThread) - qualquer padding extra
+        // aqui desalinha a leitura progressivamente, causando o
+        // efeito de imagem "espremida/rasgada" que aparecia.
+        // ----------------------------------------------------
+
+        "-s "
+        + std::to_string(m_width)
+        + "x"
+        + std::to_string(m_height)
+        + " "
+
+        // ----------------------------------------------------
         // Raw video
         // ----------------------------------------------------
 
