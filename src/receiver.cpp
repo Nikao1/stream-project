@@ -1106,7 +1106,7 @@ void ReceiverThread()
 
 
         // ====================================================
-        // Timeout.
+        // Timeout
         // ====================================================
 
         if (result == 0)
@@ -2068,10 +2068,63 @@ LRESULT CALLBACK WindowProc(
                 );
 
 
+            // ================================================
+            // ALTURA POSITIVA (bottom-up)
+            //
+            // Usar altura NEGATIVA (top-down) direto no
+            // StretchDIBits tem um problema conhecido: alguns
+            // drivers de GPU distorcem a imagem especificamente
+            // durante uma operação de STRETCH (redimensionar)
+            // com DIB top-down - o efeito varia de driver pra
+            // driver, o que bate com o sintoma (só nosso app,
+            // só ao vivo, nunca ao salvar em arquivo sem
+            // stretch).
+            //
+            // Fix: invertemos o buffer manualmente pra
+            // bottom-up (o formato clássico, testado em todo
+            // driver desde sempre) em vez de confiar no
+            // biHeight negativo.
+            // ================================================
+
             bitmapInfo.bmiHeader.biHeight =
-                -static_cast<LONG>(
+                static_cast<LONG>(
                     height
                 );
+
+
+            static std::vector<unsigned char> flippedPixels;
+
+
+            flippedPixels.resize(
+                g_framePixels.size()
+            );
+
+
+            {
+                const size_t rowBytes =
+                    static_cast<size_t>(width) *
+                    4;
+
+
+                for (uint32_t y = 0;
+                     y < height;
+                     ++y)
+                {
+                    std::memcpy(
+                        flippedPixels.data() +
+                            static_cast<size_t>(y) *
+                                rowBytes,
+
+                        g_framePixels.data() +
+                            static_cast<size_t>(
+                                height - 1 - y
+                            ) *
+                                rowBytes,
+
+                        rowBytes
+                    );
+                }
+            }
 
 
             bitmapInfo.bmiHeader.biPlanes =
@@ -2259,12 +2312,41 @@ LRESULT CALLBACK WindowProc(
 
             // =================================================
             // Qualidade da escala
+            //
+            // HALFTONE (reamostragem por área) só compensa o
+            // custo de CPU quando a redução é grande - perto do
+            // tamanho nativo a diferença de qualidade é
+            // imperceptível, então usamos COLORONCOLOR (rápido)
+            // nesse caso.
             // =================================================
+
+            double scaleFactor =
+                static_cast<double>(drawWidth) /
+                static_cast<double>(width);
+
+
+            bool bigDownscale =
+                scaleFactor <
+                0.9;
+
 
             SetStretchBltMode(
                 memDC,
-                COLORONCOLOR
+                bigDownscale
+                    ? HALFTONE
+                    : COLORONCOLOR
             );
+
+
+            if (bigDownscale)
+            {
+                SetBrushOrgEx(
+                    memDC,
+                    0,
+                    0,
+                    nullptr
+                );
+            }
 
 
             // =================================================
@@ -2291,7 +2373,7 @@ LRESULT CALLBACK WindowProc(
                     height
                 ),
 
-                g_framePixels.data(),
+                flippedPixels.data(),
 
                 &bitmapInfo,
 

@@ -90,6 +90,11 @@ ULONGLONG g_streamClockStart =
 
 GraphicsCaptureItem g_captureItem{ nullptr };
 Direct3D11CaptureFramePool g_framePool{ nullptr };
+
+// Tamanho com que g_framePool foi criado/recriado por último -
+// usado pra detectar quando precisa chamar Recreate().
+int32_t g_framePoolWidth = 0;
+int32_t g_framePoolHeight = 0;
 GraphicsCaptureSession g_captureSession{ nullptr };
 
 winrt::event_token g_frameArrivedToken{};
@@ -1480,6 +1485,57 @@ void OnFrameArrived(
         : desc.Height;
 
 
+    // ----------------------------------------------------------
+    // Recriar o Frame Pool se o tamanho da fonte mudou
+    //
+    // IMPORTANTE: aqui usamos o ContentSize() BRUTO (sem
+    // limitar pelo tamanho atual da textura). Quando a janela
+    // CRESCE, a textura ainda está no tamanho ANTIGO (menor) -
+    // se a gente limitasse o ContentSize a esse tamanho antigo,
+    // nunca perceberíamos que precisa recriar. A cópia de
+    // pixels (mais abaixo) continua usando a versão limitada,
+    // por segurança contra ler fora dos limites da textura.
+    // ----------------------------------------------------------
+
+    if (
+        contentSize.Width !=
+            g_framePoolWidth ||
+        contentSize.Height !=
+            g_framePoolHeight)
+    {
+        std::cout
+            << "\nTamanho da captura mudou: "
+            << g_framePoolWidth
+            << "x"
+            << g_framePoolHeight
+            << " -> "
+            << contentSize.Width
+            << "x"
+            << contentSize.Height
+            << ". Recriando Frame Pool...\n";
+
+
+        sender.Recreate(
+            CreateWinRTDirect3DDevice(),
+            DirectXPixelFormat::B8G8R8A8UIntNormalized,
+            3,
+            contentSize
+        );
+
+
+        g_framePoolWidth =
+            contentSize.Width;
+
+        g_framePoolHeight =
+            contentSize.Height;
+
+
+        // O frame atual ainda é do tamanho antigo - descarta e
+        // espera o próximo já vir no tamanho certo.
+        return;
+    }
+
+
     g_captureWidth =
         contentWidth;
 
@@ -1758,6 +1814,13 @@ winrt::fire_and_forget StartCaptureAsync()
                 3,
                 size
             );
+
+
+        g_framePoolWidth =
+            size.Width;
+
+        g_framePoolHeight =
+            size.Height;
 
 
         // --------------------------------------------------------
