@@ -9,6 +9,9 @@ H264Encoder::H264Encoder()
       m_height(0),
       m_fps(60),
       m_bitrateMbps(8),
+      m_outputHeight(0),
+      m_actualOutputWidth(0),
+      m_actualOutputHeight(0),
       m_process(nullptr),
       m_stdinWrite(nullptr),
       m_stdoutRead(nullptr),
@@ -31,7 +34,8 @@ bool H264Encoder::Start(
     uint32_t width,
     uint32_t height,
     uint32_t fps,
-    uint32_t bitrateMbps)
+    uint32_t bitrateMbps,
+    uint32_t outputHeight)
 {
     Stop();
 
@@ -56,6 +60,55 @@ bool H264Encoder::Start(
 
     m_bitrateMbps =
         bitrateMbps;
+
+    m_outputHeight =
+        outputHeight;
+
+
+    // ----------------------------------------------------------
+    // Tamanho real de saída (após escala, se houver)
+    //
+    // Espelha o cálculo do filtro "-vf scale=-2:H" do ffmpeg:
+    // largura proporcional à altura, sempre arredondada pra
+    // baixo em número par (exigência do H264/H264_nvenc).
+    // ----------------------------------------------------------
+
+    if (m_outputHeight > 0 &&
+        m_outputHeight < m_height)
+    {
+        m_actualOutputHeight =
+            m_outputHeight;
+
+
+        double scale =
+            static_cast<double>(m_outputHeight) /
+            static_cast<double>(m_height);
+
+
+        uint32_t scaledWidth =
+            static_cast<uint32_t>(
+                m_width * scale
+            );
+
+
+        // Arredondar pra baixo em número par
+        m_actualOutputWidth =
+            scaledWidth -
+            (scaledWidth % 2);
+    }
+    else
+    {
+        // Sem escala (nativo, ou pediram uma altura maior que
+        // a nativa - nesse caso não faz sentido fazer upscale)
+        m_outputHeight =
+            0;
+
+        m_actualOutputWidth =
+            m_width;
+
+        m_actualOutputHeight =
+            m_height;
+    }
 
 
     std::cout
@@ -262,6 +315,26 @@ bool H264Encoder::StartProcess()
         + std::to_string(m_fps)
         + " "
         "-i pipe:0 "
+
+        // ----------------------------------------------------
+        // Escala (opcional)
+        //
+        // Reduz a resolução ANTES do NVENC codificar - além de
+        // controlar a qualidade/banda entregue (ex: 720p em vez
+        // do nativo), também reduz o trabalho do encoder (menos
+        // pixels pra comprimir = menos carga de GPU).
+        //
+        // "-2" na largura deixa o ffmpeg calcular mantendo a
+        // proporção original, sempre em número par (exigência
+        // do H264).
+        // ----------------------------------------------------
+
+        + (m_outputHeight > 0
+            ? "-vf scale=-2:" +
+              std::to_string(m_outputHeight) +
+              " "
+            : "")
+        +
 
         // ----------------------------------------------------
         // H264 NVENC

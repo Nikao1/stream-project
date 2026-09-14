@@ -84,6 +84,20 @@ ULONGLONG g_streamClockStart =
     0;
 
 
+// ------------------------------------------------------------
+// Qualidade selecionável (definida no prompt inicial)
+// ------------------------------------------------------------
+
+uint32_t g_targetFps =
+    60;
+
+uint32_t g_targetOutputHeight =
+    0; // 0 = resolucao nativa, sem reescalar
+
+ULONGLONG g_lastEncodeTime =
+    0;
+
+
 // ============================================================
 // GRAPHICS CAPTURE
 // ============================================================
@@ -235,6 +249,133 @@ void CreateDebugConsole()
 
     std::cout
         << "Console de debug criada.\n\n";
+}
+
+
+// ============================================================
+// SelectQualityInteractively
+// ============================================================
+//
+// Prompt simples no console pra escolher resolução de saída
+// (a captura continua nativa - a redução acontece no encoder,
+// via filtro de escala do ffmpeg) e FPS alvo.
+// ============================================================
+
+void SelectQualityInteractively()
+{
+    std::cout
+        << "=== Qualidade de video ===\n"
+        << "1: 480p\n"
+        << "2: 720p\n"
+        << "3: 1080p\n"
+        << "4: Nativa (resolucao da tela/janela capturada)\n"
+        << "Escolha [4]: ";
+
+
+    std::string line;
+
+    std::getline(
+        std::cin,
+        line
+    );
+
+
+    int choice =
+        4;
+
+
+    try
+    {
+        if (!line.empty())
+        {
+            choice =
+                std::stoi(line);
+        }
+    }
+    catch (...)
+    {
+        choice =
+            4;
+    }
+
+
+    switch (choice)
+    {
+        case 1:
+            g_targetOutputHeight = 480;
+            break;
+
+        case 2:
+            g_targetOutputHeight = 720;
+            break;
+
+        case 3:
+            g_targetOutputHeight = 1080;
+            break;
+
+        default:
+            g_targetOutputHeight = 0;
+            break;
+    }
+
+
+    std::cout
+        << "\n=== FPS alvo ===\n"
+        << "1: 60\n"
+        << "2: 30\n"
+        << "3: 15\n"
+        << "Escolha [1]: ";
+
+
+    std::getline(
+        std::cin,
+        line
+    );
+
+
+    int fpsChoice =
+        1;
+
+
+    try
+    {
+        if (!line.empty())
+        {
+            fpsChoice =
+                std::stoi(line);
+        }
+    }
+    catch (...)
+    {
+        fpsChoice =
+            1;
+    }
+
+
+    switch (fpsChoice)
+    {
+        case 2:
+            g_targetFps = 30;
+            break;
+
+        case 3:
+            g_targetFps = 15;
+            break;
+
+        default:
+            g_targetFps = 60;
+            break;
+    }
+
+
+    std::cout
+        << "\nQualidade selecionada: "
+        << (g_targetOutputHeight > 0
+            ? std::to_string(g_targetOutputHeight) + "p"
+            : "nativa")
+        << " @ "
+        << g_targetFps
+        << " FPS\n\n";
 }
 
 
@@ -393,8 +534,8 @@ void EncoderThread()
             // ----------------------------------------------------
             // H264 NVENC
             //
-            // 60 FPS
-            // 8 Mbps
+            // FPS e resolução de saída vêm da escolha do usuário
+            // (prompt no início do programa).
             // ----------------------------------------------------
 
             std::cout
@@ -408,8 +549,9 @@ void EncoderThread()
             if (!g_h264Encoder.Start(
                     frame.width,
                     frame.height,
-                    60,
-                    16))
+                    g_targetFps,
+                    16,
+                    g_targetOutputHeight))
             {
                 std::cout
                     << "H264: falha ao iniciar encoder.\n";
@@ -428,7 +570,49 @@ void EncoderThread()
                 << frame.width
                 << "x"
                 << frame.height
-                << " @ 60 FPS, 8 Mbps.\n";
+                << " -> saida "
+                << (g_targetOutputHeight > 0
+                    ? std::to_string(g_targetOutputHeight) +
+                      "p"
+                    : "nativa")
+                << " @ "
+                << g_targetFps
+                << " FPS, 16 Mbps.\n";
+        }
+
+
+        // --------------------------------------------------------
+        // Throttle de FPS
+        //
+        // Descarta frames extras ANTES de gastar CPU/GPU
+        // codificando eles - mais eficiente do que codificar e
+        // descartar depois. g_targetFps vem da escolha do
+        // usuário (prompt no início do programa).
+        // --------------------------------------------------------
+
+        {
+            ULONGLONG now =
+                GetTickCount64();
+
+
+            double minIntervalMs =
+                1000.0 /
+                static_cast<double>(
+                    g_targetFps
+                );
+
+
+            if (g_lastEncodeTime != 0 &&
+                static_cast<double>(
+                    now - g_lastEncodeTime) <
+                minIntervalMs)
+            {
+                continue;
+            }
+
+
+            g_lastEncodeTime =
+                now;
         }
 
 
@@ -490,8 +674,8 @@ void EncoderThread()
                     encodedFrame.data.data(),
                     static_cast<uint32_t>(
                         encodedFrame.data.size()),
-                    frame.width,
-                    frame.height,
+                    g_h264Encoder.GetOutputWidth(),
+                    g_h264Encoder.GetOutputHeight(),
                     encodedFrame.isKeyframe,
                     videoTimestampMs))
             {
@@ -2466,6 +2650,19 @@ int WINAPI wWinMain(
     int nCmdShow)
 {
     // =========================================================
+    // WINRT APARTMENT
+    // =========================================================
+    //
+    // Toda API WinRT usada nesse programa (Graphics Capture
+    // Picker, etc) depende disso ter sido chamado antes. Tem
+    // que ser a primeira coisa, antes de qualquer outra
+    // inicialização.
+    // =========================================================
+
+    winrt::init_apartment();
+
+
+    // =========================================================
     // CONSOLE DE DEBUG
     // =========================================================
 
@@ -2493,6 +2690,13 @@ int WINAPI wWinMain(
 
 
     CreateDebugConsole();
+
+
+    // =========================================================
+    // QUALIDADE SELECIONAVEL
+    // =========================================================
+
+    SelectQualityInteractively();
 
 
     // =========================================================

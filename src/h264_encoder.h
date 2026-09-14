@@ -35,7 +35,8 @@ public:
         uint32_t width,
         uint32_t height,
         uint32_t fps,
-        uint32_t bitrateMbps = 8
+        uint32_t bitrateMbps = 8,
+        uint32_t outputHeight = 0 // 0 = nao reescalar (nativo)
     );
 
     bool EncodeFrame(
@@ -49,6 +50,19 @@ public:
     bool GetFrame(
         EncodedFrame& outFrame
     );
+
+    // Tamanho REAL de saída do encoder (depois de aplicar a
+    // escala, se houver) - use isso pro header de rede, não o
+    // tamanho de entrada.
+    uint32_t GetOutputWidth() const
+    {
+        return m_actualOutputWidth;
+    }
+
+    uint32_t GetOutputHeight() const
+    {
+        return m_actualOutputHeight;
+    }
 
     void Stop();
 
@@ -68,6 +82,11 @@ private:
     uint32_t m_height;
     uint32_t m_fps;
     uint32_t m_bitrateMbps;
+
+    uint32_t m_outputHeight; // 0 = nativo, sem reescalar
+
+    uint32_t m_actualOutputWidth;
+    uint32_t m_actualOutputHeight;
 
     HANDLE m_process;
     HANDLE m_stdinWrite;
