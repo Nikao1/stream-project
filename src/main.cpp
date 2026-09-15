@@ -97,6 +97,11 @@ uint32_t g_targetOutputHeight =
 ULONGLONG g_lastEncodeTime =
     0;
 
+// Sinaliza que o usuário já escolheu a tela/janela no seletor -
+// usado pra atrasar o prompt de dispositivo de áudio, evitando
+// os dois disputarem foco de janela ao mesmo tempo.
+std::atomic<bool> g_captureItemSelected{ false };
+
 
 // ============================================================
 // GRAPHICS CAPTURE
@@ -376,6 +381,20 @@ void SelectQualityInteractively()
         << " @ "
         << g_targetFps
         << " FPS\n\n";
+
+
+    // --------------------------------------------------------
+    // Disparar o início da captura agora que a qualidade já
+    // foi escolhida. PostMessageW é thread-safe - pode ser
+    // chamado de qualquer thread visando um HWND de outra.
+    // --------------------------------------------------------
+
+    PostMessageW(
+        g_hwnd,
+        WM_APP + 1,
+        0,
+        0
+    );
 }
 
 
@@ -1490,6 +1509,28 @@ void UdpAudioServerThread()
 
 void AudioSendThread()
 {
+    // --------------------------------------------------------
+    // Espera o usuário escolher a tela/janela no seletor antes
+    // de mostrar o prompt de dispositivo de áudio - evita os
+    // dois disputarem foco de janela ao mesmo tempo (o que
+    // fazia o seletor "piscar e fechar" sozinho).
+    // --------------------------------------------------------
+
+    while (!g_captureItemSelected &&
+           g_audioSendRunning)
+    {
+        std::this_thread::sleep_for(
+            std::chrono::milliseconds(100)
+        );
+    }
+
+
+    if (!g_audioSendRunning)
+    {
+        return;
+    }
+
+
     g_audioCapture.SelectDeviceInteractively();
 
 
@@ -1959,6 +2000,13 @@ winrt::fire_and_forget StartCaptureAsync()
         }
 
 
+        // Sinaliza que a seleção terminou - libera o prompt de
+        // dispositivo de áudio (que fica esperando essa flag),
+        // evitando os dois disputarem foco de janela juntos.
+        g_captureItemSelected =
+            true;
+
+
         g_captureItem =
             item;
 
@@ -2106,6 +2154,23 @@ LRESULT CALLBACK WindowProc(
 
     case WM_APP + 1:
     {
+        // ----------------------------------------------------
+        // Forçar a janela pro primeiro plano antes do picker.
+        //
+        // Sem isso, se muito tempo se passou desde que a
+        // janela foi criada (ex: esperando o usuário responder
+        // o prompt de qualidade em outra thread), o Windows
+        // pode ter revogado o direito automático dela de trazer
+        // novas janelas pro primeiro plano sem pedir permissão
+        // - fazendo o GraphicsCapturePicker abrir e fechar
+        // sozinho instantaneamente (ou nem abrir).
+        // ----------------------------------------------------
+
+        SetForegroundWindow(
+            hwnd
+        );
+
+
         StartCaptureAsync();
 
         return 0;
@@ -2693,13 +2758,6 @@ int WINAPI wWinMain(
 
 
     // =========================================================
-    // QUALIDADE SELECIONAVEL
-    // =========================================================
-
-    SelectQualityInteractively();
-
-
-    // =========================================================
     // RELOGIO COMPARTILHADO (video + audio)
     // =========================================================
 
@@ -2892,15 +2950,20 @@ int WINAPI wWinMain(
 
 
     // =========================================================
-    // INICIAR CAPTURA
+    // QUALIDADE SELECIONAVEL
+    //
+    // Roda em thread própria - NUNCA bloquear a thread principal
+    // (ela precisa ficar livre pra rodar o loop de mensagens
+    // desde já, senão a janela fica "não respondendo" enquanto
+    // espera o console, e o Windows pode fechá-la à força).
+    //
+    // Essa thread dispara o início da captura (WM_APP + 1) ela
+    // mesma, assim que o usuário terminar de escolher.
     // =========================================================
 
-    PostMessageW(
-        g_hwnd,
-        WM_APP + 1,
-        0,
-        0
-    );
+    std::thread(
+        SelectQualityInteractively
+    ).detach();
 
 
     // =========================================================
@@ -2998,6 +3061,15 @@ int WINAPI wWinMain(
 
     std::cout
         << "Stream Project encerrado.\n";
+
+
+    std::cout
+        << "\nPressione Enter para fechar esta janela...";
+
+
+    std::cin.clear();
+
+    std::cin.get();
 
 
     return 0;
