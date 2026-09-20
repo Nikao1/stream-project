@@ -94,9 +94,6 @@ uint32_t g_targetFps =
 uint32_t g_targetOutputHeight =
     0; // 0 = resolucao nativa, sem reescalar
 
-ULONGLONG g_lastEncodeTime =
-    0;
-
 // Sinaliza que o usuário já escolheu a tela/janela no seletor -
 // usado pra atrasar o prompt de dispositivo de áudio, evitando
 // os dois disputarem foco de janela ao mesmo tempo.
@@ -607,11 +604,22 @@ void EncoderThread()
         // codificando eles - mais eficiente do que codificar e
         // descartar depois. g_targetFps vem da escolha do
         // usuário (prompt no início do programa).
+        //
+        // IMPORTANTE: usa std::chrono::steady_clock (alta
+        // precisão), não GetTickCount64() - essa tem resolução
+        // "grossa" (~15,6ms por padrão no Windows), bem na
+        // margem do intervalo de 60fps (~16,7ms), o que causava
+        // um efeito de "pula um, passa um" cortando o FPS real
+        // pela metade.
         // --------------------------------------------------------
 
         {
-            ULONGLONG now =
-                GetTickCount64();
+            static std::chrono::steady_clock::time_point
+                lastEncodeTimePoint{};
+
+
+            auto now =
+                std::chrono::steady_clock::now();
 
 
             double minIntervalMs =
@@ -621,16 +629,21 @@ void EncoderThread()
                 );
 
 
-            if (g_lastEncodeTime != 0 &&
-                static_cast<double>(
-                    now - g_lastEncodeTime) <
+            double elapsedMs =
+                std::chrono::duration<double, std::milli>(
+                    now - lastEncodeTimePoint
+                ).count();
+
+
+            if (lastEncodeTimePoint.time_since_epoch().count() != 0 &&
+                elapsedMs <
                 minIntervalMs)
             {
                 continue;
             }
 
 
-            g_lastEncodeTime =
+            lastEncodeTimePoint =
                 now;
         }
 
@@ -1406,7 +1419,7 @@ void UdpServerThread()
                 std::cout
                     << "\n========================================\n"
                     << "RECEIVER UDP CONECTADO!\n"
-                    << "H264 NVENC -> MPEG-TS -> UDP\n"
+                    << "H264 -> Annex B -> UDP\n"
                     << "========================================\n";
             }
         }
@@ -2571,6 +2584,20 @@ LRESULT CALLBACK WindowProc(
 
 
         // ----------------------------------------------------
+        // Liberar o item de captura selecionado
+        //
+        // Referência a um recurso do sistema (a janela/tela
+        // escolhida no seletor) - soltar explicitamente ajuda
+        // o broker do Windows a liberar o que rastreia sobre
+        // essa sessão de captura mais cedo, em vez de só
+        // quando o processo inteiro encerra.
+        // ----------------------------------------------------
+
+        g_captureItem =
+            nullptr;
+
+
+        // ----------------------------------------------------
         // Limpar preview
         // ----------------------------------------------------
 
@@ -2769,7 +2796,7 @@ int WINAPI wWinMain(
         << "=============================================\n"
         << "       STREAM PROJECT - SERVER\n"
         << "=============================================\n"
-        << "H264 NVENC + MPEG-TS + UDP\n"
+        << "H264 (NVENC/AMF/QSV/x264) + UDP\n"
         << "=============================================\n\n";
 
 

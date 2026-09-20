@@ -96,4 +96,7 @@ target_link_libraries(stream-receiver PRIVATE
     ws2_32
     ole32
     opus
+    d3d11
+    dxgi
+    d3dcompiler
 )

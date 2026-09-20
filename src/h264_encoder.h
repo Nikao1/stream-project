@@ -3,11 +3,28 @@
 #include <windows.h>
 
 #include <cstdint>
+#include <string>
 #include <vector>
 #include <deque>
 #include <thread>
 #include <mutex>
 #include <atomic>
+
+// ============================================================
+// GpuVendor
+//
+// Detectado via DXGI em Start() - decide qual encoder de
+// hardware usar (NVENC/AMF/QSV), com fallback pra libx264
+// (software) se nenhum for reconhecido ou falhar ao iniciar.
+// ============================================================
+
+enum class GpuVendor
+{
+    Nvidia,
+    Amd,
+    Intel,
+    Unknown
+};
 
 // ============================================================
 // EncodedFrame
@@ -69,7 +86,13 @@ public:
     bool IsRunning() const;
 
 private:
-    bool StartProcess();
+    bool StartProcess(
+        bool useSoftwareFallback = false
+    );
+
+    std::string BuildFfmpegCommand(
+        bool useSoftwareFallback
+    );
 
     void ReaderThread();
 
@@ -87,6 +110,8 @@ private:
 
     uint32_t m_actualOutputWidth;
     uint32_t m_actualOutputHeight;
+
+    GpuVendor m_gpuVendor;
 
     HANDLE m_process;
     HANDLE m_stdinWrite;

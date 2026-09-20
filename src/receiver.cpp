@@ -3,6 +3,10 @@
 #include <windows.h>
 #include <fstream>
 
+#include <d3d11.h>
+#include <d3dcompiler.h>
+#include <wrl/client.h>
+
 #include <iostream>
 #include <cstdint>
 #include <vector>
@@ -50,6 +54,45 @@ constexpr int UDP_RECEIVE_BUFFER_SIZE =
 
 HWND g_hwnd =
     nullptr;
+
+
+// ============================================================
+// Renderizador Direct3D 11
+//
+// Substitui o desenho via GDI (StretchDIBits/BitBlt) por uma
+// textura + shader simples. Motivo: GDI tem um histórico de
+// comportamentos dependentes de driver difíceis de prever (um
+// deles já causou distorção real neste projeto); D3D11 dá
+// controle total sobre exatamente como o frame é escalado,
+// sem depender de como cada driver interpreta chamadas GDI
+// legadas.
+//
+// Funciona em qualquer GPU (Intel/AMD/NVIDIA) - D3D11 é uma
+// API padrão do Windows, não específica de fabricante.
+// ============================================================
+
+using Microsoft::WRL::ComPtr;
+
+ComPtr<ID3D11Device> g_rendererDevice;
+ComPtr<ID3D11DeviceContext> g_rendererContext;
+ComPtr<IDXGISwapChain> g_swapChain;
+ComPtr<ID3D11RenderTargetView> g_renderTargetView;
+
+ComPtr<ID3D11VertexShader> g_vertexShader;
+ComPtr<ID3D11PixelShader> g_pixelShader;
+ComPtr<ID3D11SamplerState> g_samplerState;
+ComPtr<ID3D11Buffer> g_transformBuffer;
+
+ComPtr<ID3D11Texture2D> g_videoTexture;
+ComPtr<ID3D11ShaderResourceView> g_videoSRV;
+
+uint32_t g_videoTextureWidth =
+    0;
+
+uint32_t g_videoTextureHeight =
+    0;
+
+std::mutex g_rendererMutex;
 
 
 SOCKET g_udpSocket =
@@ -1870,6 +1913,805 @@ void SaveCurrentFrameAsBmp()
 
 
 // ============================================================
+// RENDERIZADOR DIRECT3D 11
+// ============================================================
+//
+// Shaders embutidos como texto HLSL, compilados em tempo de
+// execução. Desenha um quad de tela cheia (sem vertex buffer -
+// os 4 cantos vêm direto do SV_VertexID) escalado pelo fator
+// calculado no cbuffer, preservando a proporção (letterbox) -
+// exatamente a mesma lógica de antes, só que feita pela GPU
+// via shader em vez de aritmética manual + StretchDIBits.
+// ============================================================
+
+static const char* kShaderSource =
+    "cbuffer TransformBuffer : register(b0)\n"
+    "{\n"
+    "    float2 scale;\n"
+    "    float2 padding;\n"
+    "};\n"
+    "\n"
+    "struct VSOutput\n"
+    "{\n"
+    "    float4 pos : SV_POSITION;\n"
+    "    float2 uv : TEXCOORD0;\n"
+    "};\n"
+    "\n"
+    "VSOutput VSMain(uint id : SV_VertexID)\n"
+    "{\n"
+    "    float2 positions[4] =\n"
+    "    {\n"
+    "        float2(-1.0, -1.0),\n"
+    "        float2(-1.0,  1.0),\n"
+    "        float2( 1.0, -1.0),\n"
+    "        float2( 1.0,  1.0)\n"
+    "    };\n"
+    "\n"
+    "    float2 uvs[4] =\n"
+    "    {\n"
+    "        float2(0.0, 1.0),\n"
+    "        float2(0.0, 0.0),\n"
+    "        float2(1.0, 1.0),\n"
+    "        float2(1.0, 0.0)\n"
+    "    };\n"
+    "\n"
+    "    VSOutput output;\n"
+    "    output.pos = float4(positions[id] * scale, 0.0, 1.0);\n"
+    "    output.uv = uvs[id];\n"
+    "    return output;\n"
+    "}\n"
+    "\n"
+    "Texture2D videoTexture : register(t0);\n"
+    "SamplerState videoSampler : register(s0);\n"
+    "\n"
+    "float4 PSMain(VSOutput input) : SV_TARGET\n"
+    "{\n"
+    "    return videoTexture.Sample(videoSampler, input.uv);\n"
+    "}\n";
+
+
+struct TransformData
+{
+    float scaleX;
+    float scaleY;
+    float padding0;
+    float padding1;
+};
+
+
+// ============================================================
+// CreateRenderTargetView
+// ============================================================
+//
+// (Re)cria a view do back buffer atual do swap chain. Chamado
+// na inicialização e sempre que o swap chain é redimensionado.
+// ============================================================
+
+bool CreateRenderTargetView()
+{
+    ComPtr<ID3D11Texture2D> backBuffer;
+
+
+    HRESULT hr =
+        g_swapChain->GetBuffer(
+            0,
+            __uuidof(ID3D11Texture2D),
+            reinterpret_cast<void**>(
+                backBuffer.GetAddressOf()
+            )
+        );
+
+
+    if (FAILED(hr))
+    {
+        std::cout
+            << "Renderer: falha ao obter back buffer. "
+            << "HRESULT: 0x"
+            << std::hex
+            << hr
+            << std::dec
+            << "\n";
+
+        return false;
+    }
+
+
+    hr =
+        g_rendererDevice->CreateRenderTargetView(
+            backBuffer.Get(),
+            nullptr,
+            g_renderTargetView.ReleaseAndGetAddressOf()
+        );
+
+
+    return SUCCEEDED(hr);
+}
+
+
+// ============================================================
+// InitializeD3D11Renderer
+// ============================================================
+
+bool InitializeD3D11Renderer(
+    HWND hwnd)
+{
+    RECT clientRect{};
+
+    GetClientRect(
+        hwnd,
+        &clientRect
+    );
+
+
+    UINT initialWidth =
+        static_cast<UINT>(
+            clientRect.right - clientRect.left
+        );
+
+    UINT initialHeight =
+        static_cast<UINT>(
+            clientRect.bottom - clientRect.top
+        );
+
+
+    if (initialWidth == 0)
+        initialWidth = 1;
+
+    if (initialHeight == 0)
+        initialHeight = 1;
+
+
+    // --------------------------------------------------------
+    // Device + swap chain
+    // --------------------------------------------------------
+
+    DXGI_SWAP_CHAIN_DESC scd{};
+
+    scd.BufferCount = 1;
+    scd.BufferDesc.Width = initialWidth;
+    scd.BufferDesc.Height = initialHeight;
+    scd.BufferDesc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+    scd.BufferDesc.RefreshRate.Numerator = 60;
+    scd.BufferDesc.RefreshRate.Denominator = 1;
+    scd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+    scd.OutputWindow = hwnd;
+    scd.SampleDesc.Count = 1;
+    scd.SampleDesc.Quality = 0;
+    scd.Windowed = TRUE;
+    scd.SwapEffect = DXGI_SWAP_EFFECT_DISCARD;
+
+
+    D3D_FEATURE_LEVEL featureLevel{};
+
+
+    HRESULT hr =
+        D3D11CreateDeviceAndSwapChain(
+            nullptr,
+            D3D_DRIVER_TYPE_HARDWARE,
+            nullptr,
+            0,
+            nullptr,
+            0,
+            D3D11_SDK_VERSION,
+            &scd,
+            g_swapChain.GetAddressOf(),
+            g_rendererDevice.GetAddressOf(),
+            &featureLevel,
+            g_rendererContext.GetAddressOf()
+        );
+
+
+    if (FAILED(hr))
+    {
+        std::cout
+            << "Renderer: D3D11CreateDeviceAndSwapChain "
+            << "falhou. HRESULT: 0x"
+            << std::hex
+            << hr
+            << std::dec
+            << "\n";
+
+        return false;
+    }
+
+
+    if (!CreateRenderTargetView())
+    {
+        return false;
+    }
+
+
+    // --------------------------------------------------------
+    // Shaders
+    // --------------------------------------------------------
+
+    ComPtr<ID3DBlob> vsBlob;
+    ComPtr<ID3DBlob> psBlob;
+    ComPtr<ID3DBlob> errorBlob;
+
+
+    hr =
+        D3DCompile(
+            kShaderSource,
+            strlen(kShaderSource),
+            nullptr,
+            nullptr,
+            nullptr,
+            "VSMain",
+            "vs_4_0",
+            0,
+            0,
+            vsBlob.GetAddressOf(),
+            errorBlob.GetAddressOf()
+        );
+
+
+    if (FAILED(hr))
+    {
+        std::cout
+            << "Renderer: falha ao compilar vertex shader. "
+            << (errorBlob
+                ? static_cast<const char*>(
+                    errorBlob->GetBufferPointer())
+                : "erro desconhecido")
+            << "\n";
+
+        return false;
+    }
+
+
+    errorBlob.Reset();
+
+
+    hr =
+        D3DCompile(
+            kShaderSource,
+            strlen(kShaderSource),
+            nullptr,
+            nullptr,
+            nullptr,
+            "PSMain",
+            "ps_4_0",
+            0,
+            0,
+            psBlob.GetAddressOf(),
+            errorBlob.GetAddressOf()
+        );
+
+
+    if (FAILED(hr))
+    {
+        std::cout
+            << "Renderer: falha ao compilar pixel shader. "
+            << (errorBlob
+                ? static_cast<const char*>(
+                    errorBlob->GetBufferPointer())
+                : "erro desconhecido")
+            << "\n";
+
+        return false;
+    }
+
+
+    hr =
+        g_rendererDevice->CreateVertexShader(
+            vsBlob->GetBufferPointer(),
+            vsBlob->GetBufferSize(),
+            nullptr,
+            g_vertexShader.GetAddressOf()
+        );
+
+    if (FAILED(hr))
+        return false;
+
+
+    hr =
+        g_rendererDevice->CreatePixelShader(
+            psBlob->GetBufferPointer(),
+            psBlob->GetBufferSize(),
+            nullptr,
+            g_pixelShader.GetAddressOf()
+        );
+
+    if (FAILED(hr))
+        return false;
+
+
+    // --------------------------------------------------------
+    // Sampler (filtragem bilinear - suaviza o escalonamento)
+    // --------------------------------------------------------
+
+    D3D11_SAMPLER_DESC sampDesc{};
+
+    sampDesc.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
+    sampDesc.AddressU = D3D11_TEXTURE_ADDRESS_CLAMP;
+    sampDesc.AddressV = D3D11_TEXTURE_ADDRESS_CLAMP;
+    sampDesc.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
+    sampDesc.ComparisonFunc = D3D11_COMPARISON_NEVER;
+    sampDesc.MaxLOD = D3D11_FLOAT32_MAX;
+
+
+    hr =
+        g_rendererDevice->CreateSamplerState(
+            &sampDesc,
+            g_samplerState.GetAddressOf()
+        );
+
+    if (FAILED(hr))
+        return false;
+
+
+    // --------------------------------------------------------
+    // Constant buffer (fator de escala do letterbox)
+    // --------------------------------------------------------
+
+    D3D11_BUFFER_DESC cbDesc{};
+
+    cbDesc.ByteWidth = sizeof(TransformData);
+    cbDesc.Usage = D3D11_USAGE_DEFAULT;
+    cbDesc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+
+
+    hr =
+        g_rendererDevice->CreateBuffer(
+            &cbDesc,
+            nullptr,
+            g_transformBuffer.GetAddressOf()
+        );
+
+    if (FAILED(hr))
+        return false;
+
+
+    std::cout
+        << "Renderer: Direct3D 11 inicializado com sucesso.\n";
+
+
+    return true;
+}
+
+
+// ============================================================
+// EnsureVideoTexture
+// ============================================================
+//
+// Cria (ou recria, se o tamanho mudou) a textura dinâmica que
+// recebe os pixels BGRA decodificados a cada frame.
+// ============================================================
+
+bool EnsureVideoTexture(
+    uint32_t width,
+    uint32_t height)
+{
+    if (g_videoTexture &&
+        width == g_videoTextureWidth &&
+        height == g_videoTextureHeight)
+    {
+        return true;
+    }
+
+
+    D3D11_TEXTURE2D_DESC desc{};
+
+    desc.Width = width;
+    desc.Height = height;
+    desc.MipLevels = 1;
+    desc.ArraySize = 1;
+    desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+    desc.SampleDesc.Count = 1;
+    desc.Usage = D3D11_USAGE_DYNAMIC;
+    desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+    desc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+
+
+    ComPtr<ID3D11Texture2D> texture;
+
+
+    HRESULT hr =
+        g_rendererDevice->CreateTexture2D(
+            &desc,
+            nullptr,
+            texture.GetAddressOf()
+        );
+
+
+    if (FAILED(hr))
+    {
+        std::cout
+            << "Renderer: falha ao criar textura de video "
+            << "("
+            << width
+            << "x"
+            << height
+            << "). HRESULT: 0x"
+            << std::hex
+            << hr
+            << std::dec
+            << "\n";
+
+        return false;
+    }
+
+
+    ComPtr<ID3D11ShaderResourceView> srv;
+
+
+    hr =
+        g_rendererDevice->CreateShaderResourceView(
+            texture.Get(),
+            nullptr,
+            srv.GetAddressOf()
+        );
+
+
+    if (FAILED(hr))
+    {
+        return false;
+    }
+
+
+    g_videoTexture =
+        texture;
+
+    g_videoSRV =
+        srv;
+
+    g_videoTextureWidth =
+        width;
+
+    g_videoTextureHeight =
+        height;
+
+
+    return true;
+}
+
+
+// ============================================================
+// ResizeRenderer
+// ============================================================
+//
+// Chamado no WM_SIZE. Libera a render target view antiga,
+// redimensiona os buffers do swap chain, e recria a view.
+// ============================================================
+
+void ResizeRenderer(
+    uint32_t width,
+    uint32_t height)
+{
+    if (!g_swapChain ||
+        width == 0 ||
+        height == 0)
+    {
+        return;
+    }
+
+
+    std::lock_guard<std::mutex> lock(
+        g_rendererMutex
+    );
+
+
+    g_renderTargetView.Reset();
+
+
+    HRESULT hr =
+        g_swapChain->ResizeBuffers(
+            0,
+            width,
+            height,
+            DXGI_FORMAT_UNKNOWN,
+            0
+        );
+
+
+    if (FAILED(hr))
+    {
+        std::cout
+            << "Renderer: ResizeBuffers falhou. HRESULT: 0x"
+            << std::hex
+            << hr
+            << std::dec
+            << "\n";
+
+        return;
+    }
+
+
+    CreateRenderTargetView();
+}
+
+
+// ============================================================
+// RenderFrame
+// ============================================================
+//
+// Substitui o antigo WM_PAINT baseado em GDI. Sobe o frame
+// atual (g_framePixels) como textura, calcula o fator de
+// escala que preserva a proporção (mesmo cálculo de antes,
+// agora indo pro shader em vez de pro StretchDIBits), e
+// apresenta na tela.
+// ============================================================
+
+void RenderFrame()
+{
+    if (!g_rendererDevice)
+    {
+        return;
+    }
+
+
+    std::lock_guard<std::mutex> lock(
+        g_rendererMutex
+    );
+
+
+    if (!g_renderTargetView)
+    {
+        return;
+    }
+
+
+    RECT clientRect{};
+
+    GetClientRect(
+        g_hwnd,
+        &clientRect
+    );
+
+
+    int windowWidth =
+        clientRect.right - clientRect.left;
+
+    int windowHeight =
+        clientRect.bottom - clientRect.top;
+
+
+    if (windowWidth <= 0 ||
+        windowHeight <= 0)
+    {
+        return;
+    }
+
+
+    // --------------------------------------------------------
+    // Copiar o frame atual
+    // --------------------------------------------------------
+
+    uint32_t width =
+        0;
+
+    uint32_t height =
+        0;
+
+    bool haveFrame =
+        false;
+
+
+    {
+        std::lock_guard<std::mutex> frameLock(
+            g_frameMutex
+        );
+
+
+        if (!g_framePixels.empty() &&
+            g_frameWidth > 0 &&
+            g_frameHeight > 0)
+        {
+            width =
+                g_frameWidth;
+
+            height =
+                g_frameHeight;
+
+
+            if (EnsureVideoTexture(
+                    width,
+                    height))
+            {
+                D3D11_MAPPED_SUBRESOURCE mapped{};
+
+
+                HRESULT hr =
+                    g_rendererContext->Map(
+                        g_videoTexture.Get(),
+                        0,
+                        D3D11_MAP_WRITE_DISCARD,
+                        0,
+                        &mapped
+                    );
+
+
+                if (SUCCEEDED(hr))
+                {
+                    const size_t rowBytes =
+                        static_cast<size_t>(width) *
+                        4;
+
+
+                    for (uint32_t y = 0;
+                         y < height;
+                         ++y)
+                    {
+                        std::memcpy(
+                            static_cast<BYTE*>(
+                                mapped.pData) +
+                                static_cast<size_t>(y) *
+                                    mapped.RowPitch,
+
+                            g_framePixels.data() +
+                                static_cast<size_t>(y) *
+                                    rowBytes,
+
+                            rowBytes
+                        );
+                    }
+
+
+                    g_rendererContext->Unmap(
+                        g_videoTexture.Get(),
+                        0
+                    );
+
+
+                    haveFrame =
+                        true;
+                }
+            }
+        }
+    }
+
+
+    // --------------------------------------------------------
+    // Limpar (fundo preto - letterbox)
+    // --------------------------------------------------------
+
+    float clearColor[4] =
+        { 0.0f, 0.0f, 0.0f, 1.0f };
+
+
+    g_rendererContext->OMSetRenderTargets(
+        1,
+        g_renderTargetView.GetAddressOf(),
+        nullptr
+    );
+
+
+    g_rendererContext->ClearRenderTargetView(
+        g_renderTargetView.Get(),
+        clearColor
+    );
+
+
+    if (haveFrame &&
+        g_videoSRV)
+    {
+        // ------------------------------------------------
+        // Fator de escala (preserva a proporção - letterbox)
+        //
+        // Mesmo cálculo de sempre: se a imagem é "mais larga"
+        // que a janela relativamente, encolhe a altura; senão
+        // encolhe a largura. Agora isso vira o parâmetro do
+        // shader em vez de coordenadas de StretchDIBits.
+        // ------------------------------------------------
+
+        double imageAspect =
+            static_cast<double>(width) /
+            static_cast<double>(height);
+
+        double windowAspect =
+            static_cast<double>(windowWidth) /
+            static_cast<double>(windowHeight);
+
+
+        TransformData transform{};
+
+
+        if (imageAspect > windowAspect)
+        {
+            transform.scaleX = 1.0f;
+
+            transform.scaleY =
+                static_cast<float>(
+                    windowAspect / imageAspect
+                );
+        }
+        else
+        {
+            transform.scaleX =
+                static_cast<float>(
+                    imageAspect / windowAspect
+                );
+
+            transform.scaleY = 1.0f;
+        }
+
+
+        g_rendererContext->UpdateSubresource(
+            g_transformBuffer.Get(),
+            0,
+            nullptr,
+            &transform,
+            0,
+            0
+        );
+
+
+        D3D11_VIEWPORT viewport{};
+
+        viewport.Width =
+            static_cast<float>(windowWidth);
+
+        viewport.Height =
+            static_cast<float>(windowHeight);
+
+        viewport.MaxDepth =
+            1.0f;
+
+
+        g_rendererContext->RSSetViewports(
+            1,
+            &viewport
+        );
+
+
+        g_rendererContext->IASetPrimitiveTopology(
+            D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP
+        );
+
+
+        g_rendererContext->VSSetShader(
+            g_vertexShader.Get(),
+            nullptr,
+            0
+        );
+
+
+        g_rendererContext->VSSetConstantBuffers(
+            0,
+            1,
+            g_transformBuffer.GetAddressOf()
+        );
+
+
+        g_rendererContext->PSSetShader(
+            g_pixelShader.Get(),
+            nullptr,
+            0
+        );
+
+
+        g_rendererContext->PSSetShaderResources(
+            0,
+            1,
+            g_videoSRV.GetAddressOf()
+        );
+
+
+        g_rendererContext->PSSetSamplers(
+            0,
+            1,
+            g_samplerState.GetAddressOf()
+        );
+
+
+        g_rendererContext->Draw(
+            4,
+            0
+        );
+    }
+
+
+    // Present com vsync (1) - sincroniza com o monitor, evita
+    // tearing e limita naturalmente a taxa de apresentação.
+    g_swapChain->Present(
+        1,
+        0
+    );
+}
+
+
+// ============================================================
 // Window Procedure
 // ============================================================
 
@@ -1900,518 +2742,34 @@ LRESULT CALLBACK WindowProc(
     {
         PAINTSTRUCT ps{};
 
-
-        HDC hdc =
-            BeginPaint(
-                hwnd,
-                &ps
-            );
-
-
-        // ====================================================
-        // Bloquear frame durante renderização
-        // ====================================================
-
-        std::lock_guard<std::mutex> lock(
-            g_frameMutex
-        );
-
-
-        RECT clientRect{};
-
-
-        GetClientRect(
+        BeginPaint(
             hwnd,
-            &clientRect
+            &ps
         );
 
-
-        int windowWidth =
-            clientRect.right -
-            clientRect.left;
-
-
-        int windowHeight =
-            clientRect.bottom -
-            clientRect.top;
-
-
-        if (windowWidth <= 0 ||
-            windowHeight <= 0)
-        {
-            EndPaint(
-                hwnd,
-                &ps
-            );
-
-            return 0;
-        }
-
-
-        // ====================================================
-        // DOUBLE BUFFER
-        //
-        // Tudo é desenhado num bitmap fora da tela primeiro.
-        // Só no final copiamos o resultado pronto pra tela
-        // (BitBlt), de uma vez só - sem "flash" de fundo preto
-        // visível entre frames.
-        // ====================================================
-
-        static HDC memDC =
-            nullptr;
-
-        static HBITMAP memBitmap =
-            nullptr;
-
-        static HBITMAP oldBitmap =
-            nullptr;
-
-        static int memWidth =
-            0;
-
-        static int memHeight =
-            0;
-
-
-        if (!memDC ||
-            memWidth != windowWidth ||
-            memHeight != windowHeight)
-        {
-            if (memDC)
-            {
-                SelectObject(
-                    memDC,
-                    oldBitmap
-                );
-
-                DeleteObject(
-                    memBitmap
-                );
-
-                DeleteDC(
-                    memDC
-                );
-            }
-
-
-            memDC =
-                CreateCompatibleDC(
-                    hdc
-                );
-
-            memBitmap =
-                CreateCompatibleBitmap(
-                    hdc,
-                    windowWidth,
-                    windowHeight
-                );
-
-            oldBitmap =
-                static_cast<HBITMAP>(
-                    SelectObject(
-                        memDC,
-                        memBitmap
-                    )
-                );
-
-
-            memWidth =
-                windowWidth;
-
-            memHeight =
-                windowHeight;
-        }
-
-
-        // ====================================================
-        // Fundo preto (no buffer fora da tela)
-        // ====================================================
-
-        FillRect(
-            memDC,
-            &clientRect,
-            static_cast<HBRUSH>(
-                GetStockObject(
-                    BLACK_BRUSH
-                )
-            )
-        );
-
-
-        uint32_t width =
-            g_frameWidth;
-
-
-        uint32_t height =
-            g_frameHeight;
-
-
-        // ====================================================
-        // Frame válido
-        // ====================================================
-
-        if (
-            !g_framePixels.empty() &&
-            width > 0 &&
-            height > 0)
-        {
-            BITMAPINFO bitmapInfo{};
-
-
-            bitmapInfo.bmiHeader.biSize =
-                sizeof(BITMAPINFOHEADER);
-
-
-            bitmapInfo.bmiHeader.biWidth =
-                static_cast<LONG>(
-                    width
-                );
-
-
-            // ================================================
-            // ALTURA POSITIVA (bottom-up)
-            //
-            // Usar altura NEGATIVA (top-down) direto no
-            // StretchDIBits tem um problema conhecido: alguns
-            // drivers de GPU distorcem a imagem especificamente
-            // durante uma operação de STRETCH (redimensionar)
-            // com DIB top-down - o efeito varia de driver pra
-            // driver, o que bate com o sintoma (só nosso app,
-            // só ao vivo, nunca ao salvar em arquivo sem
-            // stretch).
-            //
-            // Fix: invertemos o buffer manualmente pra
-            // bottom-up (o formato clássico, testado em todo
-            // driver desde sempre) em vez de confiar no
-            // biHeight negativo.
-            // ================================================
-
-            bitmapInfo.bmiHeader.biHeight =
-                static_cast<LONG>(
-                    height
-                );
-
-
-            static std::vector<unsigned char> flippedPixels;
-
-
-            flippedPixels.resize(
-                g_framePixels.size()
-            );
-
-
-            {
-                const size_t rowBytes =
-                    static_cast<size_t>(width) *
-                    4;
-
-
-                for (uint32_t y = 0;
-                     y < height;
-                     ++y)
-                {
-                    std::memcpy(
-                        flippedPixels.data() +
-                            static_cast<size_t>(y) *
-                                rowBytes,
-
-                        g_framePixels.data() +
-                            static_cast<size_t>(
-                                height - 1 - y
-                            ) *
-                                rowBytes,
-
-                        rowBytes
-                    );
-                }
-            }
-
-
-            bitmapInfo.bmiHeader.biPlanes =
-                1;
-
-
-            bitmapInfo.bmiHeader.biBitCount =
-                32;
-
-
-            bitmapInfo.bmiHeader.biCompression =
-                BI_RGB;
-
-
-            // =================================================
-            // Aspect ratio
-            // =================================================
-
-            double imageAspect =
-                static_cast<double>(
-                    width
-                ) /
-                static_cast<double>(
-                    height
-                );
-
-
-            double windowAspect =
-                static_cast<double>(
-                    windowWidth
-                ) /
-                static_cast<double>(
-                    windowHeight
-                );
-
-
-            int drawWidth =
-                windowWidth;
-
-
-            int drawHeight =
-                windowHeight;
-
-
-            int drawX =
-                0;
-
-
-            int drawY =
-                0;
-
-
-            // =================================================
-            // DEBUG: valores exatos usados no letterbox
-            //
-            // Throttled pra não spammar o console (uma vez por
-            // segundo).
-            // =================================================
-
-            {
-                static ULONGLONG lastDebugLog =
-                    0;
-
-
-                ULONGLONG nowDebug =
-                    GetTickCount64();
-
-
-                if (nowDebug -
-                    lastDebugLog >=
-                    1000)
-                {
-                    lastDebugLog =
-                        nowDebug;
-
-
-                    std::cout
-                        << "\n[DEBUG letterbox] "
-                        << "janela="
-                        << windowWidth
-                        << "x"
-                        << windowHeight
-                        << " imagem="
-                        << width
-                        << "x"
-                        << height
-                        << " imageAspect="
-                        << imageAspect
-                        << " windowAspect="
-                        << windowAspect
-                        << "\n";
-                }
-            }
-
-
-            // =================================================
-            // Letterbox
-            // =================================================
-
-            if (
-                imageAspect >
-                windowAspect)
-            {
-                drawWidth =
-                    windowWidth;
-
-
-                drawHeight =
-                    static_cast<int>(
-                        windowWidth /
-                        imageAspect
-                    );
-
-
-                drawY =
-                    (
-                        windowHeight -
-                        drawHeight
-                    ) / 2;
-            }
-            else
-            {
-                drawHeight =
-                    windowHeight;
-
-
-                drawWidth =
-                    static_cast<int>(
-                        windowHeight *
-                        imageAspect
-                    );
-
-
-                drawX =
-                    (
-                        windowWidth -
-                        drawWidth
-                    ) / 2;
-            }
-
-
-            // =================================================
-            // DEBUG: retângulo final
-            // =================================================
-
-            {
-                static ULONGLONG lastDebugLog2 =
-                    0;
-
-
-                ULONGLONG nowDebug2 =
-                    GetTickCount64();
-
-
-                if (nowDebug2 -
-                    lastDebugLog2 >=
-                    1000)
-                {
-                    lastDebugLog2 =
-                        nowDebug2;
-
-
-                    std::cout
-                        << "[DEBUG letterbox] draw=("
-                        << drawX
-                        << ","
-                        << drawY
-                        << ") "
-                        << drawWidth
-                        << "x"
-                        << drawHeight
-                        << " memDC="
-                        << memWidth
-                        << "x"
-                        << memHeight
-                        << " pixelsBufSize="
-                        << g_framePixels.size()
-                        << " esperado="
-                        << (static_cast<size_t>(width) *
-                            height * 4)
-                        << "\n";
-                }
-            }
-
-
-            // =================================================
-            // Qualidade da escala
-            //
-            // HALFTONE (reamostragem por área) só compensa o
-            // custo de CPU quando a redução é grande - perto do
-            // tamanho nativo a diferença de qualidade é
-            // imperceptível, então usamos COLORONCOLOR (rápido)
-            // nesse caso.
-            // =================================================
-
-            double scaleFactor =
-                static_cast<double>(drawWidth) /
-                static_cast<double>(width);
-
-
-            bool bigDownscale =
-                scaleFactor <
-                0.9;
-
-
-            SetStretchBltMode(
-                memDC,
-                bigDownscale
-                    ? HALFTONE
-                    : COLORONCOLOR
-            );
-
-
-            if (bigDownscale)
-            {
-                SetBrushOrgEx(
-                    memDC,
-                    0,
-                    0,
-                    nullptr
-                );
-            }
-
-
-            // =================================================
-            // Renderizar BGRA (no buffer fora da tela)
-            // =================================================
-
-            StretchDIBits(
-                memDC,
-
-                drawX,
-                drawY,
-
-                drawWidth,
-                drawHeight,
-
-                0,
-                0,
-
-                static_cast<int>(
-                    width
-                ),
-
-                static_cast<int>(
-                    height
-                ),
-
-                flippedPixels.data(),
-
-                &bitmapInfo,
-
-                DIB_RGB_COLORS,
-
-                SRCCOPY
-            );
-        }
-
-
-        // ====================================================
-        // Copiar o buffer pronto pra tela - uma única operação,
-        // sem estados intermediários visíveis.
-        // ====================================================
-
-        BitBlt(
-            hdc,
-
-            0,
-            0,
-
-            windowWidth,
-            windowHeight,
-
-            memDC,
-
-            0,
-            0,
-
-            SRCCOPY
-        );
-
+        RenderFrame();
 
         EndPaint(
             hwnd,
             &ps
         );
 
+        return 0;
+    }
+
+
+    case WM_SIZE:
+    {
+        uint32_t newWidth =
+            LOWORD(lParam);
+
+        uint32_t newHeight =
+            HIWORD(lParam);
+
+        ResizeRenderer(
+            newWidth,
+            newHeight
+        );
 
         return 0;
     }
@@ -2813,6 +3171,26 @@ int main()
     {
         std::cout
             << "Falha ao criar janela.\n";
+
+
+        closesocket(
+            g_udpSocket
+        );
+
+
+        WSACleanup();
+
+
+        return 1;
+    }
+
+
+    if (!InitializeD3D11Renderer(
+            g_hwnd))
+    {
+        std::cout
+            << "Falha ao inicializar o renderizador "
+            << "Direct3D 11.\n";
 
 
         closesocket(

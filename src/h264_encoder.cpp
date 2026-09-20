@@ -4,6 +4,122 @@
 #include <string>
 #include <vector>
 
+#include <dxgi.h>
+#pragma comment(lib, "dxgi.lib")
+
+
+// ============================================================
+// DetectGpuVendor
+// ============================================================
+//
+// Consulta o primeiro adaptador de video via DXGI pra escolher
+// o encoder de hardware certo (NVENC/AMF/QSV). Isso é o que
+// permite o projeto funcionar em qualquer GPU, não só NVIDIA.
+// ============================================================
+
+namespace
+{
+    GpuVendor DetectGpuVendor()
+    {
+        IDXGIFactory1* factory =
+            nullptr;
+
+
+        if (FAILED(
+                CreateDXGIFactory1(
+                    __uuidof(IDXGIFactory1),
+                    reinterpret_cast<void**>(&factory)
+                )))
+        {
+            return GpuVendor::Unknown;
+        }
+
+
+        GpuVendor result =
+            GpuVendor::Unknown;
+
+
+        IDXGIAdapter1* adapter =
+            nullptr;
+
+
+        if (SUCCEEDED(
+                factory->EnumAdapters1(
+                    0,
+                    &adapter
+                )))
+        {
+            DXGI_ADAPTER_DESC1 desc{};
+
+
+            if (SUCCEEDED(
+                    adapter->GetDesc1(&desc)))
+            {
+                switch (desc.VendorId)
+                {
+                    case 0x10DE: // NVIDIA
+                        result = GpuVendor::Nvidia;
+                        break;
+
+                    case 0x1002: // AMD
+                    case 0x1022:
+                        result = GpuVendor::Amd;
+                        break;
+
+                    case 0x8086: // Intel
+                        result = GpuVendor::Intel;
+                        break;
+
+                    default:
+                        result = GpuVendor::Unknown;
+                        break;
+                }
+
+
+                int size =
+                    WideCharToMultiByte(
+                        CP_UTF8, 0,
+                        desc.Description, -1,
+                        nullptr, 0,
+                        nullptr, nullptr
+                    );
+
+
+                std::string narrowDesc(
+                    size > 0 ? size - 1 : 0,
+                    '\0'
+                );
+
+
+                if (size > 0)
+                {
+                    WideCharToMultiByte(
+                        CP_UTF8, 0,
+                        desc.Description, -1,
+                        narrowDesc.data(), size,
+                        nullptr, nullptr
+                    );
+                }
+
+
+                std::cout
+                    << "H264Encoder: GPU detectada - "
+                    << narrowDesc
+                    << "\n";
+            }
+
+
+            adapter->Release();
+        }
+
+
+        factory->Release();
+
+
+        return result;
+    }
+}
+
 H264Encoder::H264Encoder()
     : m_width(0),
       m_height(0),
@@ -111,10 +227,47 @@ bool H264Encoder::Start(
     }
 
 
+    // ----------------------------------------------------------
+    // Detectar GPU e escolher o encoder de hardware certo
+    // (NVENC/AMF/QSV) - isso é o que permite o projeto rodar em
+    // qualquer GPU, não só NVIDIA.
+    // ----------------------------------------------------------
+
+    m_gpuVendor =
+        DetectGpuVendor();
+
+
+    const char* encoderName =
+        "libx264 (software)";
+
+
+    switch (m_gpuVendor)
+    {
+        case GpuVendor::Nvidia:
+            encoderName = "h264_nvenc (NVIDIA)";
+            break;
+
+        case GpuVendor::Amd:
+            encoderName = "h264_amf (AMD)";
+            break;
+
+        case GpuVendor::Intel:
+            encoderName = "h264_qsv (Intel)";
+            break;
+
+        default:
+            encoderName =
+                "libx264 (software - GPU nao "
+                "reconhecida)";
+            break;
+    }
+
+
     std::cout
         << "\n========================================\n"
-        << "H264 NVENC\n"
-        << "Resolucao: "
+        << "H264 ENCODER: "
+        << encoderName
+        << "\nResolucao: "
         << m_width
         << "x"
         << m_height
@@ -126,7 +279,234 @@ bool H264Encoder::Start(
         << "========================================\n";
 
 
-    return StartProcess();
+    if (!StartProcess(false))
+    {
+        return false;
+    }
+
+
+    // ----------------------------------------------------------
+    // Health check: encoders de hardware podem falhar de forma
+    // assincrona (ex: driver desatualizado, sem NVENC/AMF/QSV
+    // capaz) - o ffmpeg simplesmente encerra com erro logo no
+    // inicio nesse caso. Se isso acontecer, tentamos de novo
+    // com libx264 (software), que funciona em qualquer CPU.
+    // ----------------------------------------------------------
+
+    if (m_gpuVendor != GpuVendor::Unknown)
+    {
+        Sleep(700);
+
+
+        DWORD exitCode =
+            0;
+
+
+        if (m_process &&
+            GetExitCodeProcess(
+                m_process,
+                &exitCode) &&
+            exitCode != STILL_ACTIVE)
+        {
+            std::cout
+                << "H264Encoder: encoder de hardware "
+                << "falhou ao iniciar (codigo "
+                << exitCode
+                << "). Tentando fallback por "
+                << "software (libx264)...\n";
+
+
+            Stop();
+
+
+            if (!StartProcess(true))
+            {
+                return false;
+            }
+
+
+            std::cout
+                << "H264Encoder: rodando com libx264 "
+                << "(software).\n";
+        }
+    }
+
+
+    return true;
+}
+
+
+// ============================================================
+// BuildFfmpegCommand
+// ============================================================
+//
+// Monta o comando do ffmpeg. A entrada (BGRA cru) e a saida
+// (H264 Annex B) são iguais pra qualquer GPU - só o bloco do
+// codec em si muda, pra usar o encoder de hardware certo
+// (NVENC/AMF/QSV) ou cair pra libx264 (software, funciona em
+// qualquer CPU) se pedido ou se nenhuma GPU reconhecida foi
+// detectada.
+// ============================================================
+
+std::string H264Encoder::BuildFfmpegCommand(
+    bool useSoftwareFallback)
+{
+    // --------------------------------------------------------
+    // Entrada + escala (iguais pra qualquer encoder)
+    // --------------------------------------------------------
+
+    std::string command =
+        "ffmpeg "
+        "-hide_banner "
+        "-loglevel error "
+
+        "-f rawvideo "
+        "-pix_fmt bgra "
+        "-video_size "
+        + std::to_string(m_width)
+        + "x"
+        + std::to_string(m_height)
+        + " "
+        "-framerate "
+        + std::to_string(m_fps)
+        + " "
+        "-i pipe:0 "
+
+        // "-2" na largura deixa o ffmpeg calcular mantendo a
+        // proporção original, sempre em número par (exigência
+        // do H264).
+
+        + (m_outputHeight > 0
+            ? "-vf scale=-2:" +
+              std::to_string(m_outputHeight) +
+              " "
+            : "")
+
+        + "-an ";
+
+
+    // --------------------------------------------------------
+    // Bloco do codec - varia por fabricante de GPU
+    // --------------------------------------------------------
+
+    GpuVendor vendor =
+        useSoftwareFallback
+        ? GpuVendor::Unknown
+        : m_gpuVendor;
+
+
+    switch (vendor)
+    {
+        case GpuVendor::Nvidia:
+        {
+            // p1 e o mais rapido/pior qualidade do NVENC.
+            // Usamos p4 (meio-termo) - o NVENC e um chip de
+            // encode dedicado, entao subir o preset custa
+            // muito pouca GPU (poucos ms a mais por frame),
+            // mas melhora bastante a qualidade em movimento.
+            // "tune ll" mantem baixa latencia independente do
+            // preset. Adaptive Quantization (spatial/temporal)
+            // aloca mais bits pras partes complexas/em
+            // movimento da imagem em vez de gastar igual em
+            // tudo - custo de GPU desprezivel.
+
+            command +=
+                "-c:v h264_nvenc "
+                "-preset p4 "
+                "-tune ll "
+                "-spatial-aq 1 "
+                "-temporal-aq 1 "
+                "-aq-strength 8 "
+                "-rc cbr "
+                "-b:v " + std::to_string(m_bitrateMbps) + "M "
+                "-maxrate " + std::to_string(m_bitrateMbps) + "M "
+                "-bufsize " + std::to_string(m_bitrateMbps * 2) + "M "
+                "-bf 0 "
+                "-forced-idr 1 "
+                "-zerolatency 1 ";
+
+            break;
+        }
+
+        case GpuVendor::Amd:
+        {
+            // AMF: "usage ultralowlatency" já configura um
+            // perfil de baixa latência adequado pra streaming
+            // em tempo real (equivalente ao "tune ll" do
+            // NVENC).
+
+            command +=
+                "-c:v h264_amf "
+                "-usage ultralowlatency "
+                "-quality speed "
+                "-rc cbr "
+                "-b:v " + std::to_string(m_bitrateMbps) + "M "
+                "-maxrate " + std::to_string(m_bitrateMbps) + "M "
+                "-bf 0 ";
+
+            break;
+        }
+
+        case GpuVendor::Intel:
+        {
+            // QSV: "look_ahead 0" desativa o lookahead (que
+            // adiciona atraso pra melhor qualidade) - queremos
+            // a menor latência possível aqui.
+
+            command +=
+                "-c:v h264_qsv "
+                "-preset veryfast "
+                "-look_ahead 0 "
+                "-rc cbr "
+                "-b:v " + std::to_string(m_bitrateMbps) + "M "
+                "-maxrate " + std::to_string(m_bitrateMbps) + "M "
+                "-bf 0 ";
+
+            break;
+        }
+
+        default:
+        {
+            // Fallback por SOFTWARE (qualquer CPU, sem
+            // depender de GPU). "veryfast" + "zerolatency" e a
+            // combinacao padrao do libx264 pra streaming em
+            // tempo real - troca qualidade por velocidade o
+            // suficiente pra rodar sem acumular atraso numa
+            // CPU comum.
+
+            command +=
+                "-c:v libx264 "
+                "-preset veryfast "
+                "-tune zerolatency "
+                "-x264-params nal-hrd=cbr "
+                "-b:v " + std::to_string(m_bitrateMbps) + "M "
+                "-maxrate " + std::to_string(m_bitrateMbps) + "M "
+                "-bufsize " + std::to_string(m_bitrateMbps * 2) + "M "
+                "-bf 0 ";
+
+            break;
+        }
+    }
+
+
+    // --------------------------------------------------------
+    // GOP + saida Annex B puro (iguais pra qualquer encoder)
+    //
+    // Sem container. Cada NAL unit é delimitada por start
+    // codes (00 00 01 / 00 00 00 01), o que permite montar o
+    // framing por frame no lado do UDP/receiver sem o overhead
+    // e a fragilidade do MPEG-TS sobre transporte não
+    // confiável.
+    // --------------------------------------------------------
+
+    command +=
+        "-g " + std::to_string(m_fps) + " "
+        "-keyint_min " + std::to_string(m_fps) + " "
+        "-f h264 "
+        "pipe:1";
+
+
+    return command;
 }
 
 
@@ -134,7 +514,8 @@ bool H264Encoder::Start(
 // StartProcess
 // ============================================================
 
-bool H264Encoder::StartProcess()
+bool H264Encoder::StartProcess(
+    bool useSoftwareFallback)
 {
     SECURITY_ATTRIBUTES sa{};
 
@@ -295,123 +676,9 @@ bool H264Encoder::StartProcess()
     // ========================================================
 
     std::string command =
-        "ffmpeg "
-        "-hide_banner "
-        "-loglevel error "
-
-        // ----------------------------------------------------
-        // Entrada:
-        // BGRA cru vindo do Windows Graphics Capture
-        // ----------------------------------------------------
-
-        "-f rawvideo "
-        "-pix_fmt bgra "
-        "-video_size "
-        + std::to_string(m_width)
-        + "x"
-        + std::to_string(m_height)
-        + " "
-        "-framerate "
-        + std::to_string(m_fps)
-        + " "
-        "-i pipe:0 "
-
-        // ----------------------------------------------------
-        // Escala (opcional)
-        //
-        // Reduz a resolução ANTES do NVENC codificar - além de
-        // controlar a qualidade/banda entregue (ex: 720p em vez
-        // do nativo), também reduz o trabalho do encoder (menos
-        // pixels pra comprimir = menos carga de GPU).
-        //
-        // "-2" na largura deixa o ffmpeg calcular mantendo a
-        // proporção original, sempre em número par (exigência
-        // do H264).
-        // ----------------------------------------------------
-
-        + (m_outputHeight > 0
-            ? "-vf scale=-2:" +
-              std::to_string(m_outputHeight) +
-              " "
-            : "")
-        +
-
-        // ----------------------------------------------------
-        // H264 NVENC
-        // ----------------------------------------------------
-
-        "-an "
-        "-c:v h264_nvenc "
-
-        // ----------------------------------------------------
-        // Preset/qualidade
-        //
-        // p1 e o mais rapido/pior qualidade do NVENC. Trocamos
-        // pra p4 (meio-termo) - o NVENC e um chip de encode
-        // dedicado, entao subir o preset custa muito pouca GPU
-        // (poucos ms a mais por frame), mas melhora bastante a
-        // qualidade em movimento. "tune ll" mantem baixa
-        // latencia independente do preset.
-        // ----------------------------------------------------
-
-        "-preset p4 "
-        "-tune ll "
-
-        // ----------------------------------------------------
-        // Adaptive Quantization
-        //
-        // Aloca mais bits pras partes complexas/em movimento
-        // da imagem em vez de gastar igual em tudo - melhora
-        // bastante a qualidade percebida em movimento pro
-        // mesmo bitrate. Custo de GPU desprezivel.
-        // ----------------------------------------------------
-
-        "-spatial-aq 1 "
-        "-temporal-aq 1 "
-        "-aq-strength 8 "
-
-        // ----------------------------------------------------
-        // CBR
-        // ----------------------------------------------------
-
-        "-rc cbr "
-        "-b:v "
-        + std::to_string(m_bitrateMbps)
-        + "M "
-        "-maxrate "
-        + std::to_string(m_bitrateMbps)
-        + "M "
-        "-bufsize "
-        + std::to_string(m_bitrateMbps * 2)
-        + "M "
-
-        // ----------------------------------------------------
-        // Baixa latencia
-        // ----------------------------------------------------
-
-        "-bf 0 "
-        "-g "
-        + std::to_string(m_fps)
-        + " "
-        "-keyint_min "
-        + std::to_string(m_fps)
-        + " "
-        "-forced-idr 1 "
-        "-zerolatency 1 "
-
-        // ----------------------------------------------------
-        // H264 ANNEX B PURO (elementary stream)
-        //
-        // Sem container. Cada NAL unit é delimitada por start
-        // codes (00 00 01 / 00 00 00 01), o que permite montar
-        // o framing por frame no lado do UDP/receiver sem o
-        // overhead e a fragilidade do MPEG-TS sobre transporte
-        // não confiável.
-        // ----------------------------------------------------
-
-        "-f h264 "
-
-        "pipe:1";
+        BuildFfmpegCommand(
+            useSoftwareFallback
+        );
 
 
     std::vector<char> commandLine(
