@@ -8,6 +8,7 @@
 #include <wrl/client.h>
 
 #include <iostream>
+#include <string>
 #include <cstdint>
 #include <vector>
 #include <thread>
@@ -54,6 +55,12 @@ constexpr int UDP_RECEIVE_BUFFER_SIZE =
 
 HWND g_hwnd =
     nullptr;
+
+
+// IP do computador que roda o stream-client - preenchido pelo
+// prompt no início de main(). Padrão 127.0.0.1 (mesma máquina).
+std::string g_serverIp =
+    "127.0.0.1";
 
 
 // ============================================================
@@ -1372,7 +1379,7 @@ void AudioReceiverThread()
 
     inet_pton(
         AF_INET,
-        "127.0.0.1",
+        g_serverIp.c_str(),
         &serverAddress.sin_addr
     );
 
@@ -1380,7 +1387,9 @@ void AudioReceiverThread()
     std::cout
         << "AudioReceiver: escutando na porta "
         << AUDIO_UDP_PORT
-        << ", servidor em 127.0.0.1:"
+        << ", servidor em "
+        << g_serverIp
+        << ":"
         << AUDIO_SERVER_UDP_PORT
         << "\n";
 
@@ -2872,6 +2881,42 @@ int main()
 
 
     // ========================================================
+    // IP DO SERVIDOR (client)
+    //
+    // Antes era fixo em 127.0.0.1 (só localhost) - agora
+    // pergunta, pra funcionar entre máquinas diferentes na
+    // mesma rede. Deixar em branco usa 127.0.0.1 (útil pra
+    // testar tudo na mesma máquina, como antes).
+    // ========================================================
+
+    std::cout
+        << "IP do computador que vai transmitir "
+        << "(o que roda o stream-client)\n"
+        << "Deixe em branco para usar este mesmo "
+        << "computador (127.0.0.1)\n"
+        << "IP: ";
+
+
+    std::getline(
+        std::cin,
+        g_serverIp
+    );
+
+
+    if (g_serverIp.empty())
+    {
+        g_serverIp =
+            "127.0.0.1";
+    }
+
+
+    std::cout
+        << "\nServidor: "
+        << g_serverIp
+        << "\n\n";
+
+
+    // ========================================================
     // Winsock
     // ========================================================
 
@@ -3034,7 +3079,7 @@ int main()
     if (
         inet_pton(
             AF_INET,
-            "127.0.0.1",
+            g_serverIp.c_str(),
             &serverAddress.sin_addr
         ) != 1)
     {
@@ -3064,7 +3109,8 @@ int main()
 
     std::cout
         << "Servidor configurado: "
-        << "127.0.0.1:"
+        << g_serverIp
+        << ":"
         << SERVER_UDP_PORT
         << "\n";
 
