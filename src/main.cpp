@@ -4,6 +4,7 @@
 #include "audio_capture.h"
 #include "audio_encoder.h"
 #include "audio_protocol.h"
+#include "signaling_client.h"
 
 #include <winsock2.h>
 #include <ws2tcpip.h>
@@ -34,6 +35,7 @@
 #include <cstdint>
 #include <cstring>
 #include <coroutine>
+#include <string>
 
 #pragma comment(lib, "d3d11.lib")
 #pragma comment(lib, "dxgi.lib")
@@ -65,6 +67,8 @@ UdpServer g_udpServer;
 H264Encoder g_h264Encoder;
 
 UdpAudioServer g_udpAudioServer;
+
+SignalingHost g_signalingHost;
 
 AudioCapture g_audioCapture;
 
@@ -255,6 +259,35 @@ void CreateDebugConsole()
 
 
 // ============================================================
+// PickBitrateMbps
+// ============================================================
+//
+// Bitrate proporcional a qualidade escolhida. Antes era fixo
+// em 16 Mbps: otimo na rede local, mas acima do upload de
+// muita conexao domestica - e o que nao cabe no upload vira
+// pacote perdido (tela preta/travada do outro lado).
+// ============================================================
+
+uint32_t PickBitrateMbps(
+    uint32_t outputHeight,
+    uint32_t fps)
+{
+    uint32_t mbps =
+        outputHeight <= 480 ? 3 :
+        outputHeight <= 720 ? 6 :
+        12;
+
+    // 30 FPS ou menos: metade dos frames, ~60% do bitrate.
+    if (fps <= 30)
+    {
+        mbps = (mbps * 6 + 5) / 10;
+    }
+
+    return mbps < 2 ? 2 : mbps;
+}
+
+
+// ============================================================
 // SelectQualityInteractively
 // ============================================================
 //
@@ -378,6 +411,114 @@ void SelectQualityInteractively()
         << " @ "
         << g_targetFps
         << " FPS\n\n";
+
+
+    // --------------------------------------------------------
+    // SESSAO (sinalizacao)
+    //
+    // Registra esta transmissao no servidor de sinalizacao e
+    // mostra o codigo que o receiver deve digitar. Se o
+    // servidor nao responder, a transmissao segue normalmente
+    // - o receiver ainda pode conectar digitando o IP.
+    // --------------------------------------------------------
+
+    // Os sockets de video/audio sobem em threads proprias e
+    // fazem a consulta STUN ao iniciar - espera (ate 8s) os
+    // dois terminarem, pra registrar a sessao ja com o
+    // endereco publico.
+    for (int i = 0;
+         i < 160 &&
+         !(g_udpServerStarted && g_audioServerStarted);
+         ++i)
+    {
+        std::this_thread::sleep_for(
+            std::chrono::milliseconds(50)
+        );
+    }
+
+
+    const StunResult& videoStun =
+        g_udpServer.GetStunResult();
+
+    const StunResult& audioStun =
+        g_udpAudioServer.GetStunResult();
+
+
+    if (videoStun.symmetric || audioStun.symmetric)
+    {
+        std::cout
+            << "AVISO: esta rede usa NAT simetrico. Conexoes "
+            << "de fora da sua rede local podem nao "
+            << "funcionar.\n\n";
+    }
+
+
+    // Hole punching: quando um receiver de outra rede entra na
+    // sessao, o servidor de sinalizacao informa o endereco
+    // publico dele. Mandamos pacotes pra la ate o HELLO dele
+    // conseguir passar pelo nosso roteador.
+    g_signalingHost.SetViewerCallback(
+        [](bool isAudio,
+           const std::string& ip,
+           uint16_t port)
+        {
+            if (isAudio)
+            {
+                if (!g_audioReceiverConnected)
+                {
+                    g_udpAudioServer.PunchTo(ip, port);
+                }
+            }
+            else
+            {
+                if (!g_udpReceiverConnected)
+                {
+                    g_udpServer.PunchTo(ip, port);
+                }
+            }
+        }
+    );
+
+
+    if (g_signalingHost.Start(
+            5001,
+            AUDIO_SERVER_UDP_PORT,
+            videoStun.ok ? videoStun.publicIp : std::string(),
+            videoStun.ok ? videoStun.publicPort : 0,
+            audioStun.ok ? audioStun.publicPort : 0))
+    {
+        std::string code =
+            g_signalingHost.GetCode();
+
+        std::cout
+            << "========================================\n"
+            << "  CODIGO DA SESSAO: "
+            << code
+            << "\n"
+            << "  (digite este codigo no stream-receiver)\n"
+            << "========================================\n\n";
+
+        std::wstring title =
+            L"Stream Client - Sessao " +
+            std::wstring(code.begin(), code.end());
+
+        SetWindowTextW(
+            g_hwnd,
+            title.c_str()
+        );
+    }
+    else
+    {
+        std::cout
+            << "Sem codigo de sessao (servidor de sinalizacao "
+            << "indisponivel em "
+            << GetSignalingUrl()
+            << ").\n"
+            << "O receiver ainda pode conectar digitando o IP "
+            << "deste computador: "
+            << GetPrimaryLocalIp()
+            << "\n\n";
+    }
 
 
     // --------------------------------------------------------
@@ -566,7 +707,13 @@ void EncoderThread()
                     frame.width,
                     frame.height,
                     g_targetFps,
-                    16,
+                    PickBitrateMbps(
+                        g_targetOutputHeight > 0
+                            ? static_cast<uint32_t>(
+                                g_targetOutputHeight)
+                            : frame.height,
+                        static_cast<uint32_t>(
+                            g_targetFps)),
                     g_targetOutputHeight))
             {
                 std::cout
@@ -1425,6 +1572,11 @@ void UdpServerThread()
         }
         else
         {
+            // Descarta os keepalives que o receiver manda
+            // durante a transmissao.
+            g_udpServer.DrainIncoming();
+
+
             std::this_thread::sleep_for(
                 std::chrono::milliseconds(100)
             );
@@ -1498,6 +1650,9 @@ void UdpAudioServerThread()
         }
         else
         {
+            g_udpAudioServer.DrainIncoming();
+
+
             std::this_thread::sleep_for(
                 std::chrono::milliseconds(100)
             );
@@ -2646,6 +2801,9 @@ LRESULT CALLBACK WindowProc(
             false;
 
 
+        g_signalingHost.Stop();
+
+
         g_udpServer.Stop();
 
 
@@ -3045,6 +3203,9 @@ int WINAPI wWinMain(
 
     g_udpReceiverConnected =
         false;
+
+
+    g_signalingHost.Stop();
 
 
     g_udpServer.Stop();

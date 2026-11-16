@@ -62,8 +62,13 @@ constexpr uint32_t VIDEO_HEADER_SIZE =
     sizeof(VideoFrameFragmentHeader);
 
 
+// 1200 bytes (e nao 1400): redes moveis (4G/5G), VPNs e
+// tuneis tem MTU menor que o da rede local. Um pacote maior
+// que o MTU do caminho e fragmentado pelo roteador - e basta
+// perder um pedaco pra perder o pacote inteiro. 1200 passa
+// inteiro em praticamente qualquer rede.
 constexpr uint32_t VIDEO_UDP_PACKET_SIZE =
-    1400;
+    1200;
 
 
 constexpr uint32_t VIDEO_UDP_PAYLOAD_SIZE =

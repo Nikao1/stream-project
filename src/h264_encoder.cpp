@@ -377,8 +377,15 @@ std::string H264Encoder::BuildFfmpegCommand(
         // do H264).
 
         + (m_outputHeight > 0
-            ? "-vf scale=-2:" +
-              std::to_string(m_outputHeight) +
+            // Largura explicita (a mesma que vai no header de
+            // rede), em vez de "-2": o ffmpeg arredonda o -2
+            // pro par MAIS PROXIMO, e nossa conta arredonda pra
+            // baixo - as vezes dava 2 pixels de diferenca
+            // entre o video real e o tamanho anunciado.
+            ? "-vf scale=" +
+              std::to_string(m_actualOutputWidth) +
+              ":" +
+              std::to_string(m_actualOutputHeight) +
               " "
             : "")
 

@@ -3,12 +3,34 @@
 
 #include <winsock2.h>
 #include <ws2tcpip.h>
+#include <windows.h>
+#include <mmsystem.h>
 
 #include <iostream>
 #include <cstring>
+#include <mutex>
 #include <vector>
 
 #pragma comment(lib, "ws2_32.lib")
+#pragma comment(lib, "winmm.lib")
+
+
+// ============================================================
+// Pacing (ritmo de envio)
+// ============================================================
+//
+// Um keyframe vira dezenas ou centenas de pacotes. Despejar
+// tudo de uma vez funciona na rede local, mas na internet o
+// roteador (ou a rede movel) descarta parte da rajada - e um
+// unico pacote perdido inutiliza o frame inteiro.
+//
+// Solucao: a cada PACING_BURST_PACKETS pacotes, uma pausa de
+// ~1 ms. Frames pequenos (a maioria) saem sem pausa nenhuma;
+// um keyframe grande ganha poucos ms de atraso.
+// ============================================================
+
+constexpr uint32_t PACING_BURST_PACKETS =
+    12;
 
 
 // ============================================================
@@ -161,6 +183,31 @@ bool UdpServer::Start(
 
 
     // --------------------------------------------------------
+    // STUN: descobrir o endereco publico deste socket
+    // --------------------------------------------------------
+
+    m_stun =
+        StunDiscover(m_socket);
+
+
+    if (m_stun.ok)
+    {
+        std::cout
+            << "UDP: endereco publico (STUN): "
+            << m_stun.publicIp
+            << ":"
+            << m_stun.publicPort
+            << "\n";
+    }
+    else
+    {
+        std::cout
+            << "UDP: STUN sem resposta - conexao so pela "
+            << "rede local.\n";
+    }
+
+
+    // --------------------------------------------------------
     // Reset estado
     // --------------------------------------------------------
 
@@ -199,79 +246,19 @@ bool UdpServer::WaitForClient()
     }
 
 
-    char buffer[64]{};
-
-
     sockaddr_in clientAddress{};
-
-
-    int clientAddressSize =
-        sizeof(clientAddress);
 
 
     std::cout
         << "UDP: aguardando HELLO...\n";
 
 
-    int received =
-        recvfrom(
+    // Espera o HELLO ignorando qualquer outro pacote, e mantem
+    // o mapeamento do roteador vivo enquanto isso.
+    if (!UdpWaitForHello(
             m_socket,
-            buffer,
-            sizeof(buffer) - 1,
-            0,
-            reinterpret_cast<sockaddr*>(
-                &clientAddress
-            ),
-            &clientAddressSize
-        );
-
-
-    if (received ==
-        SOCKET_ERROR)
-    {
-        int error =
-            WSAGetLastError();
-
-
-        // ----------------------------------------------------
-        // 10038 / 10004 podem acontecer durante encerramento
-        // ----------------------------------------------------
-
-        if (error == WSAENOTSOCK ||
-            error == WSAEINTR)
-        {
-            return false;
-        }
-
-
-        std::cout
-            << "UDP: recvfrom HELLO falhou. Erro: "
-            << error
-            << "\n";
-
-
-        return false;
-    }
-
-
-    if (received <= 0)
-    {
-        return false;
-    }
-
-
-    buffer[received] =
-        '\0';
-
-
-    // --------------------------------------------------------
-    // Verificar HELLO
-    // --------------------------------------------------------
-
-    if (std::strcmp(
-            buffer,
-            "HELLO"
-        ) != 0)
+            m_stun.ok,
+            clientAddress))
     {
         return false;
     }
@@ -398,6 +385,16 @@ bool UdpServer::SendVideoFrame(
 
     uint32_t frameId =
         m_frameId++;
+
+
+    // Sleep(1) so dura ~1 ms de verdade com o timer do Windows
+    // em resolucao de 1 ms (o padrao e ~15 ms).
+    static std::once_flag timerResolutionOnce;
+
+    std::call_once(
+        timerResolutionOnce,
+        [] { timeBeginPeriod(1); }
+    );
 
 
     uint32_t flags =
@@ -574,10 +571,40 @@ bool UdpServer::SendVideoFrame(
 
         offset +=
             fragSize;
+
+
+        // Pacing: pausa curta entre rajadas (menos no fim).
+        if ((fragIndex + 1) % PACING_BURST_PACKETS == 0 &&
+            fragIndex + 1 < fragCount)
+        {
+            Sleep(1);
+        }
     }
 
 
     return true;
+}
+
+
+// ============================================================
+// PunchTo / DrainIncoming
+// ============================================================
+
+void UdpServer::PunchTo(
+    const std::string& ip,
+    uint16_t port)
+{
+    UdpSendPunch(
+        m_socket,
+        ip,
+        port
+    );
+}
+
+
+void UdpServer::DrainIncoming()
+{
+    UdpDrain(m_socket);
 }
 
 

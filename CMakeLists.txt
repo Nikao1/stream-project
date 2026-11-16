@@ -49,6 +49,13 @@ add_executable(stream-client WIN32
 
     src/udp_audio_server.cpp
     src/udp_audio_server.h
+
+    src/signaling_client.cpp
+    src/signaling_client.h
+
+    src/nat_traversal.cpp
+    src/nat_traversal.h
+    src/stun_message.h
 )
 
 
@@ -63,6 +70,13 @@ add_executable(stream-receiver
 
     src/audio_playback.cpp
     src/audio_playback.h
+
+    src/signaling_client.cpp
+    src/signaling_client.h
+
+    src/nat_traversal.cpp
+    src/nat_traversal.h
+    src/stun_message.h
 )
 
 
@@ -89,6 +103,8 @@ target_link_libraries(stream-client PRIVATE
     ws2_32
     ole32
     opus
+    winhttp
+    winmm
 )
 
 
@@ -99,4 +115,5 @@ target_link_libraries(stream-receiver PRIVATE
     d3d11
     dxgi
     d3dcompiler
+    winhttp
 )

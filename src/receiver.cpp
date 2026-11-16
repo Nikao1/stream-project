@@ -2,6 +2,7 @@
 #include <ws2tcpip.h>
 #include <windows.h>
 #include <fstream>
+#include <iterator>
 
 #include <d3d11.h>
 #include <d3dcompiler.h>
@@ -21,6 +22,8 @@
 #include "audio_decoder.h"
 #include "audio_playback.h"
 #include "video_protocol.h"
+#include "signaling_client.h"
+#include "nat_traversal.h"
 
 #pragma comment(lib, "ws2_32.lib")
 
@@ -61,6 +64,100 @@ HWND g_hwnd =
 // prompt no início de main(). Padrão 127.0.0.1 (mesma máquina).
 std::string g_serverIp =
     "127.0.0.1";
+
+
+// Portas do client (video/audio). Os valores padrao valem pra
+// conexao por IP; entrando por codigo de sessao, vem do
+// servidor de sinalizacao.
+uint16_t g_serverVideoPort =
+    SERVER_UDP_PORT;
+
+uint16_t g_serverAudioPort =
+    AUDIO_SERVER_UDP_PORT;
+
+
+// Codigo da sessao em que entramos (vazio = conexao direta por
+// IP, sem servidor de sinalizacao).
+std::string g_sessionCode;
+
+
+// ============================================================
+// AnnounceToSession
+// ============================================================
+//
+// Hole punching, lado do receiver: descobre o endereco publico
+// deste socket (STUN) e avisa o host pelo servidor de
+// sinalizacao. Com isso o host manda pacotes pra ca e o
+// roteador dele passa a aceitar os nossos HELLOs.
+//
+// Chamar logo depois do bind, antes de comecar a ler do
+// socket. Nao faz nada em conexao direta por IP.
+// ============================================================
+
+void AnnounceToSession(
+    SOCKET socket,
+    bool isAudio)
+{
+    if (g_sessionCode.empty())
+        return;
+
+
+    const char* channel =
+        isAudio ? "audio" : "video";
+
+
+    StunResult stun =
+        StunDiscover(socket);
+
+
+    if (!stun.ok)
+    {
+        std::cout
+            << "STUN ("
+            << channel
+            << "): sem resposta - conexao so pela rede "
+            << "local.\n";
+
+        return;
+    }
+
+
+    std::cout
+        << "Endereco publico ("
+        << channel
+        << "): "
+        << stun.publicIp
+        << ":"
+        << stun.publicPort
+        << "\n";
+
+
+    if (stun.symmetric)
+    {
+        std::cout
+            << "AVISO: esta rede usa NAT simetrico. A conexao "
+            << "com outra rede pode nao funcionar.\n";
+    }
+
+
+    std::string error;
+
+
+    if (!SignalingAnnounceViewer(
+            g_sessionCode,
+            isAudio,
+            stun.publicIp,
+            stun.publicPort,
+            error))
+    {
+        std::cout
+            << "Sinalizacao ("
+            << channel
+            << "): "
+            << error
+            << "\n";
+    }
+}
 
 
 // ============================================================
@@ -297,6 +394,22 @@ bool g_haveCompletedFrame =
     false;
 
 uint64_t g_framesCompleted =
+    0;
+
+// true = o decoder nao pode receber frames ate chegar um
+// keyframe. Um frame comum (P) depende do anterior; se algum
+// se perdeu no caminho, os seguintes sairiam corrompidos (ou
+// derrubariam o ffmpeg). Entao, depois de qualquer perda,
+// esperamos o proximo keyframe (o client manda um por segundo).
+bool g_waitingKeyframe =
+    true;
+
+ULONGLONG g_lastDecoderRestart =
+    0;
+
+// Quantas vezes o decoder morreu nesta execucao. Na segunda,
+// troca a decodificacao por GPU pela de CPU (mais compativel).
+int g_decoderDeaths =
     0;
 
 uint64_t g_framesDropped =
@@ -568,6 +681,52 @@ void TryPresentPendingFrames()
 
 
 // ============================================================
+// PrintDecoderLogTail
+// ============================================================
+//
+// Mostra no console as ultimas mensagens de erro do ffmpeg
+// (arquivo ffmpeg-decoder.log) - e o que diz POR QUE o decoder
+// parou.
+// ============================================================
+
+void PrintDecoderLogTail()
+{
+    std::ifstream file(
+        "ffmpeg-decoder.log",
+        std::ios::binary
+    );
+
+    if (!file)
+    {
+        std::cout
+            << "(sem ffmpeg-decoder.log)\n";
+
+        return;
+    }
+
+    std::string content(
+        (std::istreambuf_iterator<char>(file)),
+        std::istreambuf_iterator<char>()
+    );
+
+    const size_t maxTail = 900;
+
+    if (content.size() > maxTail)
+    {
+        content =
+            content.substr(content.size() - maxTail);
+    }
+
+    std::cout
+        << "---- ffmpeg disse: ----\n"
+        << (content.empty()
+            ? std::string("(nada)\n")
+            : content)
+        << "\n-----------------------\n";
+}
+
+
+// ============================================================
 // StartNewPendingFrame
 // ============================================================
 //
@@ -587,6 +746,9 @@ void StartNewPendingFrame(
         // descartado.
 
         g_framesDropped++;
+
+        g_waitingKeyframe =
+            true;
     }
 
 
@@ -818,6 +980,9 @@ void ProcessUdpPacket(
         g_haveCompletedFrame =
             false;
 
+        g_waitingKeyframe =
+            true;
+
 
         {
             std::lock_guard<std::mutex> lock(
@@ -940,6 +1105,18 @@ void ProcessUdpPacket(
     // ou corrompido por perda de pacote.
     // ========================================================
 
+    // Pulou algum frameId? Entao um frame se perdeu inteiro.
+    if (g_haveCompletedFrame &&
+        g_pendingFrame.frameId !=
+            g_lastCompletedFrameId + 1)
+    {
+        g_framesDropped++;
+
+        g_waitingKeyframe =
+            true;
+    }
+
+
     g_lastCompletedFrameId =
         g_pendingFrame.frameId;
 
@@ -950,6 +1127,23 @@ void ProcessUdpPacket(
 
     g_pendingFrame.active =
         false;
+
+
+    // ========================================================
+    // Depois de uma perda, so um keyframe "reinicia" a imagem.
+    // Frames comuns que chegarem antes dele sao ignorados.
+    // ========================================================
+
+    if (g_pendingFrame.isKeyframe)
+    {
+        g_waitingKeyframe =
+            false;
+    }
+
+    if (g_waitingKeyframe)
+    {
+        return;
+    }
 
 
     EstablishSyncBaseline(
@@ -977,9 +1171,54 @@ void ProcessUdpPacket(
                 g_pendingFrame.data.size()
             )))
     {
-        std::cout
-            << "\nDecoder: falha ao escrever dados.\n";
+        // O ffmpeg do decoder morreu. Reinicia (no maximo uma
+        // vez por segundo) e espera o proximo keyframe.
+        ULONGLONG nowMs =
+            GetTickCount64();
 
+        if (nowMs - g_lastDecoderRestart >= 1000)
+        {
+            g_lastDecoderRestart =
+                nowMs;
+
+            std::cout
+                << "\nDecoder parou - reiniciando...\n";
+
+            PrintDecoderLogTail();
+
+            g_decoderDeaths++;
+
+            if (g_decoderDeaths == 2)
+            {
+                std::cout
+                    << "Trocando para decodificacao por "
+                    << "software (CPU).\n";
+
+                g_decoder.SetHardwareDecode(false);
+            }
+
+            g_decoder.Stop();
+
+            if (!g_decoder.Start(
+                    g_frameWidth,
+                    g_frameHeight))
+            {
+                std::cout
+                    << "Falha ao reiniciar decoder H264.\n";
+            }
+        }
+
+        {
+            std::lock_guard<std::mutex> lock(
+                g_frameMutex
+            );
+
+            g_videoTimestampQueue.clear();
+            g_pendingVideoFrames.clear();
+        }
+
+        g_waitingKeyframe =
+            true;
 
         return;
     }
@@ -1098,10 +1337,41 @@ void ReceiverThread()
             {
                 std::cout
                     << "HELLO UDP enviado para "
-                    << "127.0.0.1:"
-                    << SERVER_UDP_PORT
+                    << g_serverIp
+                    << ":"
+                    << g_serverVideoPort
                     << "\n";
             }
+
+
+            lastHelloTime =
+                now;
+        }
+
+
+        // ====================================================
+        // Keepalive durante o stream
+        //
+        // Roteadores so mantem a porta UDP aberta enquanto
+        // sair trafego daqui - e, com o stream rodando, o
+        // receiver so recebe. Um pacote minusculo a cada 5s
+        // mantem o caminho aberto (o client descarta).
+        // ====================================================
+
+        if (
+            g_streamReceived &&
+            now - lastHelloTime >= 5000)
+        {
+            sendto(
+                g_udpSocket,
+                "KEEP",
+                4,
+                0,
+                reinterpret_cast<sockaddr*>(
+                    &g_serverAddress
+                ),
+                sizeof(g_serverAddress)
+            );
 
 
             lastHelloTime =
@@ -1374,7 +1644,7 @@ void AudioReceiverThread()
         AF_INET;
 
     serverAddress.sin_port =
-        htons(AUDIO_SERVER_UDP_PORT);
+        htons(g_serverAudioPort);
 
 
     inet_pton(
@@ -1384,13 +1654,19 @@ void AudioReceiverThread()
     );
 
 
+    AnnounceToSession(
+        audioSocket,
+        true
+    );
+
+
     std::cout
         << "AudioReceiver: escutando na porta "
         << AUDIO_UDP_PORT
         << ", servidor em "
         << g_serverIp
         << ":"
-        << AUDIO_SERVER_UDP_PORT
+        << g_serverAudioPort
         << "\n";
 
 
@@ -1472,6 +1748,27 @@ void AudioReceiverThread()
                 sizeof(serverAddress)
             );
 
+
+            lastHelloTime =
+                now;
+        }
+
+
+        // Keepalive durante o stream (mesmo motivo do video:
+        // manter a porta aberta no roteador).
+        if (streamReceived &&
+            now - lastHelloTime >= 5000)
+        {
+            sendto(
+                audioSocket,
+                "KEEP",
+                4,
+                0,
+                reinterpret_cast<sockaddr*>(
+                    &serverAddress
+                ),
+                sizeof(serverAddress)
+            );
 
             lastHelloTime =
                 now;
@@ -2876,37 +3173,141 @@ int main()
         << "========== RECEIVER H264 UDP ==========\n";
 
 
+    // Comecar com o log do decoder vazio a cada execucao.
+    std::ofstream(
+        "ffmpeg-decoder.log",
+        std::ios::trunc
+    );
+
+
     std::cout
         << "Stream Project - H264/NVENC\n\n";
 
 
     // ========================================================
-    // IP DO SERVIDOR (client)
+    // CODIGO DA SESSAO ou IP
     //
-    // Antes era fixo em 127.0.0.1 (só localhost) - agora
-    // pergunta, pra funcionar entre máquinas diferentes na
-    // mesma rede. Deixar em branco usa 127.0.0.1 (útil pra
-    // testar tudo na mesma máquina, como antes).
+    // - Codigo de sessao (6 letras/numeros, mostrado no
+    //   stream-client): o endereco de quem transmite vem do
+    //   servidor de sinalizacao.
+    // - IP digitado direto: conexao manual, como antes.
+    // - Em branco: 127.0.0.1 (tudo na mesma maquina).
     // ========================================================
 
-    std::cout
-        << "IP do computador que vai transmitir "
-        << "(o que roda o stream-client)\n"
-        << "Deixe em branco para usar este mesmo "
-        << "computador (127.0.0.1)\n"
-        << "IP: ";
-
-
-    std::getline(
-        std::cin,
-        g_serverIp
-    );
-
-
-    if (g_serverIp.empty())
+    for (;;)
     {
+        std::cout
+            << "Digite o CODIGO DA SESSAO mostrado no "
+            << "stream-client\n"
+            << "(ou o IP de quem transmite; em branco = este "
+            << "mesmo computador)\n"
+            << "Codigo ou IP: ";
+
+
+        std::string input;
+
+        if (!std::getline(
+                std::cin,
+                input))
+        {
+            return 1;
+        }
+
+
+        // tirar espacos nas pontas
+        size_t first =
+            input.find_first_not_of(" \t\r");
+
+        size_t last =
+            input.find_last_not_of(" \t\r");
+
+        input =
+            first == std::string::npos
+            ? ""
+            : input.substr(first, last - first + 1);
+
+
+        if (input.empty())
+        {
+            g_serverIp =
+                "127.0.0.1";
+
+            break;
+        }
+
+
+        if (!LooksLikeSessionCode(input))
+        {
+            g_serverIp =
+                input;
+
+            break;
+        }
+
+
+        std::cout
+            << "Procurando a sessao "
+            << input
+            << "...\n";
+
+
+        SignalingHostInfo host;
+
+        std::string error;
+
+
+        if (!SignalingJoinSession(
+                input,
+                host,
+                error))
+        {
+            std::cout
+                << "Nao foi possivel entrar na sessao: "
+                << error
+                << "\n\n";
+
+            continue;
+        }
+
+
         g_serverIp =
-            "127.0.0.1";
+            host.sameNetwork
+            ? host.localIp
+            : host.publicIp;
+
+        // Mesma rede: IP e portas locais do host. Redes
+        // diferentes: IP e portas publicas (as que o roteador
+        // dele expoe, descobertas por STUN).
+        g_serverVideoPort =
+            host.sameNetwork
+            ? host.videoPort
+            : host.publicVideoPort;
+
+        g_serverAudioPort =
+            host.sameNetwork
+            ? host.audioPort
+            : host.publicAudioPort;
+
+        g_sessionCode =
+            input;
+
+
+        std::cout
+            << "Sessao encontrada ("
+            << (host.sameNetwork
+                ? "mesma rede"
+                : "redes diferentes")
+            << ").\n";
+
+
+        if (!host.sameNetwork)
+        {
+            std::cout
+                << "Conectando direto pela internet (hole "
+                << "punching) - pode levar alguns segundos.\n";
+        }
+
+        break;
     }
 
 
@@ -3072,7 +3473,7 @@ int main()
 
     serverAddress.sin_port =
         htons(
-            SERVER_UDP_PORT
+            g_serverVideoPort
         );
 
 
@@ -3107,11 +3508,18 @@ int main()
         serverAddress;
 
 
+    // Hole punching (so quando entramos por codigo de sessao).
+    AnnounceToSession(
+        g_udpSocket,
+        false
+    );
+
+
     std::cout
         << "Servidor configurado: "
         << g_serverIp
         << ":"
-        << SERVER_UDP_PORT
+        << g_serverVideoPort
         << "\n";
 
 

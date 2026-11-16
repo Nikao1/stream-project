@@ -33,11 +33,22 @@ public:
 
     bool IsRunning() const;
 
+    // true (padrao): decodifica pela GPU (D3D11VA).
+    // false: decodifica pela CPU - mais pesado, mas funciona em
+    // qualquer maquina. Vale a partir do proximo Start().
+    void SetHardwareDecode(
+        bool enabled)
+    {
+        m_hardwareDecode = enabled;
+    }
+
 private:
 
     bool StartProcess();
 
     void ReaderThread();
+
+    bool m_hardwareDecode = true;
 
     uint32_t m_width;
     uint32_t m_height;

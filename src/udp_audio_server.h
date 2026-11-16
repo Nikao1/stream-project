@@ -3,6 +3,9 @@
 #include <winsock2.h>
 
 #include <cstdint>
+#include <string>
+
+#include "nat_traversal.h"
 
 // ============================================================
 // UdpAudioServer
@@ -36,7 +39,23 @@ public:
 
     void Stop();
 
+    // Mesmo esquema do UdpServer (video): endereco publico por
+    // STUN, hole punching e descarte de keepalives.
+    const StunResult& GetStunResult() const
+    {
+        return m_stun;
+    }
+
+    void PunchTo(
+        const std::string& ip,
+        uint16_t port
+    );
+
+    void DrainIncoming();
+
 private:
+
+    StunResult m_stun;
 
     SOCKET m_socket;
 

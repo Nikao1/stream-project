@@ -196,14 +196,18 @@ bool H264Decoder::StartProcess()
     // STDERR
     // ========================================================
 
+    // As mensagens de erro do ffmpeg vao pra um arquivo de log
+    // (antes iam pro NUL, e quando ele morria nao havia como
+    // saber o motivo). O receiver mostra o fim desse arquivo
+    // no console quando o decoder para.
     stderrHandle =
         CreateFileW(
-            L"NUL",
-            GENERIC_WRITE,
+            L"ffmpeg-decoder.log",
+            FILE_APPEND_DATA,
             FILE_SHARE_READ |
             FILE_SHARE_WRITE,
             &sa,
-            OPEN_EXISTING,
+            OPEN_ALWAYS,
             FILE_ATTRIBUTE_NORMAL,
             nullptr
         );
@@ -243,7 +247,11 @@ bool H264Decoder::StartProcess()
         // NVIDIA/AMD/Intel no Windows).
         // ----------------------------------------------------
 
-        "-hwaccel d3d11va "
+        + std::string(
+            m_hardwareDecode
+            ? "-hwaccel d3d11va "
+            : "")
+        +
 
         // ----------------------------------------------------
         // Entrada H264 Annex B puro (sem container)

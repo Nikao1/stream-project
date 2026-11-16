@@ -3,6 +3,9 @@
 #include <winsock2.h>
 
 #include <cstdint>
+#include <string>
+
+#include "nat_traversal.h"
 
 class UdpServer
 {
@@ -30,7 +33,26 @@ public:
 
     void Stop();
 
+    // Endereco publico deste socket (descoberto por STUN no
+    // Start). ok=false se nao houve resposta.
+    const StunResult& GetStunResult() const
+    {
+        return m_stun;
+    }
+
+    // Hole punching: abre o nosso roteador pro endereco
+    // publico do receiver.
+    void PunchTo(
+        const std::string& ip,
+        uint16_t port
+    );
+
+    // Descarta pacotes de entrada parados (keepalives).
+    void DrainIncoming();
+
 private:
+
+    StunResult m_stun;
 
     SOCKET m_socket;
 

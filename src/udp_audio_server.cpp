@@ -97,6 +97,27 @@ bool UdpAudioServer::Start(
     }
 
 
+    m_stun =
+        StunDiscover(m_socket);
+
+
+    if (m_stun.ok)
+    {
+        std::cout
+            << "UDP audio: endereco publico (STUN): "
+            << m_stun.publicIp
+            << ":"
+            << m_stun.publicPort
+            << "\n";
+    }
+    else
+    {
+        std::cout
+            << "UDP audio: STUN sem resposta - conexao so "
+            << "pela rede local.\n";
+    }
+
+
     m_clientKnown =
         false;
 
@@ -130,69 +151,17 @@ bool UdpAudioServer::WaitForClient()
     }
 
 
-    char buffer[64]{};
-
     sockaddr_in clientAddress{};
-
-    int clientAddressSize =
-        sizeof(clientAddress);
 
 
     std::cout
         << "UDP audio: aguardando HELLO...\n";
 
 
-    int received =
-        recvfrom(
+    if (!UdpWaitForHello(
             m_socket,
-            buffer,
-            sizeof(buffer) - 1,
-            0,
-            reinterpret_cast<sockaddr*>(
-                &clientAddress
-            ),
-            &clientAddressSize
-        );
-
-
-    if (received ==
-        SOCKET_ERROR)
-    {
-        int error =
-            WSAGetLastError();
-
-
-        if (error == WSAENOTSOCK ||
-            error == WSAEINTR)
-        {
-            return false;
-        }
-
-
-        std::cout
-            << "UDP audio: recvfrom HELLO falhou. Erro: "
-            << error
-            << "\n";
-
-
-        return false;
-    }
-
-
-    if (received <= 0)
-    {
-        return false;
-    }
-
-
-    buffer[received] =
-        '\0';
-
-
-    if (std::strcmp(
-            buffer,
-            "HELLO"
-        ) != 0)
+            m_stun.ok,
+            clientAddress))
     {
         return false;
     }
@@ -327,6 +296,28 @@ bool UdpAudioServer::SendAudioPacket(
 
 
     return true;
+}
+
+
+// ============================================================
+// PunchTo / DrainIncoming
+// ============================================================
+
+void UdpAudioServer::PunchTo(
+    const std::string& ip,
+    uint16_t port)
+{
+    UdpSendPunch(
+        m_socket,
+        ip,
+        port
+    );
+}
+
+
+void UdpAudioServer::DrainIncoming()
+{
+    UdpDrain(m_socket);
 }
 
 
