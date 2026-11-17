@@ -24,8 +24,8 @@
 // Para testes na mesma máquina (client + receiver no mesmo
 // PC), isso causa um loop de feedback, já que o receiver
 // também toca no dispositivo padrão. Use
-// SelectDeviceInteractively() antes de Start() pra escolher
-// outro dispositivo manualmente (ex: um Virtual Audio Cable),
+// ListDevices() + SelectDevice() antes de Start() pra
+// escolher outro dispositivo (ex: um Virtual Audio Cable),
 // separando a fonte capturada da saída real dos alto-falantes.
 //
 // LIMITAÇÃO CONHECIDA: assume que o dispositivo escolhido
@@ -37,17 +37,34 @@
 // específico soar errado (mais rápido/lento).
 // ============================================================
 
+struct AudioOutputDevice
+{
+    std::wstring id;
+
+    std::string name;
+};
+
+
 class AudioCapture
 {
 public:
     AudioCapture();
     ~AudioCapture();
 
-    // Lista os dispositivos de SAÍDA ativos no console e deixa
-    // o usuário escolher qual vai ser a fonte do loopback
-    // (Enter = usar o padrão do Windows, comportamento antigo).
+    // Lista os dispositivos de SAÍDA ativos (nome em UTF-8),
+    // pra interface oferecer a escolha da fonte do loopback.
+    static bool ListDevices(
+        std::vector<AudioOutputDevice>& outDevices
+    );
+
+    // Escolhe a fonte do loopback pelo id devolvido por
+    // ListDevices. Vazio = dispositivo padrão do Windows.
     // Chamar antes de Start().
-    bool SelectDeviceInteractively();
+    void SelectDevice(
+        const std::wstring& deviceId)
+    {
+        m_selectedDeviceId = deviceId;
+    }
 
     bool Start();
 

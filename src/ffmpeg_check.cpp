@@ -78,12 +78,12 @@ bool CheckFfmpegAvailable(
             createError == ERROR_PATH_NOT_FOUND)
         {
             outProblem =
-                "o ffmpeg.exe nao foi encontrado";
+                "o ffmpeg.exe não foi encontrado";
         }
         else
         {
             outProblem =
-                "o Windows nao conseguiu executar o "
+                "o Windows não conseguiu executar o "
                 "ffmpeg.exe (erro " +
                 std::to_string(createError) +
                 ") - arquivo corrompido ou incompleto";
@@ -118,13 +118,13 @@ bool CheckFfmpegAvailable(
         );
 
         outProblem =
-            "o ffmpeg.exe nao respondeu";
+            "o ffmpeg.exe não respondeu";
     }
     else
     {
         outProblem =
-            "o ffmpeg.exe encontrado nao funciona nesta "
-            "maquina (codigo de saida " +
+            "o ffmpeg.exe encontrado não funciona nesta "
+            "máquina (código de saída " +
             std::to_string(exitCode) +
             ")";
     }

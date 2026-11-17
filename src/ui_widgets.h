@@ -75,3 +75,42 @@ bool UiPrimaryButton(
 
 // "..." animado, pra indicar que algo esta em andamento.
 const char* UiBusyDots();
+
+
+// Mesmo painel, mas encostado no canto superior esquerdo - pra
+// quando ha algo atras que precisa continuar visivel (a previa
+// da tela compartilhada, por exemplo).
+void UiBeginCornerPanel(
+    const char* id,
+    float width
+);
+
+// Rotulo pequeno e cinza acima de um campo.
+void UiFieldLabel(
+    const char* text
+);
+
+// Imagem de fundo ocupando a janela (mantendo a proporcao),
+// escurecida por "dim" (0 = original, 1 = preto). Desenhada
+// atras de todos os paineis.
+void UiDrawBackgroundImage(
+    ImTextureID texture,
+    float imageWidth,
+    float imageHeight,
+    float dim
+);
+
+
+// ------------------------------------------------------------
+// Tela "falta o FFmpeg" (igual no receiver e no client)
+// ------------------------------------------------------------
+//
+// purpose: frase curta dizendo pra que este programa usa o
+// FFmpeg. Os dois bool voltam true quando o usuario clica no
+// botao correspondente.
+void UiFfmpegProblemPanel(
+    const char* problem,
+    const char* purpose,
+    bool& outOpenDownloadPage,
+    bool& outRecheck
+);

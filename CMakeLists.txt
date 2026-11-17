@@ -117,6 +117,17 @@ add_executable(stream-client WIN32
     src/udp_audio_server.cpp
     src/udp_audio_server.h
 
+    src/client_ui.cpp
+    src/client_ui.h
+    src/client_view.cpp
+    src/client_view.h
+    src/client_screens.cpp
+    src/client_screens.h
+    src/ui_common.cpp
+    src/ui_common.h
+    src/ui_widgets.cpp
+    src/ui_widgets.h
+
     src/signaling_client.cpp
     src/signaling_client.h
 
@@ -202,6 +213,10 @@ target_link_libraries(stream-client PRIVATE
     winmm
     monocypher
     bcrypt
+    imgui
+    d3dcompiler
+    dwmapi
+    shell32
 )
 
 

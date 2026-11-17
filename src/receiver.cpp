@@ -4437,26 +4437,80 @@ int main()
     // nele (std::cout / std::cerr) vai pra stream-receiver.log,
     // na pasta do programa. E o arquivo a enviar quando algo
     // der errado.
+    //
+    // Cada receiver aberto ao mesmo tempo escreve no SEU
+    // arquivo (stream-receiver.log, stream-receiver-2.log...).
+    // Dois programas nao podem gravar no mesmo arquivo: sem
+    // isso, o segundo receiver falhava ao abrir o log e
+    // encerrava logo na abertura.
     // ========================================================
 
     {
+        // Descobre qual "numero" este receiver e, usando um
+        // objeto nomeado do Windows que existe enquanto o
+        // programa estiver aberto.
+        int instance = 1;
+
+        for (; instance <= 8; ++instance)
+        {
+            std::wstring name =
+                L"StreamReceiverInstance" +
+                std::to_wstring(instance);
+
+            HANDLE marker =
+                CreateMutexW(
+                    nullptr,
+                    FALSE,
+                    name.c_str()
+                );
+
+            if (marker &&
+                GetLastError() != ERROR_ALREADY_EXISTS)
+            {
+                // Fica aberto de proposito ate o programa sair.
+                break;
+            }
+
+            if (marker)
+            {
+                CloseHandle(marker);
+            }
+        }
+
+        std::string logName =
+            instance == 1
+            ? "stream-receiver.log"
+            : "stream-receiver-" +
+              std::to_string(instance) +
+              ".log";
+
         FILE* logFile = nullptr;
 
         if (freopen_s(
                 &logFile,
-                "stream-receiver.log",
+                logName.c_str(),
                 "w",
-                stdout) == 0)
+                stdout) != 0)
         {
-            // Sem buffer: se o programa fechar de repente, o
-            // log ja esta no disco.
-            setvbuf(
-                stdout,
-                nullptr,
-                _IONBF,
-                0
+            // Nao deu pra criar o arquivo (pasta sem permissao
+            // de escrita, por exemplo): descarta o log, mas o
+            // programa segue funcionando.
+            freopen_s(
+                &logFile,
+                "NUL",
+                "w",
+                stdout
             );
         }
+
+        // Sem buffer: se o programa fechar de repente, o log
+        // ja esta no disco.
+        setvbuf(
+            stdout,
+            nullptr,
+            _IONBF,
+            0
+        );
 
         std::cerr.rdbuf(
             std::cout.rdbuf()

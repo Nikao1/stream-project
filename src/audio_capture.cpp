@@ -13,9 +13,8 @@
 
 
 // ============================================================
-// Helper: wstring -> string (pra imprimir no console, que já
-// usa std::cout em todo o resto do projeto - evitamos misturar
-// std::cin/std::wcin no mesmo stdin).
+// Helper: wstring -> string em UTF-8 (nomes de dispositivo vão
+// pra interface e pro log).
 // ============================================================
 
 namespace
@@ -71,18 +70,22 @@ namespace
 
 
 // ============================================================
-// SelectDeviceInteractively
+// ListDevices
 // ============================================================
 //
-// Lista os dispositivos de SAÍDA ativos e deixa escolher qual
-// vai ser a fonte do loopback. Útil pra testar client e
-// receiver na mesma máquina sem loop de feedback: aponte a
-// captura pra um Virtual Audio Cable (ex: VB-CABLE) em vez do
-// dispositivo real de saída que o receiver usa pra tocar.
+// Devolve os dispositivos de SAÍDA ativos, pra interface
+// oferecer a escolha de qual vai ser a fonte do loopback. Útil
+// pra testar client e receiver na mesma máquina sem loop de
+// feedback: aponte a captura pra um Virtual Audio Cable (ex:
+// VB-CABLE) em vez do dispositivo real de saída que o receiver
+// usa pra tocar.
 // ============================================================
 
-bool AudioCapture::SelectDeviceInteractively()
+bool AudioCapture::ListDevices(
+    std::vector<AudioOutputDevice>& outDevices)
 {
+    outDevices.clear();
+
     HRESULT hr =
         CoInitializeEx(
             nullptr,
@@ -170,17 +173,6 @@ bool AudioCapture::SelectDeviceInteractively()
     );
 
 
-    std::cout
-        << "\n=== Dispositivos de SAIDA de audio "
-        << "disponiveis (fonte do loopback) ===\n"
-        << "0: (padrao do Windows - CUIDADO: causa loop "
-        << "se o receiver tocar no mesmo dispositivo "
-        << "nesta mesma maquina)\n";
-
-
-    std::vector<std::wstring> deviceIds;
-
-
     for (UINT i = 0;
          i < count;
          ++i)
@@ -208,11 +200,10 @@ bool AudioCapture::SelectDeviceInteractively()
         );
 
 
-        deviceIds.push_back(
+        std::wstring deviceId =
             id
             ? std::wstring(id)
-            : std::wstring()
-        );
+            : std::wstring();
 
 
         if (id)
@@ -261,72 +252,12 @@ bool AudioCapture::SelectDeviceInteractively()
         }
 
 
-        std::cout
-            << (i + 1)
-            << ": "
-            << name
-            << "\n";
+        outDevices.push_back(
+            { deviceId, name }
+        );
 
 
         dev->Release();
-    }
-
-
-    std::cout
-        << "\nEscolha o dispositivo pra capturar (numero) "
-        << "e pressione Enter [0]: ";
-
-
-    std::string line;
-
-    std::getline(
-        std::cin,
-        line
-    );
-
-
-    int choice =
-        0;
-
-
-    try
-    {
-        if (!line.empty())
-        {
-            choice =
-                std::stoi(line);
-        }
-    }
-    catch (...)
-    {
-        choice =
-            0;
-    }
-
-
-    if (choice >= 1 &&
-        choice <=
-            static_cast<int>(
-                deviceIds.size()
-            ))
-    {
-        m_selectedDeviceId =
-            deviceIds[choice - 1];
-
-
-        std::cout
-            << "AudioCapture: usando dispositivo "
-            << choice
-            << " como fonte do loopback.\n\n";
-    }
-    else
-    {
-        m_selectedDeviceId.clear();
-
-
-        std::cout
-            << "AudioCapture: usando dispositivo "
-            << "padrao do Windows.\n\n";
     }
 
 

@@ -1,5 +1,7 @@
 #include "ui_widgets.h"
 
+#include <string>
+
 
 namespace
 {
@@ -164,6 +166,49 @@ void UiBeginCenteredPanel(
 }
 
 
+void UiBeginCornerPanel(
+    const char* id,
+    float width)
+{
+    const ImGuiViewport* viewport =
+        ImGui::GetMainViewport();
+
+    float margin = 16.0f * g_uiScale;
+
+    float scaledWidth = width * g_uiScale;
+
+    float maxWidth =
+        viewport->WorkSize.x - margin * 2.0f;
+
+    if (scaledWidth > maxWidth)
+    {
+        scaledWidth = maxWidth;
+    }
+
+    ImGui::SetNextWindowPos(
+        ImVec2(
+            viewport->WorkPos.x + margin,
+            viewport->WorkPos.y + margin),
+        ImGuiCond_Always
+    );
+
+    ImGui::SetNextWindowSize(
+        ImVec2(scaledWidth, 0.0f),
+        ImGuiCond_Always
+    );
+
+    ImGui::Begin(
+        id,
+        nullptr,
+        ImGuiWindowFlags_NoTitleBar |
+        ImGuiWindowFlags_NoResize |
+        ImGuiWindowFlags_NoMove |
+        ImGuiWindowFlags_NoCollapse |
+        ImGuiWindowFlags_NoSavedSettings
+    );
+}
+
+
 void UiEndPanel()
 {
     ImGui::End();
@@ -255,4 +300,138 @@ const char* UiBusyDots()
         static_cast<int>(ImGui::GetTime() * 2.5) % 4;
 
     return frames[index];
+}
+
+
+void UiFieldLabel(
+    const char* text)
+{
+    ImGui::PushStyleColor(
+        ImGuiCol_Text,
+        UiColorMuted());
+
+    ImGui::TextUnformatted(text);
+
+    ImGui::PopStyleColor();
+
+    // Cola o rotulo no campo logo abaixo.
+    ImGui::SetCursorPosY(
+        ImGui::GetCursorPosY() -
+        ImGui::GetStyle().ItemSpacing.y * 0.6f);
+}
+
+
+void UiDrawBackgroundImage(
+    ImTextureID texture,
+    float imageWidth,
+    float imageHeight,
+    float dim)
+{
+    if (imageWidth <= 0.0f || imageHeight <= 0.0f)
+        return;
+
+    const ImGuiViewport* viewport =
+        ImGui::GetMainViewport();
+
+    ImVec2 area = viewport->WorkSize;
+
+    if (area.x <= 0.0f || area.y <= 0.0f)
+        return;
+
+    // Maior tamanho que cabe inteiro na janela.
+    float scale = area.x / imageWidth;
+
+    if (imageHeight * scale > area.y)
+    {
+        scale = area.y / imageHeight;
+    }
+
+    ImVec2 size(imageWidth * scale, imageHeight * scale);
+
+    ImVec2 topLeft(
+        viewport->WorkPos.x + (area.x - size.x) * 0.5f,
+        viewport->WorkPos.y + (area.y - size.y) * 0.5f);
+
+    ImVec2 bottomRight(
+        topLeft.x + size.x,
+        topLeft.y + size.y);
+
+    ImDrawList* background =
+        ImGui::GetBackgroundDrawList();
+
+    background->AddImage(
+        texture,
+        topLeft,
+        bottomRight
+    );
+
+    if (dim > 0.0f)
+    {
+        background->AddRectFilled(
+            topLeft,
+            bottomRight,
+            ImGui::GetColorU32(
+                ImVec4(0.0f, 0.0f, 0.0f, dim))
+        );
+    }
+}
+
+
+// ============================================================
+// Tela "falta o FFmpeg"
+// ============================================================
+
+void UiFfmpegProblemPanel(
+    const char* problem,
+    const char* purpose,
+    bool& outOpenDownloadPage,
+    bool& outRecheck)
+{
+    UiBeginCenteredPanel("##ffmpeg", 520.0f);
+
+    UiTitle("Falta o FFmpeg");
+
+    UiWrappedColored(
+        UiColorError(),
+        (std::string("Motivo: ") + problem + ".").c_str()
+    );
+
+    UiMutedText(purpose);
+
+    ImGui::Spacing();
+
+    ImGui::PushTextWrapPos(0.0f);
+
+    ImGui::TextUnformatted(
+        "1. Baixe o arquivo \"ffmpeg-release-essentials.zip\".\n"
+        "2. Extraia e copie o ffmpeg.exe da pasta \"bin\" para "
+        "a mesma pasta deste programa.\n"
+        "3. Clique em \"Verificar de novo\"."
+    );
+
+    ImGui::PopTextWrapPos();
+
+    UiMutedText(
+        "O arquivo certo tem dezenas de MB. Um ffmpeg.exe de "
+        "poucos KB é só um atalho e não funciona fora do "
+        "computador de origem."
+    );
+
+    ImGui::Spacing();
+
+    if (UiPrimaryButton("Abrir a página de download"))
+    {
+        outOpenDownloadPage = true;
+    }
+
+    if (ImGui::Button(
+            "Verificar de novo",
+            ImVec2(
+                ImGui::GetContentRegionAvail().x,
+                0.0f)))
+    {
+        outRecheck = true;
+    }
+
+    UiEndPanel();
 }

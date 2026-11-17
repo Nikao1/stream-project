@@ -1,0 +1,41 @@
+========== STREAM RECEIVER ==========
+Renderer: Direct3D 11 inicializado com sucesso.
+Procurando a sessao 6H7CB3...
+Sessao encontrada (mesma rede).
+UDP receiver na porta 64315
+Endereco publico (video): 177.18.210.203:64315
+Servidor configurado: 192.168.15.11:5001
+Aguardando stream H264 UDP...
+Porta local: 64315
+========================================
+
+HELLO UDP enviado para 192.168.15.11:5001
+
+========================================
+Nova resolucao recebida: 1338x720
+Reiniciando decoder H264...
+========================================
+
+========================================
+H264 DECODER
+Resolucao: 1338x720
+========================================
+H264Decoder: FFmpeg iniciado.
+Decoder H264 iniciado com sucesso.
+
+========================================
+STREAM UDP RECEBIDO!
+Resolucao: 1338x720
+HELLO nao sera mais reenviado.
+========================================
+
+Endereco publico (audio): 177.18.210.203:53158
+AudioReceiver: escutando na porta 53158, servidor em 192.168.15.11:5003
+AudioDecoder: Opus iniciado (48000 Hz, 2 canais).
+AudioPlayback: reprodução iniciada (48000 Hz, 2 canais, buffer de 9600 frames).
+
+Thread UDP encerrada.
+
+Thread de audio encerrada.
+
+Receiver encerrado.

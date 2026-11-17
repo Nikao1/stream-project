@@ -8,6 +8,7 @@
 #include "ffmpeg_check.h"
 #include "stream_crypto.h"
 #include "invite_code.h"
+#include "client_ui.h"
 
 #include <winsock2.h>
 #include <ws2tcpip.h>
@@ -229,47 +230,6 @@ IDirect3DDxgiInterfaceAccessCustom : IUnknown
 
 
 // ============================================================
-// DEBUG CONSOLE
-// ============================================================
-
-void CreateDebugConsole()
-{
-    if (!AllocConsole())
-        return;
-
-    FILE* fp = nullptr;
-
-    freopen_s(
-        &fp,
-        "CONOUT$",
-        "w",
-        stdout
-    );
-
-    freopen_s(
-        &fp,
-        "CONOUT$",
-        "w",
-        stderr
-    );
-
-    freopen_s(
-        &fp,
-        "CONIN$",
-        "r",
-        stdin
-    );
-
-    SetConsoleTitleW(
-        L"Stream Project - Debug"
-    );
-
-    std::cout
-        << "Console de debug criada.\n\n";
-}
-
-
-// ============================================================
 // PickBitrateMbps
 // ============================================================
 //
@@ -295,346 +255,6 @@ uint32_t PickBitrateMbps(
     }
 
     return mbps < 2 ? 2 : mbps;
-}
-
-
-// ============================================================
-// SelectQualityInteractively
-// ============================================================
-//
-// Prompt simples no console pra escolher resolução de saída
-// (a captura continua nativa - a redução acontece no encoder,
-// via filtro de escala do ffmpeg) e FPS alvo.
-// ============================================================
-
-void SelectQualityInteractively()
-{
-    // O encoder de video e um ffmpeg.exe - avisa logo se ele
-    // faltar ou estiver quebrado (a transmissao nao funciona
-    // sem ele).
-    {
-        std::string ffmpegProblem;
-
-        if (!CheckFfmpegAvailable(ffmpegProblem))
-        {
-            PrintFfmpegHelp(ffmpegProblem);
-        }
-    }
-
-
-    std::cout
-        << "=== Qualidade de video ===\n"
-        << "1: 480p\n"
-        << "2: 720p\n"
-        << "3: 1080p\n"
-        << "4: Nativa (resolucao da tela/janela capturada)\n"
-        << "Escolha [4]: ";
-
-
-    std::string line;
-
-    std::getline(
-        std::cin,
-        line
-    );
-
-
-    int choice =
-        4;
-
-
-    try
-    {
-        if (!line.empty())
-        {
-            choice =
-                std::stoi(line);
-        }
-    }
-    catch (...)
-    {
-        choice =
-            4;
-    }
-
-
-    switch (choice)
-    {
-        case 1:
-            g_targetOutputHeight = 480;
-            break;
-
-        case 2:
-            g_targetOutputHeight = 720;
-            break;
-
-        case 3:
-            g_targetOutputHeight = 1080;
-            break;
-
-        default:
-            g_targetOutputHeight = 0;
-            break;
-    }
-
-
-    std::cout
-        << "\n=== FPS alvo ===\n"
-        << "1: 60\n"
-        << "2: 30\n"
-        << "3: 15\n"
-        << "Escolha [1]: ";
-
-
-    std::getline(
-        std::cin,
-        line
-    );
-
-
-    int fpsChoice =
-        1;
-
-
-    try
-    {
-        if (!line.empty())
-        {
-            fpsChoice =
-                std::stoi(line);
-        }
-    }
-    catch (...)
-    {
-        fpsChoice =
-            1;
-    }
-
-
-    switch (fpsChoice)
-    {
-        case 2:
-            g_targetFps = 30;
-            break;
-
-        case 3:
-            g_targetFps = 15;
-            break;
-
-        default:
-            g_targetFps = 60;
-            break;
-    }
-
-
-    std::cout
-        << "\nQualidade selecionada: "
-        << (g_targetOutputHeight > 0
-            ? std::to_string(g_targetOutputHeight) + "p"
-            : "nativa")
-        << " @ "
-        << g_targetFps
-        << " FPS\n\n";
-
-
-    // --------------------------------------------------------
-    // SESSAO (sinalizacao)
-    //
-    // Registra esta transmissao no servidor de sinalizacao e
-    // mostra o codigo que o receiver deve digitar. Se o
-    // servidor nao responder, a transmissao segue normalmente
-    // - o receiver ainda pode conectar digitando o IP.
-    // --------------------------------------------------------
-
-    // Os sockets de video/audio sobem em threads proprias e
-    // fazem a consulta STUN ao iniciar - espera (ate 8s) os
-    // dois terminarem, pra registrar a sessao ja com o
-    // endereco publico.
-    for (int i = 0;
-         i < 160 &&
-         !(g_udpServerStarted && g_audioServerStarted);
-         ++i)
-    {
-        std::this_thread::sleep_for(
-            std::chrono::milliseconds(50)
-        );
-    }
-
-
-    const StunResult& videoStun =
-        g_udpServer.GetStunResult();
-
-    const StunResult& audioStun =
-        g_udpAudioServer.GetStunResult();
-
-
-    if (videoStun.symmetric || audioStun.symmetric)
-    {
-        std::cout
-            << "AVISO: esta rede usa NAT simetrico. Conexoes "
-            << "de fora da sua rede local podem nao "
-            << "funcionar.\n\n";
-    }
-
-
-    // Hole punching: quando um receiver de outra rede entra na
-    // sessao, o servidor de sinalizacao informa o endereco
-    // publico dele. Mandamos pacotes pra la pro HELLO dele
-    // conseguir passar pelo nosso roteador.
-    g_signalingHost.SetViewerCallback(
-        [](bool isAudio,
-           const std::string& ip,
-           uint16_t port)
-        {
-            // O servidor so lista quem anunciou nos ultimos
-            // 60s, entao da pra furar sempre - inclusive com
-            // outros espectadores ja assistindo.
-            if (isAudio)
-            {
-                g_udpAudioServer.PunchTo(ip, port);
-            }
-            else
-            {
-                g_udpServer.PunchTo(ip, port);
-            }
-        }
-    );
-
-
-    if (g_signalingHost.Start(
-            5001,
-            AUDIO_SERVER_UDP_PORT,
-            videoStun.ok ? videoStun.publicIp : std::string(),
-            videoStun.ok ? videoStun.publicPort : 0,
-            audioStun.ok ? audioStun.publicPort : 0,
-            CryptoToHex(
-                g_hostKeys.publicKey,
-                CRYPTO_KEY_SIZE)))
-    {
-        std::string code =
-            g_signalingHost.GetCode();
-
-        std::cout
-            << "========================================\n"
-            << "  CODIGO DA SESSAO: "
-            << code
-            << "\n"
-            << "  (digite este codigo no stream-receiver)\n"
-            << "========================================\n\n";
-
-        std::wstring title =
-            L"Stream Client - Sessao " +
-            std::wstring(code.begin(), code.end());
-
-        SetWindowTextW(
-            g_hwnd,
-            title.c_str()
-        );
-    }
-    else
-    {
-        if (SignalingIsDisabled())
-        {
-            std::cout
-                << "Servidor de sinalizacao desativado "
-                << "(STREAM_SIGNALING_URL=none).\n";
-        }
-        else
-        {
-            std::cout
-                << "Sem codigo de sessao (servidor de "
-                << "sinalizacao indisponivel em "
-                << GetSignalingUrl()
-                << ").\n";
-        }
-
-
-        // ----------------------------------------------------
-        // CONVITE MANUAL
-        //
-        // Sem servidor pra apresentar as pontas, a mesma
-        // informacao vai num texto que o usuario envia por
-        // qualquer mensageiro (ver invite_code.h).
-        // ----------------------------------------------------
-
-        HostInvite invite;
-
-        if (videoStun.ok &&
-            ParseIpv4(
-                videoStun.publicIp,
-                invite.publicIp))
-        {
-            invite.publicVideoPort =
-                videoStun.publicPort;
-
-            invite.publicAudioPort =
-                audioStun.ok
-                ? audioStun.publicPort
-                : AUDIO_SERVER_UDP_PORT;
-        }
-
-        ParseIpv4(
-            GetPrimaryLocalIp(),
-            invite.localIp
-        );
-
-        invite.localVideoPort =
-            5001;
-
-        invite.localAudioPort =
-            AUDIO_SERVER_UDP_PORT;
-
-        std::memcpy(
-            invite.hostKey,
-            g_hostKeys.publicKey,
-            CRYPTO_KEY_SIZE
-        );
-
-        std::cout
-            << "\n========================================\n"
-            << "CONVITE - copie e envie pra quem vai assistir:\n\n"
-            << EncodeHostInvite(invite)
-            << "\n\n"
-            << "A pessoa cola o convite no stream-receiver.\n"
-            << "Se voces estiverem em redes diferentes, ela\n"
-            << "vai te mandar uma RESPOSTA (comeca com SPV1.):\n"
-            << "cole aqui neste console e pressione Enter\n"
-            << "(depois de escolher o dispositivo de audio).\n"
-            << "========================================\n\n";
-
-        g_inviteMode =
-            true;
-
-
-        std::cout
-            << "Na mesma rede, o receiver tambem pode conectar "
-            << "digitando o IP deste computador: "
-            << GetPrimaryLocalIp()
-            << "\n"
-            << "(nesse modo, qualquer pessoa que alcance este "
-            << "IP pode assistir)\n\n";
-
-        // Sem sessao por codigo nao ha como o receiver provar
-        // que foi convidado - libera a conexao direta por IP.
-        // O stream continua cifrado.
-        g_udpServer.SetAllowAnonymous(true);
-
-        g_udpAudioServer.SetAllowAnonymous(true);
-    }
-
-
-    // --------------------------------------------------------
-    // Disparar o início da captura agora que a qualidade já
-    // foi escolhida. PostMessageW é thread-safe - pode ser
-    // chamado de qualquer thread visando um HWND de outra.
-    // --------------------------------------------------------
-
-    PostMessageW(
-        g_hwnd,
-        WM_APP + 1,
-        0,
-        0
-    );
 }
 
 
@@ -1735,81 +1355,6 @@ void UdpAudioServerThread()
 
 
 // ============================================================
-// InviteReplyLoop
-// ============================================================
-//
-// Modo de convite manual: le do console as RESPOSTAS que os
-// espectadores mandam de volta e abre o roteador na direcao de
-// cada um (hole punching) - o papel que o servidor de
-// sinalizacao faria.
-// ============================================================
-
-void InviteReplyLoop()
-{
-    std::string line;
-
-    while (std::getline(std::cin, line))
-    {
-        if (!LooksLikeViewerReply(line))
-        {
-            if (!line.empty())
-            {
-                std::cout
-                    << "Isso nao parece uma RESPOSTA (ela "
-                    << "comeca com SPV1.).\n";
-            }
-
-            continue;
-        }
-
-        ViewerReply reply;
-
-        if (!DecodeViewerReply(line, reply))
-        {
-            std::cout
-                << "Resposta incompleta ou alterada - peca "
-                << "pra pessoa copiar de novo.\n";
-
-            continue;
-        }
-
-        std::string ip =
-            FormatIpv4(reply.publicIp);
-
-        std::cout
-            << "Resposta aceita: abrindo caminho para "
-            << ip
-            << "...\n";
-
-        // Repete por alguns segundos, em thread propria, pra
-        // este laco ja poder receber a resposta de outro
-        // espectador.
-        std::thread(
-            [ip, reply]
-            {
-                for (int i = 0; i < 8; ++i)
-                {
-                    g_udpServer.PunchTo(
-                        ip,
-                        reply.publicVideoPort
-                    );
-
-                    g_udpAudioServer.PunchTo(
-                        ip,
-                        reply.publicAudioPort
-                    );
-
-                    std::this_thread::sleep_for(
-                        std::chrono::seconds(2)
-                    );
-                }
-            }
-        ).detach();
-    }
-}
-
-
-// ============================================================
 // AUDIO SEND THREAD
 // ============================================================
 //
@@ -1843,17 +1388,8 @@ void AudioSendThread()
     }
 
 
-    g_audioCapture.SelectDeviceInteractively();
-
-
-    // O console ficou livre: no modo de convite manual, passa
-    // a aceitar as RESPOSTAS dos espectadores.
-    if (g_inviteMode)
-    {
-        std::thread(
-            InviteReplyLoop
-        ).detach();
-    }
+    // O dispositivo de som ja foi escolhido na tela inicial
+    // (AudioCapture::SelectDevice), antes de a captura comecar.
 
 
     if (!g_audioCapture.Start())
@@ -2173,14 +1709,8 @@ void OnFrameArrived(
         // Solicitar repaint
         // ------------------------------------------------------
 
-        if (g_hwnd)
-        {
-            InvalidateRect(
-                g_hwnd,
-                nullptr,
-                FALSE
-            );
-        }
+        // (a janela e redesenhada pelo laco principal a cada
+        // vsync - nao precisa pedir repintura aqui)
 
 
         // ------------------------------------------------------
@@ -2259,11 +1789,6 @@ void OnFrameArrived(
         );
 
 
-        InvalidateRect(
-            g_hwnd,
-            nullptr,
-            FALSE
-        );
     }
 }
 
@@ -2468,8 +1993,30 @@ LRESULT CALLBACK WindowProc(
     WPARAM wParam,
     LPARAM lParam)
 {
+    // A interface ve as mensagens primeiro (mouse, teclado,
+    // texto digitado).
+    if (ClientUiHandleMessage(
+            hwnd,
+            uMsg,
+            wParam,
+            lParam))
+    {
+        return 1;
+    }
+
+
     switch (uMsg)
     {
+    case WM_SIZE:
+    {
+        ClientUiResize(
+            LOWORD(lParam),
+            HIWORD(lParam)
+        );
+
+        return 0;
+    }
+
     // ========================================================
     // INICIAR CAPTURA
     // ========================================================
@@ -2513,331 +2060,28 @@ LRESULT CALLBACK WindowProc(
 
     case WM_PAINT:
     {
+        // A previa e a interface sao desenhadas com Direct3D
+        // (ver client_view / client_ui). O laco principal ja
+        // redesenha a cada vsync; isto aqui cobre os momentos
+        // em que o Windows prende o laco (arrastar ou
+        // redimensionar a janela).
         PAINTSTRUCT ps{};
 
-
-        HDC hdc =
-            BeginPaint(
-                hwnd,
-                &ps
-            );
-
-
-        RECT rect{};
-
-
-        GetClientRect(
+        BeginPaint(
             hwnd,
-            &rect
+            &ps
         );
 
-
-        int windowWidth =
-            rect.right -
-            rect.left;
-
-
-        int windowHeight =
-            rect.bottom -
-            rect.top;
-
-
-        if (windowWidth <= 0 ||
-            windowHeight <= 0)
-        {
-            EndPaint(
-                hwnd,
-                &ps
-            );
-
-            return 0;
-        }
-
-
-        // ====================================================
-        // DOUBLE BUFFER
-        //
-        // Desenha tudo num bitmap fora da tela primeiro, e só
-        // no final copia o resultado pronto pra tela de uma
-        // vez (BitBlt) - elimina o flicker do fundo preto
-        // aparecendo antes do frame.
-        // ====================================================
-
-        static HDC memDC =
-            nullptr;
-
-        static HBITMAP memBitmap =
-            nullptr;
-
-        static HBITMAP oldBitmap =
-            nullptr;
-
-        static int memWidth =
-            0;
-
-        static int memHeight =
-            0;
-
-
-        if (!memDC ||
-            memWidth != windowWidth ||
-            memHeight != windowHeight)
-        {
-            if (memDC)
-            {
-                SelectObject(
-                    memDC,
-                    oldBitmap
-                );
-
-                DeleteObject(
-                    memBitmap
-                );
-
-                DeleteDC(
-                    memDC
-                );
-            }
-
-
-            memDC =
-                CreateCompatibleDC(
-                    hdc
-                );
-
-            memBitmap =
-                CreateCompatibleBitmap(
-                    hdc,
-                    windowWidth,
-                    windowHeight
-                );
-
-            oldBitmap =
-                static_cast<HBITMAP>(
-                    SelectObject(
-                        memDC,
-                        memBitmap
-                    )
-                );
-
-
-            memWidth =
-                windowWidth;
-
-            memHeight =
-                windowHeight;
-        }
-
-
-        // ----------------------------------------------------
-        // Copiar frame atual
-        // ----------------------------------------------------
-
-        std::vector<unsigned char> pixels;
-
-        uint32_t width = 0;
-        uint32_t height = 0;
-
-
-        {
-            std::lock_guard<std::mutex> lock(
-                g_displayMutex
-            );
-
-
-            if (!g_displayPixels.empty() &&
-                g_displayWidth > 0 &&
-                g_displayHeight > 0)
-            {
-                pixels =
-                    g_displayPixels;
-
-
-                width =
-                    g_displayWidth;
-
-
-                height =
-                    g_displayHeight;
-            }
-        }
-
-
-        // ----------------------------------------------------
-        // Ainda não temos frame
-        // ----------------------------------------------------
-
-        if (pixels.empty() ||
-            width == 0 ||
-            height == 0)
-        {
-            FillRect(
-                memDC,
-                &rect,
-                static_cast<HBRUSH>(
-                    GetStockObject(
-                        BLACK_BRUSH
-                    )
-                )
-            );
-        }
-        else
-        {
-            // ------------------------------------------------
-            // Informações do bitmap
-            // ------------------------------------------------
-
-            BITMAPINFO bmi{};
-
-
-            bmi.bmiHeader.biSize =
-                sizeof(BITMAPINFOHEADER);
-
-
-            bmi.bmiHeader.biWidth =
-                static_cast<LONG>(width);
-
-
-            // Negativo = top-down
-            bmi.bmiHeader.biHeight =
-                -static_cast<LONG>(height);
-
-
-            bmi.bmiHeader.biPlanes =
-                1;
-
-
-            bmi.bmiHeader.biBitCount =
-                32;
-
-
-            bmi.bmiHeader.biCompression =
-                BI_RGB;
-
-
-            double scaleX =
-                static_cast<double>(
-                    windowWidth
-                ) /
-                static_cast<double>(
-                    width
-                );
-
-
-            double scaleY =
-                static_cast<double>(
-                    windowHeight
-                ) /
-                static_cast<double>(
-                    height
-                );
-
-
-            double scale =
-                (scaleX < scaleY)
-                    ? scaleX
-                    : scaleY;
-
-
-            int drawWidth =
-                static_cast<int>(
-                    width * scale
-                );
-
-
-            int drawHeight =
-                static_cast<int>(
-                    height * scale
-                );
-
-
-            int drawX =
-                (windowWidth -
-                 drawWidth) / 2;
-
-
-            int drawY =
-                (windowHeight -
-                 drawHeight) / 2;
-
-
-            // ------------------------------------------------
-            // Fundo preto (no buffer fora da tela)
-            // ------------------------------------------------
-
-            FillRect(
-                memDC,
-                &rect,
-                static_cast<HBRUSH>(
-                    GetStockObject(
-                        BLACK_BRUSH
-                    )
-                )
-            );
-
-
-            // ------------------------------------------------
-            // Qualidade/velocidade da escala
-            // ------------------------------------------------
-
-            SetStretchBltMode(
-                memDC,
-                COLORONCOLOR
-            );
-
-
-            // ------------------------------------------------
-            // Desenhar frame (no buffer fora da tela)
-            // ------------------------------------------------
-
-            StretchDIBits(
-                memDC,
-                drawX,
-                drawY,
-                drawWidth,
-                drawHeight,
-                0,
-                0,
-                static_cast<int>(width),
-                static_cast<int>(height),
-                pixels.data(),
-                &bmi,
-                DIB_RGB_COLORS,
-                SRCCOPY
-            );
-        }
-
-
-        // ====================================================
-        // Copiar o buffer pronto pra tela - uma única operação.
-        // ====================================================
-
-        BitBlt(
-            hdc,
-
-            0,
-            0,
-
-            windowWidth,
-            windowHeight,
-
-            memDC,
-
-            0,
-            0,
-
-            SRCCOPY
-        );
-
+        ClientUiRenderFrame();
 
         EndPaint(
             hwnd,
             &ps
         );
 
-
         return 0;
     }
+
 
 
     // ========================================================
@@ -3093,7 +2337,7 @@ int WINAPI wWinMain(
     );
 
 
-    CreateDebugConsole();
+    ClientUiSetupLog();
 
 
     // =========================================================
@@ -3208,7 +2452,7 @@ int WINAPI wWinMain(
         CreateWindowExW(
             0,
             CLASS_NAME,
-            L"STREAM PROJECT",
+            L"Stream Client",
             WS_OVERLAPPEDWINDOW,
             CW_USEDEFAULT,
             CW_USEDEFAULT,
@@ -3226,6 +2470,23 @@ int WINAPI wWinMain(
         std::cout
             << "CreateWindowExW falhou.\n";
 
+
+        WSACleanup();
+
+        return 1;
+    }
+
+
+    // Direct3D da janela + interface (precisa da janela criada).
+    if (!ClientUiInit(g_hwnd))
+    {
+        MessageBoxW(
+            nullptr,
+            L"Falha ao inicializar a interface (Direct3D 11). "
+            L"Atualize o driver da placa de vídeo e tente de novo.",
+            L"Stream Client",
+            MB_OK | MB_ICONERROR
+        );
 
         WSACleanup();
 
@@ -3305,47 +2566,73 @@ int WINAPI wWinMain(
         );
 
 
-    // =========================================================
-    // QUALIDADE SELECIONAVEL
-    //
-    // Roda em thread própria - NUNCA bloquear a thread principal
-    // (ela precisa ficar livre pra rodar o loop de mensagens
-    // desde já, senão a janela fica "não respondendo" enquanto
-    // espera o console, e o Windows pode fechá-la à força).
-    //
-    // Essa thread dispara o início da captura (WM_APP + 1) ela
-    // mesma, assim que o usuário terminar de escolher.
-    // =========================================================
-
-    std::thread(
-        SelectQualityInteractively
-    ).detach();
+    // (a qualidade, o FPS e o dispositivo de som sao escolhidos
+    // na tela inicial - ver client_ui.cpp. E de la que parte o
+    // WM_APP + 1 que abre o seletor de tela.)
 
 
     // =========================================================
     // MESSAGE LOOP
     // =========================================================
 
-    MSG msg{};
+    // Processa as mensagens da janela e redesenha (previa +
+    // interface) a cada vsync - o Present(1) do
+    // ClientUiRenderFrame e quem dita o ritmo.
+    bool quit =
+        false;
 
-
-    while (
-        GetMessageW(
-            &msg,
-            nullptr,
-            0,
-            0
-        ) > 0)
+    while (!quit)
     {
-        TranslateMessage(
-            &msg
-        );
+        MSG msg{};
+
+        while (PeekMessageW(
+                &msg,
+                nullptr,
+                0,
+                0,
+                PM_REMOVE))
+        {
+            if (msg.message == WM_QUIT)
+            {
+                quit =
+                    true;
+
+                break;
+            }
+
+            TranslateMessage(&msg);
+
+            DispatchMessageW(&msg);
+        }
+
+        if (quit)
+            break;
 
 
-        DispatchMessageW(
-            &msg
-        );
+        // Minimizada: nada pra desenhar.
+        if (IsIconic(g_hwnd))
+        {
+            Sleep(50);
+
+            continue;
+        }
+
+
+        auto frameStart =
+            std::chrono::steady_clock::now();
+
+        ClientUiRenderFrame();
+
+        // Se voltou sem esperar o vsync (janela encoberta, por
+        // exemplo), cede a CPU em vez de girar em falso.
+        if (std::chrono::steady_clock::now() - frameStart <
+            std::chrono::milliseconds(3))
+        {
+            Sleep(4);
+        }
     }
+
+
 
 
     // =========================================================
@@ -3422,13 +2709,7 @@ int WINAPI wWinMain(
         << "Stream Project encerrado.\n";
 
 
-    std::cout
-        << "\nPressione Enter para fechar esta janela...";
-
-
-    std::cin.clear();
-
-    std::cin.get();
+    ClientUiShutdown();
 
 
     return 0;

@@ -12,56 +12,13 @@ void DrawFfmpegProblemScreen(
     const std::string& problem,
     ReceiverScreenActions& actions)
 {
-    UiBeginCenteredPanel("##ffmpeg", 520.0f);
-
-    UiTitle("Falta o FFmpeg");
-
-    UiWrappedColored(
-        UiColorError(),
-        ("Motivo: " + problem + ".").c_str()
+    UiFfmpegProblemPanel(
+        problem.c_str(),
+        "O FFmpeg é o programa que decodifica o vídeo. Sem ele "
+        "não há imagem.",
+        actions.openDownloadPage,
+        actions.recheckFfmpeg
     );
-
-    UiMutedText(
-        "O FFmpeg é o programa que decodifica o vídeo. "
-        "Sem ele não há imagem."
-    );
-
-    ImGui::Spacing();
-
-    ImGui::PushTextWrapPos(0.0f);
-
-    ImGui::TextUnformatted(
-        "1. Baixe o arquivo \"ffmpeg-release-essentials.zip\".\n"
-        "2. Extraia e copie o ffmpeg.exe da pasta \"bin\" para "
-        "a mesma pasta deste programa.\n"
-        "3. Clique em \"Verificar de novo\"."
-    );
-
-    ImGui::PopTextWrapPos();
-
-    UiMutedText(
-        "O arquivo certo tem dezenas de MB. Um ffmpeg.exe de "
-        "poucos KB é só um atalho e não funciona fora do "
-        "computador de origem."
-    );
-
-    ImGui::Spacing();
-
-    if (UiPrimaryButton("Abrir a página de download"))
-    {
-        actions.openDownloadPage = true;
-    }
-
-    if (ImGui::Button(
-            "Verificar de novo",
-            ImVec2(
-                ImGui::GetContentRegionAvail().x,
-                0.0f)))
-    {
-        actions.recheckFfmpeg = true;
-    }
-
-    UiEndPanel();
 }
 
 
