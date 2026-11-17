@@ -140,6 +140,76 @@ void OpenPicker()
 }
 
 
+// Abre outra copia do programa pedindo administrador (a janela
+// do UAC) e fecha esta. Cancelou o UAC: continua aqui.
+void RelaunchAsAdmin()
+{
+    wchar_t path[MAX_PATH]{};
+
+    DWORD length =
+        GetModuleFileNameW(
+            nullptr,
+            path,
+            MAX_PATH
+        );
+
+    if (length == 0 ||
+        length >= MAX_PATH)
+    {
+        g_pickerError =
+            "Não consegui achar o próprio programa. Feche e abra "
+            "com botão direito > Executar como administrador.";
+
+        return;
+    }
+
+    SHELLEXECUTEINFOW info{};
+
+    info.cbSize = sizeof(info);
+    info.lpVerb = L"runas";
+    info.lpFile = path;
+    info.nShow = SW_SHOWNORMAL;
+
+    // A copia nova espera esta fechar (ver wWinMain).
+    std::wstring parameters =
+        L"--esperar " +
+        std::to_wstring(GetCurrentProcessId());
+
+    info.lpParameters = parameters.c_str();
+
+    if (!ShellExecuteExW(&info))
+    {
+        DWORD error = GetLastError();
+
+        std::cout
+            << "Abrir como administrador falhou (erro "
+            << error
+            << ").\n";
+
+        if (error != ERROR_CANCELLED)
+        {
+            g_pickerError =
+                "Não consegui abrir como administrador. Feche e "
+                "abra com botão direito > Executar como "
+                "administrador.";
+        }
+
+        return;
+    }
+
+    std::cout
+        << "Reabrindo como administrador.\n";
+
+    // Fecha pelo caminho normal (encerra a sessao e as threads).
+    PostMessageW(
+        g_hwnd,
+        WM_CLOSE,
+        0,
+        0
+    );
+}
+
+
 void PickTarget(
     const CaptureTarget& target)
 {
@@ -543,6 +613,9 @@ void DrawUi(
         model.windowAudioSupported = g_windowAudioSupported;
         model.switching = g_captureRunning;
         model.error = g_pickerError;
+        model.offerAdmin =
+            g_captureAccessDenied &&
+            !g_pickerError.empty();
 
         DrawClientPickerScreen(
             model,
@@ -861,6 +934,11 @@ void ClientUiRenderFrame()
         ApplyInviteReply(
             std::string(g_replyInput)
         );
+    }
+
+    if (actions.relaunchAsAdmin)
+    {
+        RelaunchAsAdmin();
     }
 
     if (actions.openDownloadPage)

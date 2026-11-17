@@ -106,6 +106,101 @@ std::wstring WithoutExtension(
 }
 
 
+// true = o processo roda como administrador (ou nao deixa nem
+// ler o token, o que da no mesmo pra nos). Um programa comum nao
+// consegue capturar janelas desses processos: o Windows recusa
+// com "You do not have permission to capture the given window".
+bool IsCurrentProcessElevated()
+{
+    static int cached = -1;
+
+    if (cached >= 0)
+        return cached == 1;
+
+    cached = 0;
+
+    HANDLE token = nullptr;
+
+    if (OpenProcessToken(
+            GetCurrentProcess(),
+            TOKEN_QUERY,
+            &token))
+    {
+        TOKEN_ELEVATION elevation{};
+
+        DWORD size = 0;
+
+        if (GetTokenInformation(
+                token,
+                TokenElevation,
+                &elevation,
+                sizeof(elevation),
+                &size) &&
+            elevation.TokenIsElevated)
+        {
+            cached = 1;
+        }
+
+        CloseHandle(token);
+    }
+
+    return cached == 1;
+}
+
+
+bool NeedsAdminToCapture(
+    DWORD processId)
+{
+    // Rodando como administrador, capturamos tudo.
+    if (IsCurrentProcessElevated())
+        return false;
+
+    HANDLE process =
+        OpenProcess(
+            PROCESS_QUERY_LIMITED_INFORMATION,
+            FALSE,
+            processId
+        );
+
+    if (!process)
+        return GetLastError() == ERROR_ACCESS_DENIED;
+
+    bool result = false;
+
+    HANDLE token = nullptr;
+
+    if (OpenProcessToken(
+            process,
+            TOKEN_QUERY,
+            &token))
+    {
+        TOKEN_ELEVATION elevation{};
+
+        DWORD size = 0;
+
+        if (GetTokenInformation(
+                token,
+                TokenElevation,
+                &elevation,
+                sizeof(elevation),
+                &size))
+        {
+            result = elevation.TokenIsElevated != 0;
+        }
+
+        CloseHandle(token);
+    }
+    else
+    {
+        result = GetLastError() == ERROR_ACCESS_DENIED;
+    }
+
+    CloseHandle(process);
+
+    return result;
+}
+
+
 bool IsCloaked(
     HWND window)
 {
@@ -246,6 +341,11 @@ BOOL CALLBACK CollectWindow(
     std::wstring processName =
         ProcessFileName(processId);
 
+    // O dono da janela (nao o app da Store dentro dela) e quem
+    // decide se o Windows deixa capturar.
+    bool needsAdmin =
+        NeedsAdminToCapture(processId);
+
     if (_wcsicmp(
             processName.c_str(),
             L"ApplicationFrameHost.exe") == 0)
@@ -284,6 +384,14 @@ BOOL CALLBACK CollectWindow(
         processName.empty()
         ? std::string("programa desconhecido")
         : ToUtf8(WithoutExtension(processName));
+
+    target.needsAdmin = needsAdmin;
+
+    if (needsAdmin)
+    {
+        target.detail +=
+            " · aberto como administrador";
+    }
 
     context->targets->push_back(std::move(target));
 
@@ -350,6 +458,12 @@ BOOL CALLBACK CollectMonitor(
 }
 
 } // namespace
+
+
+bool ClientIsElevated()
+{
+    return IsCurrentProcessElevated();
+}
 
 
 // ============================================================

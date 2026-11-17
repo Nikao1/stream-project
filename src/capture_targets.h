@@ -48,7 +48,15 @@ struct CaptureTarget
     DWORD processId = 0;
 
     bool minimized = false;
+
+    // A janela e de um programa aberto como administrador (e
+    // este nao esta): o Windows nao deixa capturar.
+    bool needsAdmin = false;
 };
+
+
+// true = este programa esta rodando como administrador.
+bool ClientIsElevated();
 
 
 // Monitores, do principal pros demais.

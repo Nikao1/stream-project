@@ -139,6 +139,10 @@ winrt::event_token g_frameArrivedToken{};
 
 bool g_captureRunning = false;
 
+// A ultima tentativa de captura foi recusada pelo Windows (acesso
+// negado). A tela de escolha oferece reabrir como administrador.
+bool g_captureAccessDenied = false;
+
 
 // ============================================================
 // CAPTURE STATS
@@ -1901,6 +1905,8 @@ bool StartCaptureForTarget(
     bool windowAudioOnly,
     std::string& outError)
 {
+    g_captureAccessDenied = false;
+
     if (!CaptureTargetStillValid(target))
     {
         outError =
@@ -2058,13 +2064,62 @@ bool StartCaptureForTarget(
     }
     catch (const winrt::hresult_error& error)
     {
-        outError =
-            "Não foi possível capturar: " +
-            winrt::to_string(error.message());
+        HRESULT code =
+            error.code();
 
         std::cout
-            << outError
+            << "Falha ao capturar \""
+            << target.title
+            << "\" (" << target.detail << "): HRESULT 0x"
+            << std::hex
+            << static_cast<uint32_t>(code)
+            << std::dec
+            << " - "
+            << winrt::to_string(error.message())
             << "\n";
+
+        // Acesso negado. Duas causas conhecidas, e as duas somem
+        // rodando como administrador:
+        //  - o programa da janela foi aberto como administrador;
+        //  - a opcao de privacidade do Windows 11 que bloqueia
+        //    captura de tela por programas da area de trabalho.
+        if (code == E_ACCESSDENIED)
+        {
+            g_captureAccessDenied =
+                !ClientIsElevated();
+
+            if (target.needsAdmin)
+            {
+                outError =
+                    "O Windows não deixa capturar essa janela: o "
+                    "programa dela foi aberto como administrador. "
+                    "Compartilhe a tela inteira ou abra o Stream "
+                    "Client como administrador.";
+            }
+            else if (g_captureAccessDenied)
+            {
+                outError =
+                    "O Windows bloqueou a captura de tela neste "
+                    "computador. Clique em \"Abrir como "
+                    "administrador\" abaixo, ou permita em "
+                    "Configurações > Privacidade e segurança > "
+                    "Capturas de tela e gravação de tela e abra o "
+                    "Stream Client de novo.";
+            }
+            else
+            {
+                outError =
+                    "O Windows não deixa capturar isso (é uma "
+                    "janela protegida do sistema). Escolha outra "
+                    "janela ou a tela inteira.";
+            }
+        }
+        else
+        {
+            outError =
+                "Não foi possível capturar: " +
+                winrt::to_string(error.message());
+        }
     }
     catch (...)
     {
@@ -2315,9 +2370,43 @@ LRESULT CALLBACK WindowProc(
 int WINAPI wWinMain(
     HINSTANCE hInstance,
     HINSTANCE,
-    PWSTR,
+    PWSTR commandLine,
     int nCmdShow)
 {
+    // =========================================================
+    // REABERTO COMO ADMINISTRADOR
+    // =========================================================
+    //
+    // "--esperar <pid>": esta copia foi aberta pelo botao "Abrir
+    // como administrador". Espera a copia antiga fechar, senao
+    // as portas UDP (5001/5003) e o arquivo de log ainda estao
+    // com ela.
+    // =========================================================
+
+    if (commandLine)
+    {
+        const wchar_t* flag =
+            wcsstr(commandLine, L"--esperar ");
+
+        if (flag)
+        {
+            DWORD oldPid =
+                wcstoul(flag + 10, nullptr, 10);
+
+            HANDLE old =
+                oldPid != 0
+                ? OpenProcess(SYNCHRONIZE, FALSE, oldPid)
+                : nullptr;
+
+            if (old)
+            {
+                WaitForSingleObject(old, 10000);
+
+                CloseHandle(old);
+            }
+        }
+    }
+
     // =========================================================
     // WINRT APARTMENT
     // =========================================================

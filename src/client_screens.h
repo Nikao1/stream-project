@@ -31,6 +31,9 @@ struct ClientScreenActions
 
     bool cancelPicker = false;
 
+    // Seletor: reabrir o programa como administrador
+    bool relaunchAsAdmin = false;
+
     // "Aplicar" a resposta colada (convite manual)
     bool applyReply = false;
 
@@ -157,6 +160,10 @@ struct ClientPickerModel
 
     // Erro da ultima tentativa (ex.: a janela foi fechada).
     std::string error;
+
+    // O Windows recusou a captura e rodar como administrador
+    // resolve: mostra o botao "Abrir como administrador".
+    bool offerAdmin = false;
 };
 
 void DrawClientPickerScreen(

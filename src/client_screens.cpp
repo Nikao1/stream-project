@@ -540,6 +540,24 @@ void DrawClientPickerScreen(
         );
     }
 
+    if (model.offerAdmin)
+    {
+        if (UiPrimaryButton("Abrir como administrador"))
+        {
+            actions.relaunchAsAdmin = true;
+        }
+
+        if (model.switching)
+        {
+            UiMutedText(
+                "A transmissão atual será encerrada e um código "
+                "novo será gerado."
+            );
+        }
+
+        ImGui::Spacing();
+    }
+
 
     // --------------------------------------------------------
     // Telas
@@ -584,7 +602,8 @@ void DrawClientPickerScreen(
     // A lista ocupa o que sobrar da janela (com limites), pra
     // o painel inteiro caber mesmo em janelas baixas.
     float reserved =
-        (470.0f + (model.error.empty() ? 0.0f : 30.0f) +
+        (470.0f + (model.error.empty() ? 0.0f : 80.0f) +
+         (model.offerAdmin ? (model.switching ? 90.0f : 60.0f) : 0.0f) +
          40.0f * static_cast<float>(monitors.size() > 1
              ? monitors.size() - 1
              : 0)) *

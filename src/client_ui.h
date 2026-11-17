@@ -37,6 +37,8 @@
 
 extern HWND g_hwnd;
 
+extern bool g_captureAccessDenied;
+
 extern UdpServer g_udpServer;
 
 extern UdpAudioServer g_udpAudioServer;
