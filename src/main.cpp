@@ -5,6 +5,7 @@
 #include "audio_encoder.h"
 #include "audio_protocol.h"
 #include "signaling_client.h"
+#include "ffmpeg_check.h"
 
 #include <winsock2.h>
 #include <ws2tcpip.h>
@@ -298,6 +299,19 @@ uint32_t PickBitrateMbps(
 
 void SelectQualityInteractively()
 {
+    // O encoder de video e um ffmpeg.exe - avisa logo se ele
+    // faltar ou estiver quebrado (a transmissao nao funciona
+    // sem ele).
+    {
+        std::string ffmpegProblem;
+
+        if (!CheckFfmpegAvailable(ffmpegProblem))
+        {
+            PrintFfmpegHelp(ffmpegProblem);
+        }
+    }
+
+
     std::cout
         << "=== Qualidade de video ===\n"
         << "1: 480p\n"

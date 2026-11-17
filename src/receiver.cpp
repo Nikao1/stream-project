@@ -24,6 +24,7 @@
 #include "video_protocol.h"
 #include "signaling_client.h"
 #include "nat_traversal.h"
+#include "ffmpeg_check.h"
 
 #pragma comment(lib, "ws2_32.lib")
 
@@ -211,6 +212,68 @@ SOCKET g_udpSocket =
 // ============================================================
 
 sockaddr_in g_serverAddress{};
+
+
+// ============================================================
+// Caminho alternativo ate o client
+// ============================================================
+//
+// Entrando por codigo de sessao recebemos DOIS enderecos do
+// client: o local (mesma rede) e o publico (internet). O
+// servidor de sinalizacao chuta qual usar, mas pode errar -
+// ex.: duas maquinas na mesma casa, uma saindo por IPv4 e a
+// outra por IPv6, parecem estar em redes diferentes.
+//
+// Entao mandamos HELLO pros dois e seguimos com o caminho por
+// onde o stream de fato chegar.
+// ============================================================
+
+std::string g_serverAltIp;
+
+uint16_t g_serverAltVideoPort =
+    0;
+
+uint16_t g_serverAltAudioPort =
+    0;
+
+sockaddr_in g_serverAltAddress{};
+
+bool g_haveAltAddress =
+    false;
+
+
+bool SameEndpoint(
+    const sockaddr_in& a,
+    const sockaddr_in& b)
+{
+    return
+        a.sin_addr.s_addr == b.sin_addr.s_addr &&
+        a.sin_port == b.sin_port;
+}
+
+
+// Monta um sockaddr_in a partir de IP + porta. false se o IP
+// nao for um IPv4 valido.
+bool MakeEndpoint(
+    const std::string& ip,
+    uint16_t port,
+    sockaddr_in& outAddress)
+{
+    outAddress = {};
+
+    outAddress.sin_family =
+        AF_INET;
+
+    outAddress.sin_port =
+        htons(port);
+
+    return
+        port != 0 &&
+        inet_pton(
+            AF_INET,
+            ip.c_str(),
+            &outAddress.sin_addr) == 1;
+}
 
 
 // ============================================================
@@ -1238,6 +1301,21 @@ void ProcessUdpPacket(
 
 bool SendHello()
 {
+    if (g_haveAltAddress)
+    {
+        sendto(
+            g_udpSocket,
+            "HELLO",
+            5,
+            0,
+            reinterpret_cast<sockaddr*>(
+                &g_serverAltAddress
+            ),
+            sizeof(g_serverAltAddress)
+        );
+    }
+
+
     const char hello[] =
         "HELLO";
 
@@ -1548,6 +1626,17 @@ void ReceiverThread()
                 g_streamReceived =
                     true;
 
+                // O stream veio pelo caminho alternativo?
+                // Entao e por ele que seguem os keepalives.
+                if (g_haveAltAddress &&
+                    SameEndpoint(
+                        senderAddress,
+                        g_serverAltAddress))
+                {
+                    g_serverAddress =
+                        g_serverAltAddress;
+                }
+
 
                 std::cout
                     << "\n========================================\n"
@@ -1660,6 +1749,20 @@ void AudioReceiverThread()
     );
 
 
+    // Caminho alternativo (ver g_serverAltIp).
+    sockaddr_in altAddress{};
+
+    bool haveAlt =
+        !g_serverAltIp.empty() &&
+        MakeEndpoint(
+            g_serverAltIp,
+            g_serverAltAudioPort,
+            altAddress) &&
+        !SameEndpoint(
+            altAddress,
+            serverAddress);
+
+
     std::cout
         << "AudioReceiver: escutando na porta "
         << AUDIO_UDP_PORT
@@ -1747,6 +1850,20 @@ void AudioReceiverThread()
                 ),
                 sizeof(serverAddress)
             );
+
+            if (haveAlt)
+            {
+                sendto(
+                    audioSocket,
+                    "HELLO",
+                    5,
+                    0,
+                    reinterpret_cast<sockaddr*>(
+                        &altAddress
+                    ),
+                    sizeof(altAddress)
+                );
+            }
 
 
             lastHelloTime =
@@ -1898,6 +2015,15 @@ void AudioReceiverThread()
         {
             streamReceived =
                 true;
+
+            if (haveAlt &&
+                SameEndpoint(
+                    fromAddress,
+                    altAddress))
+            {
+                serverAddress =
+                    altAddress;
+            }
 
 
             std::cout
@@ -3180,6 +3306,25 @@ int main()
     );
 
 
+    // Sem ffmpeg funcionando nao ha video - melhor avisar ja
+    // do que deixar a pessoa olhando pra uma tela preta.
+    {
+        std::string ffmpegProblem;
+
+        if (!CheckFfmpegAvailable(ffmpegProblem))
+        {
+            PrintFfmpegHelp(ffmpegProblem);
+
+            std::cout
+                << "Pressione Enter para sair.\n";
+
+            std::cin.get();
+
+            return 1;
+        }
+    }
+
+
     std::cout
         << "Stream Project - H264/NVENC\n\n";
 
@@ -3290,6 +3435,22 @@ int main()
 
         g_sessionCode =
             input;
+
+        // O outro caminho (o que o servidor NAO escolheu).
+        g_serverAltIp =
+            host.sameNetwork
+            ? host.publicIp
+            : host.localIp;
+
+        g_serverAltVideoPort =
+            host.sameNetwork
+            ? host.publicVideoPort
+            : host.videoPort;
+
+        g_serverAltAudioPort =
+            host.sameNetwork
+            ? host.publicAudioPort
+            : host.audioPort;
 
 
         std::cout
@@ -3506,6 +3667,16 @@ int main()
 
     g_serverAddress =
         serverAddress;
+
+    g_haveAltAddress =
+        !g_serverAltIp.empty() &&
+        MakeEndpoint(
+            g_serverAltIp,
+            g_serverAltVideoPort,
+            g_serverAltAddress) &&
+        !SameEndpoint(
+            g_serverAltAddress,
+            g_serverAddress);
 
 
     // Hole punching (so quando entramos por codigo de sessao).

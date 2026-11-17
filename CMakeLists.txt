@@ -56,6 +56,9 @@ add_executable(stream-client WIN32
     src/nat_traversal.cpp
     src/nat_traversal.h
     src/stun_message.h
+
+    src/ffmpeg_check.cpp
+    src/ffmpeg_check.h
 )
 
 
@@ -77,6 +80,9 @@ add_executable(stream-receiver
     src/nat_traversal.cpp
     src/nat_traversal.h
     src/stun_message.h
+
+    src/ffmpeg_check.cpp
+    src/ffmpeg_check.h
 )
 
 

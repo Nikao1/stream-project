@@ -1,0 +1,17 @@
+# Hospedagem do servidor de sinalizacao no Render (plano gratuito).
+#
+# No painel do Render: New > Blueprint > escolher este repositorio.
+# O Render le este arquivo e cria o servico sozinho.
+services:
+  - type: web
+    name: stream-signaling
+    runtime: python
+    plan: free
+    buildCommand: echo "sem dependencias"
+    startCommand: python signaling/signaling_server.py
+    healthCheckPath: /health
+    envVars:
+      # O servico fica atras do proxy do Render: o IP real de quem
+      # chama vem no cabecalho X-Forwarded-For.
+      - key: TRUST_PROXY
+        value: "1"

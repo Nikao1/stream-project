@@ -299,6 +299,89 @@ bool HttpPost(
     return ok;
 }
 
+// ------------------------------------------------------------
+// HttpPostWaking
+//
+// Igual ao HttpPost, mas com paciencia: hospedagens gratuitas
+// "dormem" depois de um tempo sem uso e levam ate ~1 minuto
+// pra acordar na primeira requisicao. Enquanto a resposta nao
+// for a esperada (precisa conter "expectKey="), tenta de novo
+// por ate 90 segundos.
+//
+// Com o servidor na propria maquina (testes) nao ha o que
+// esperar: falhou, falhou.
+// ------------------------------------------------------------
+
+bool HttpPostWaking(
+    const std::string& path,
+    const std::string& body,
+    const std::string& expectKey,
+    DWORD& outStatus,
+    std::string& outResponse,
+    std::string& outError)
+{
+    std::string url = GetSignalingUrl();
+
+    bool isLocal =
+        url.find("127.0.0.1") != std::string::npos ||
+        url.find("localhost") != std::string::npos;
+
+    ULONGLONG start = GetTickCount64();
+
+    bool announced = false;
+
+    for (;;)
+    {
+        bool ok =
+            HttpPost(
+                path,
+                body,
+                outStatus,
+                outResponse,
+                outError
+            );
+
+        // Resposta de verdade do nosso servidor (sucesso ou
+        // um erro dele, como 404 de sessao inexistente).
+        bool answered =
+            ok &&
+            ((outStatus == 200 &&
+              outResponse.find(expectKey + "=") !=
+                  std::string::npos) ||
+             outStatus == 400 ||
+             outStatus == 404 ||
+             outStatus == 429);
+
+        if (answered || isLocal)
+            return ok;
+
+        if (GetTickCount64() - start >= 90000)
+        {
+            if (ok)
+            {
+                outError =
+                    "o servidor de sinalizacao nao respondeu "
+                    "como esperado (HTTP " +
+                    std::to_string(outStatus) +
+                    ")";
+            }
+
+            return false;
+        }
+
+        if (!announced)
+        {
+            std::cout
+                << "Servidor de sinalizacao acordando - isso "
+                << "pode levar ate 1 minuto...\n";
+
+            announced = true;
+        }
+
+        Sleep(3000);
+    }
+}
+
 } // namespace
 
 
@@ -442,9 +525,10 @@ bool SignalingJoinSession(
 
     std::string response;
 
-    if (!HttpPost(
+    if (!HttpPostWaking(
             "/sessions/" + code + "/join",
             "",
+            "host_local_ip",
             status,
             response,
             outError))
@@ -592,9 +676,10 @@ bool SignalingHost::CreateSession(
 
     std::string response;
 
-    if (!HttpPost(
+    if (!HttpPostWaking(
             "/sessions",
             body,
+            "code",
             status,
             response,
             outError))
