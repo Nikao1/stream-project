@@ -26,6 +26,12 @@ void UiSetTitleFont(
 // Fator de escala do monitor (1.0 = 100%).
 float UiScale();
 
+// Caracteres que as fontes da interface carregam: latim com
+// acentos (portugues, espanhol, frances...) e a pontuacao comum
+// em titulos de janela (travessao, aspas curvas, reticencias,
+// marcadores). Sem isso eles apareciam como "?".
+const ImWchar* UiGlyphRanges();
+
 
 // ------------------------------------------------------------
 // Cores do tema

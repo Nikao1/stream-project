@@ -6,6 +6,7 @@
 #include <atomic>
 #include <cstdint>
 #include <mutex>
+#include <string>
 #include <vector>
 
 #include "udp_server.h"
@@ -13,6 +14,7 @@
 #include "signaling_client.h"
 #include "audio_capture.h"
 #include "stream_crypto.h"
+#include "capture_targets.h"
 
 // ============================================================
 // INTERFACE DO CLIENT - ligacao com o resto do programa
@@ -74,6 +76,16 @@ extern uint32_t g_displayHeight;
 uint32_t PickBitrateMbps(
     uint32_t outputHeight,
     uint32_t fps
+);
+
+// Comeca (ou troca) a captura pra tela/janela escolhida.
+// windowAudioOnly = capturar so o som da janela. Em caso de
+// erro devolve false e a explicacao em outError. Chamar pela
+// thread da janela.
+bool StartCaptureForTarget(
+    const CaptureTarget& target,
+    bool windowAudioOnly,
+    std::string& outError
 );
 
 

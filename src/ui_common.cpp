@@ -75,13 +75,17 @@ void LoadFonts()
         // A primeira fonte carregada e a padrao.
         io.Fonts->AddFontFromFileTTF(
             regular.c_str(),
-            18.0f * g_fontScale
+            18.0f * g_fontScale,
+            nullptr,
+            UiGlyphRanges()
         );
 
         UiSetTitleFont(
             io.Fonts->AddFontFromFileTTF(
                 semibold.c_str(),
-                30.0f * g_fontScale
+                30.0f * g_fontScale,
+                nullptr,
+                UiGlyphRanges()
             ));
     }
     else
@@ -207,4 +211,12 @@ bool UiWantsKeyboard()
     return
         g_uiReady &&
         ImGui::GetIO().WantCaptureKeyboard;
+}
+
+
+bool UiWantsMouse()
+{
+    return
+        g_uiReady &&
+        ImGui::GetIO().WantCaptureMouse;
 }

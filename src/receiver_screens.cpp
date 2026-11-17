@@ -199,31 +199,33 @@ void DrawWaitingScreen(
 // Painel sobre o video
 // ============================================================
 
-bool DrawStreamOverlay(
-    StreamOverlayModel& model)
+namespace
 {
-    if (model.alpha <= 0.0f)
-        return false;
 
+// Comeca uma janela sem moldura encostada no canto superior
+// direito, com a transparencia dada.
+void BeginTopRightWindow(
+    const char* id,
+    float alpha)
+{
     const ImGuiViewport* viewport =
         ImGui::GetMainViewport();
 
     float margin = 16.0f * UiScale();
 
-    // Canto inferior esquerdo.
     ImGui::SetNextWindowPos(
         ImVec2(
-            viewport->WorkPos.x + margin,
-            viewport->WorkPos.y + viewport->WorkSize.y - margin),
+            viewport->WorkPos.x + viewport->WorkSize.x - margin,
+            viewport->WorkPos.y + margin),
         ImGuiCond_Always,
-        ImVec2(0.0f, 1.0f)
+        ImVec2(1.0f, 0.0f)
     );
 
-    ImGui::SetNextWindowBgAlpha(0.85f);
+    ImGui::SetNextWindowBgAlpha(0.93f);
 
     ImGui::PushStyleVar(
         ImGuiStyleVar_Alpha,
-        model.alpha
+        alpha
     );
 
     ImGui::PushStyleVar(
@@ -232,7 +234,7 @@ bool DrawStreamOverlay(
     );
 
     ImGui::Begin(
-        "##sobrevideo",
+        id,
         nullptr,
         ImGuiWindowFlags_NoTitleBar |
         ImGuiWindowFlags_NoResize |
@@ -242,6 +244,125 @@ bool DrawStreamOverlay(
         ImGuiWindowFlags_AlwaysAutoResize |
         ImGuiWindowFlags_NoFocusOnAppearing
     );
+}
+
+
+bool EndTopRightWindow()
+{
+    bool hovered =
+        ImGui::IsWindowHovered(
+            ImGuiHoveredFlags_ChildWindows) ||
+        ImGui::IsAnyItemActive();
+
+    ImGui::End();
+
+    ImGui::PopStyleVar(2);
+
+    return hovered;
+}
+
+
+// Dois botoes lado a lado que funcionam como uma escolha
+// (o escolhido fica destacado).
+bool ToggleButton(
+    const char* label,
+    bool selected,
+    float width)
+{
+    if (selected)
+    {
+        const ImVec4 accent = UiColorAccent();
+
+        ImGui::PushStyleColor(ImGuiCol_Button, accent);
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, accent);
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive, accent);
+    }
+
+    bool clicked =
+        ImGui::Button(
+            label,
+            ImVec2(width, 0.0f));
+
+    if (selected)
+    {
+        ImGui::PopStyleColor(3);
+    }
+
+    return clicked;
+}
+
+} // namespace
+
+
+bool DrawStreamOverlay(
+    StreamOverlayModel& model,
+    StreamOverlayActions& actions)
+{
+    if (model.alpha <= 0.0f)
+        return false;
+
+    bool& collapsed = *model.collapsed;
+
+
+    // --------------------------------------------------------
+    // Painel fechado: so um botao pequeno pra reabrir
+    // --------------------------------------------------------
+
+    if (collapsed)
+    {
+        BeginTopRightWindow("##opcoesfechado", model.alpha);
+
+        if (ImGui::Button("Opções"))
+        {
+            collapsed = false;
+        }
+
+        return EndTopRightWindow();
+    }
+
+
+    BeginTopRightWindow("##sobrevideo", model.alpha);
+
+    const ImGuiStyle& style = ImGui::GetStyle();
+
+    float rowWidth = 300.0f * UiScale();
+
+
+    // --------------------------------------------------------
+    // Cabecalho com o botao de fechar
+    // --------------------------------------------------------
+
+    ImGui::PushStyleColor(ImGuiCol_Text, UiColorMuted());
+
+    // Alinha o texto com o centro do botao de fechar.
+    ImGui::AlignTextToFramePadding();
+
+    ImGui::TextUnformatted("Opções");
+
+    ImGui::PopStyleColor();
+
+    float closeSize =
+        ImGui::GetFrameHeight();
+
+    ImGui::SameLine(
+        rowWidth - closeSize + style.WindowPadding.x
+    );
+
+    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
+
+    if (ImGui::Button(
+            "×##fechar",
+            ImVec2(closeSize, closeSize)))
+    {
+        collapsed = true;
+    }
+
+    ImGui::PopStyleColor();
+
+    if (ImGui::IsItemHovered())
+    {
+        ImGui::SetTooltip("Fechar (as teclas continuam funcionando)");
+    }
 
 
     // --------------------------------------------------------
@@ -252,12 +373,9 @@ bool DrawStreamOverlay(
 
     float& volume = *model.volume;
 
-    const char* muteLabel =
-        muted ? "Som desligado" : "Som ligado";
-
     float muteWidth =
         ImGui::CalcTextSize("Som desligado").x +
-        ImGui::GetStyle().FramePadding.x * 2.0f;
+        style.FramePadding.x * 2.0f;
 
     if (muted)
     {
@@ -267,7 +385,7 @@ bool DrawStreamOverlay(
     }
 
     if (ImGui::Button(
-            muteLabel,
+            muted ? "Som desligado" : "Som ligado",
             ImVec2(muteWidth, 0.0f)))
     {
         muted = !muted;
@@ -280,7 +398,8 @@ bool DrawStreamOverlay(
 
     ImGui::SameLine();
 
-    ImGui::SetNextItemWidth(180.0f * UiScale());
+    ImGui::SetNextItemWidth(
+        rowWidth - muteWidth - style.ItemSpacing.x);
 
     int percent =
         static_cast<int>(volume * 100.0f + 0.5f);
@@ -301,7 +420,48 @@ bool DrawStreamOverlay(
 
 
     // --------------------------------------------------------
-    // Estatisticas
+    // Exibicao
+    // --------------------------------------------------------
+
+    bool& fill = *model.fillWindow;
+
+    float half =
+        (rowWidth - style.ItemSpacing.x) * 0.5f;
+
+    if (ToggleButton("Imagem inteira", !fill, half))
+    {
+        fill = false;
+    }
+
+    if (ImGui::IsItemHovered())
+    {
+        ImGui::SetTooltip("Mostra tudo; pode sobrar borda.");
+    }
+
+    ImGui::SameLine();
+
+    if (ToggleButton("Preencher", fill, half))
+    {
+        fill = true;
+    }
+
+    if (ImGui::IsItemHovered())
+    {
+        ImGui::SetTooltip("Sem bordas; corta um pouco das beiradas.");
+    }
+
+    if (ImGui::Button(
+            model.fullscreen
+                ? "Sair da tela cheia"
+                : "Tela cheia",
+            ImVec2(rowWidth, 0.0f)))
+    {
+        actions.toggleFullscreen = true;
+    }
+
+
+    // --------------------------------------------------------
+    // Estatisticas e atalhos
     // --------------------------------------------------------
 
     std::string stats =
@@ -310,7 +470,7 @@ bool DrawStreamOverlay(
         std::to_string(model.height) +
         "  ·  " +
         std::to_string(model.fps) +
-        " FPS  ·  perdidos na rede: " +
+        " FPS  ·  perdidos: " +
         std::to_string(model.lostNetwork);
 
     if (model.late > 0)
@@ -327,18 +487,9 @@ bool DrawStreamOverlay(
     ImGui::TextUnformatted(stats.c_str());
 
     ImGui::TextUnformatted(
-        "M: liga/desliga o som  ·  setas: volume");
+        "M: som  ·  setas: volume  ·  F11: tela cheia");
 
     ImGui::PopStyleColor();
 
-    bool hovered =
-        ImGui::IsWindowHovered(
-            ImGuiHoveredFlags_ChildWindows) ||
-        ImGui::IsAnyItemActive();
-
-    ImGui::End();
-
-    ImGui::PopStyleVar(2);
-
-    return hovered;
+    return EndTopRightWindow();
 }

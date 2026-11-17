@@ -92,6 +92,23 @@ float UiScale()
 }
 
 
+const ImWchar* UiGlyphRanges()
+{
+    static const ImWchar ranges[] =
+    {
+        0x0020, 0x00FF,     // latim basico + acentos
+        0x0100, 0x017F,     // latim estendido A
+        0x2000, 0x206F,     // pontuacao: — – " " … •
+        0x20AC, 0x20AC,     // €
+        0x2122, 0x2122,     // ™
+        0x2190, 0x2199,     // setas
+        0,
+    };
+
+    return ranges;
+}
+
+
 // ============================================================
 // Cores
 // ============================================================

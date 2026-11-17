@@ -3352,6 +3352,106 @@ float g_volume = 1.0f;
 
 bool g_muted = false;
 
+// Exibicao do video (ver StreamOverlayModel).
+bool g_fillWindow = false;
+
+bool g_overlayCollapsed = false;
+
+// Tela cheia: guarda como a janela estava pra poder voltar.
+bool g_fullscreen = false;
+
+WINDOWPLACEMENT g_windowedPlacement{};
+
+
+// ============================================================
+// ToggleFullscreen
+// ============================================================
+//
+// Tela cheia "sem borda": a janela perde a moldura e passa a
+// ocupar o monitor inteiro em que esta. E o jeito que players
+// de video costumam fazer - alternar e instantaneo e nao muda
+// a resolucao do monitor.
+// ============================================================
+
+void ToggleFullscreen()
+{
+    if (!g_hwnd)
+        return;
+
+    DWORD style =
+        static_cast<DWORD>(
+            GetWindowLongW(g_hwnd, GWL_STYLE));
+
+    if (!g_fullscreen)
+    {
+        MONITORINFO monitor{};
+
+        monitor.cbSize =
+            sizeof(monitor);
+
+        g_windowedPlacement.length =
+            sizeof(g_windowedPlacement);
+
+        if (!GetWindowPlacement(
+                g_hwnd,
+                &g_windowedPlacement) ||
+            !GetMonitorInfoW(
+                MonitorFromWindow(
+                    g_hwnd,
+                    MONITOR_DEFAULTTOPRIMARY),
+                &monitor))
+        {
+            return;
+        }
+
+        SetWindowLongW(
+            g_hwnd,
+            GWL_STYLE,
+            static_cast<LONG>(
+                style & ~WS_OVERLAPPEDWINDOW)
+        );
+
+        SetWindowPos(
+            g_hwnd,
+            HWND_TOP,
+            monitor.rcMonitor.left,
+            monitor.rcMonitor.top,
+            monitor.rcMonitor.right - monitor.rcMonitor.left,
+            monitor.rcMonitor.bottom - monitor.rcMonitor.top,
+            SWP_NOOWNERZORDER | SWP_FRAMECHANGED
+        );
+
+        g_fullscreen = true;
+    }
+    else
+    {
+        SetWindowLongW(
+            g_hwnd,
+            GWL_STYLE,
+            static_cast<LONG>(
+                style | WS_OVERLAPPEDWINDOW)
+        );
+
+        SetWindowPlacement(
+            g_hwnd,
+            &g_windowedPlacement
+        );
+
+        SetWindowPos(
+            g_hwnd,
+            nullptr,
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER |
+            SWP_NOOWNERZORDER | SWP_FRAMECHANGED
+        );
+
+        g_fullscreen = false;
+    }
+}
+
 std::atomic<bool> g_connectBusy{ false };
 
 std::thread g_connectThread;
@@ -4023,6 +4123,9 @@ void DrawReceiverUi()
 
         overlay.volume = &g_volume;
         overlay.muted = &g_muted;
+        overlay.fillWindow = &g_fillWindow;
+        overlay.fullscreen = g_fullscreen;
+        overlay.collapsed = &g_overlayCollapsed;
         overlay.fps = g_fps.load();
         overlay.width = g_frameWidth;
         overlay.height = g_frameHeight;
@@ -4030,8 +4133,17 @@ void DrawReceiverUi()
         overlay.late = g_statLate.load();
         overlay.alpha = alpha;
 
+        StreamOverlayActions overlayActions;
+
         overlayHovered =
-            DrawStreamOverlay(overlay);
+            DrawStreamOverlay(
+                overlay,
+                overlayActions);
+
+        if (overlayActions.toggleFullscreen)
+        {
+            actions.toggleFullscreen = true;
+        }
     }
     else
     {
@@ -4097,6 +4209,11 @@ void DrawReceiverUi()
     if (actions.connect)
     {
         StartConnect();
+    }
+
+    if (actions.toggleFullscreen)
+    {
+        ToggleFullscreen();
     }
 
     if (actions.openDownloadPage)
@@ -4350,7 +4467,20 @@ void RenderFrame()
         TransformData transform{};
 
 
-        if (imageAspect > windowAspect)
+        // "Preencher": a mesma conta invertida - a imagem cresce
+        // ate cobrir a janela inteira e o que passa da borda e
+        // cortado (o shader desenha alem da tela e a placa de
+        // video simplesmente descarta).
+        bool imageIsWider =
+            imageAspect > windowAspect;
+
+        if (g_fillWindow)
+        {
+            imageIsWider = !imageIsWider;
+        }
+
+
+        if (imageIsWider)
         {
             transform.scaleX = 1.0f;
 
@@ -4534,8 +4664,36 @@ LRESULT CALLBACK WindowProc(
     }
 
 
+    case WM_LBUTTONDBLCLK:
+    {
+        // Duplo clique no video: tela cheia (como nos players).
+        if (g_streamReceived &&
+            !UiWantsMouse())
+        {
+            ToggleFullscreen();
+        }
+
+        return 0;
+    }
+
     case WM_KEYDOWN:
     {
+        if (wParam == VK_F11)
+        {
+            ToggleFullscreen();
+
+            return 0;
+        }
+
+        if (wParam == VK_ESCAPE &&
+            g_fullscreen)
+        {
+            ToggleFullscreen();
+
+            return 0;
+        }
+
+
         // ====================================================
         // Tecla S: salva o frame exibido no momento em BMP,
         // sem passar por nenhuma ferramenta de print/foto -
@@ -4787,6 +4945,10 @@ int main()
             nullptr,
             IDC_ARROW
         );
+
+    // Sem isso o Windows nao manda WM_LBUTTONDBLCLK.
+    wc.style =
+        CS_DBLCLKS;
 
     wc.hbrBackground =
         static_cast<HBRUSH>(

@@ -20,6 +20,8 @@ struct ReceiverScreenActions
 {
     bool connect = false;
 
+    bool toggleFullscreen = false;
+
     bool openDownloadPage = false;
 
     bool recheckFfmpeg = false;
@@ -53,7 +55,7 @@ void DrawWaitingScreen(
 
 
 // ------------------------------------------------------------
-// Painel sobre o video (volume + estatisticas)
+// Painel sobre o video (volume, exibicao e estatisticas)
 // ------------------------------------------------------------
 
 struct StreamOverlayModel
@@ -62,6 +64,17 @@ struct StreamOverlayModel
     float* volume = nullptr;
 
     bool* muted = nullptr;
+
+    // true = preencher a janela (sem bordas, cortando o que
+    // sobra); false = mostrar a imagem inteira (com bordas
+    // quando a proporcao nao bate). A tela altera direto.
+    bool* fillWindow = nullptr;
+
+    bool fullscreen = false;
+
+    // true = o usuario fechou o painel; aparece so um botao
+    // pequeno pra reabrir.
+    bool* collapsed = nullptr;
 
     int fps = 0;
 
@@ -78,8 +91,14 @@ struct StreamOverlayModel
     float alpha = 1.0f;
 };
 
-// Devolve true se o mouse esta em cima do painel (pra ele nao
-// sumir enquanto a pessoa mexe no volume).
+struct StreamOverlayActions
+{
+    bool toggleFullscreen = false;
+};
+
+// Desenha no canto superior direito. Devolve true se o mouse
+// esta em cima (pra ele nao sumir enquanto a pessoa mexe).
 bool DrawStreamOverlay(
-    StreamOverlayModel& model
+    StreamOverlayModel& model,
+    StreamOverlayActions& actions
 );

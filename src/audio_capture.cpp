@@ -13,6 +13,263 @@
 
 
 // ============================================================
+// Captura de som de UM processo (Windows 11 / build 20348+)
+// ============================================================
+//
+// Em vez de abrir um dispositivo de saida, pede ao Windows um
+// "dispositivo virtual" que contem so o som de um processo (e
+// dos que ele abriu). As estruturas abaixo sao copias exatas
+// das do Windows SDK (audioclientactivationparams.h) - ficam
+// aqui pra o projeto compilar mesmo com um SDK mais antigo.
+// ============================================================
+
+namespace
+{
+
+const wchar_t PROCESS_LOOPBACK_DEVICE[] =
+    L"VAD\\Process_Loopback";
+
+enum : int
+{
+    ACTIVATION_TYPE_PROCESS_LOOPBACK = 1,
+    LOOPBACK_MODE_INCLUDE_TARGET_PROCESS_TREE = 0
+};
+
+struct ProcessLoopbackActivationParams
+{
+    int activationType;
+
+    DWORD targetProcessId;
+
+    int loopbackMode;
+};
+
+
+// IIDs fixos das interfaces envolvidas (iguais aos do SDK).
+const IID IID_ActivateCompletionHandler =
+    { 0x41d949ab, 0x9862, 0x444a,
+      { 0x80, 0xf6, 0xc2, 0x61, 0x33, 0x4d, 0xa5, 0xeb } };
+
+const IID IID_AgileObject =
+    { 0x94ea2b94, 0xe9cc, 0x49e0,
+      { 0xc0, 0xff, 0xee, 0x64, 0xca, 0x8f, 0x5b, 0x90 } };
+
+
+// O Windows avisa por callback quando o dispositivo virtual
+// esta pronto. Esta classe so guarda o resultado e sinaliza um
+// evento, pra quem pediu poder esperar.
+class ActivationHandler :
+    public IActivateAudioInterfaceCompletionHandler
+{
+public:
+
+    ActivationHandler()
+        : m_refCount(1),
+          m_done(CreateEventW(nullptr, TRUE, FALSE, nullptr))
+    {
+    }
+
+    virtual ~ActivationHandler()
+    {
+        if (m_done)
+        {
+            CloseHandle(m_done);
+        }
+    }
+
+    HANDLE DoneEvent() const
+    {
+        return m_done;
+    }
+
+    HRESULT STDMETHODCALLTYPE QueryInterface(
+        REFIID riid,
+        void** object) override
+    {
+        if (!object)
+            return E_POINTER;
+
+        // IAgileObject: avisa ao Windows que este objeto pode
+        // ser chamado de qualquer thread (exigido aqui).
+        if (IsEqualIID(riid, IID_IUnknown) ||
+            IsEqualIID(riid, IID_ActivateCompletionHandler) ||
+            IsEqualIID(riid, IID_AgileObject))
+        {
+            *object =
+                static_cast<
+                    IActivateAudioInterfaceCompletionHandler*>(
+                        this);
+
+            AddRef();
+
+            return S_OK;
+        }
+
+        *object = nullptr;
+
+        return E_NOINTERFACE;
+    }
+
+    ULONG STDMETHODCALLTYPE AddRef() override
+    {
+        return
+            static_cast<ULONG>(
+                InterlockedIncrement(&m_refCount));
+    }
+
+    ULONG STDMETHODCALLTYPE Release() override
+    {
+        LONG count =
+            InterlockedDecrement(&m_refCount);
+
+        if (count == 0)
+        {
+            delete this;
+        }
+
+        return static_cast<ULONG>(count);
+    }
+
+    HRESULT STDMETHODCALLTYPE ActivateCompleted(
+        IActivateAudioInterfaceAsyncOperation*) override
+    {
+        SetEvent(m_done);
+
+        return S_OK;
+    }
+
+private:
+
+    LONG m_refCount;
+
+    HANDLE m_done;
+};
+
+
+using ActivateAudioInterfaceAsyncFn =
+    HRESULT (WINAPI*)(
+        LPCWSTR,
+        REFIID,
+        PROPVARIANT*,
+        IActivateAudioInterfaceCompletionHandler*,
+        IActivateAudioInterfaceAsyncOperation**);
+
+
+// Pede o IAudioClient que captura so o som do processo.
+// Carrega a funcao do Windows em tempo de execucao: em sistemas
+// sem suporte ela simplesmente falha, sem impedir o programa de
+// abrir.
+HRESULT ActivateProcessLoopbackClient(
+    DWORD processId,
+    IAudioClient** outClient)
+{
+    *outClient = nullptr;
+
+    HMODULE mmdevapi =
+        LoadLibraryW(L"mmdevapi.dll");
+
+    if (!mmdevapi)
+        return HRESULT_FROM_WIN32(GetLastError());
+
+    ActivateAudioInterfaceAsyncFn activate =
+        reinterpret_cast<ActivateAudioInterfaceAsyncFn>(
+            reinterpret_cast<void*>(
+                GetProcAddress(
+                    mmdevapi,
+                    "ActivateAudioInterfaceAsync")));
+
+    if (!activate)
+        return E_NOTIMPL;
+
+    ProcessLoopbackActivationParams params{};
+
+    params.activationType =
+        ACTIVATION_TYPE_PROCESS_LOOPBACK;
+
+    params.targetProcessId =
+        processId;
+
+    params.loopbackMode =
+        LOOPBACK_MODE_INCLUDE_TARGET_PROCESS_TREE;
+
+    PROPVARIANT activationParams{};
+
+    activationParams.vt = VT_BLOB;
+    activationParams.blob.cbSize = sizeof(params);
+    activationParams.blob.pBlobData =
+        reinterpret_cast<BYTE*>(&params);
+
+    ActivationHandler* handler =
+        new ActivationHandler();
+
+    IActivateAudioInterfaceAsyncOperation* operation =
+        nullptr;
+
+    HRESULT hr =
+        activate(
+            PROCESS_LOOPBACK_DEVICE,
+            __uuidof(IAudioClient),
+            &activationParams,
+            handler,
+            &operation
+        );
+
+    if (SUCCEEDED(hr))
+    {
+        // Normalmente responde em milissegundos.
+        if (WaitForSingleObject(
+                handler->DoneEvent(),
+                5000) != WAIT_OBJECT_0)
+        {
+            hr = HRESULT_FROM_WIN32(ERROR_TIMEOUT);
+        }
+        else
+        {
+            HRESULT activateResult = E_FAIL;
+
+            IUnknown* activated = nullptr;
+
+            hr =
+                operation->GetActivateResult(
+                    &activateResult,
+                    &activated
+                );
+
+            if (SUCCEEDED(hr))
+            {
+                hr = activateResult;
+            }
+
+            if (SUCCEEDED(hr) && activated)
+            {
+                hr =
+                    activated->QueryInterface(
+                        __uuidof(IAudioClient),
+                        reinterpret_cast<void**>(outClient)
+                    );
+            }
+
+            if (activated)
+            {
+                activated->Release();
+            }
+        }
+    }
+
+    if (operation)
+    {
+        operation->Release();
+    }
+
+    handler->Release();
+
+    return hr;
+}
+
+} // namespace
+
+
+// ============================================================
 // Helper: wstring -> string em UTF-8 (nomes de dispositivo vão
 // pra interface e pro log).
 // ============================================================
@@ -411,6 +668,122 @@ void AudioCapture::CaptureThread()
     // Device enumerator
     // ============================================================
 
+    m_capturingProcess =
+        false;
+
+
+    // --------------------------------------------------------
+    // Som de UM processo (janela escolhida)
+    //
+    // Se der certo, pula toda a parte de dispositivo abaixo.
+    // Se nao der (Windows antigo, processo ja fechado...), cai
+    // pro som do dispositivo, como antes.
+    // --------------------------------------------------------
+
+    if (m_targetProcessId != 0)
+    {
+        hr =
+            ActivateProcessLoopbackClient(
+                m_targetProcessId,
+                &m_audioClient
+            );
+
+        if (SUCCEEDED(hr) && m_audioClient)
+        {
+            // Aqui nao ha "mix format" pra consultar: o formato
+            // e o que pedirmos, e o Windows converte. Pedimos
+            // exatamente o que o resto do programa usa (48 kHz,
+            // estereo, float) - sem conversao nossa depois.
+            WAVEFORMATEX* format =
+                static_cast<WAVEFORMATEX*>(
+                    CoTaskMemAlloc(sizeof(WAVEFORMATEX)));
+
+            if (format)
+            {
+                ZeroMemory(format, sizeof(WAVEFORMATEX));
+
+                format->wFormatTag = WAVE_FORMAT_IEEE_FLOAT;
+                format->nChannels = AUDIO_CHANNELS;
+                format->nSamplesPerSec = AUDIO_SAMPLE_RATE;
+                format->wBitsPerSample = 32;
+                format->nBlockAlign =
+                    static_cast<WORD>(
+                        format->nChannels *
+                        format->wBitsPerSample / 8);
+                format->nAvgBytesPerSec =
+                    format->nSamplesPerSec *
+                    format->nBlockAlign;
+
+                m_mixFormat = format;
+            }
+
+            m_captureEvent =
+                CreateEventW(nullptr, FALSE, FALSE, nullptr);
+
+            constexpr REFERENCE_TIME processBufferDuration =
+                200 * 10000; // 200ms
+
+            hr =
+                (m_mixFormat && m_captureEvent)
+                ? m_audioClient->Initialize(
+                      AUDCLNT_SHAREMODE_SHARED,
+                      AUDCLNT_STREAMFLAGS_LOOPBACK |
+                      AUDCLNT_STREAMFLAGS_EVENTCALLBACK |
+                      AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM,
+                      processBufferDuration,
+                      0,
+                      m_mixFormat,
+                      nullptr)
+                : E_OUTOFMEMORY;
+
+            if (SUCCEEDED(hr))
+            {
+                hr =
+                    m_audioClient->SetEventHandle(
+                        m_captureEvent);
+            }
+
+            if (SUCCEEDED(hr))
+            {
+                m_capturingProcess =
+                    true;
+
+                std::cout
+                    << "AudioCapture: capturando so o som do "
+                    << "processo "
+                    << m_targetProcessId
+                    << ".\n";
+
+                goto client_ready;
+            }
+        }
+
+        std::cout
+            << "AudioCapture: nao deu pra capturar o som so "
+            << "da janela (HRESULT "
+            << hr
+            << ") - usando o som do dispositivo.\n";
+
+        if (m_audioClient)
+        {
+            m_audioClient->Release();
+            m_audioClient = nullptr;
+        }
+
+        if (m_mixFormat)
+        {
+            CoTaskMemFree(m_mixFormat);
+            m_mixFormat = nullptr;
+        }
+
+        if (m_captureEvent)
+        {
+            CloseHandle(m_captureEvent);
+            m_captureEvent = nullptr;
+        }
+    }
+
+
     hr =
         CoCreateInstance(
             __uuidof(MMDeviceEnumerator),
@@ -588,6 +961,8 @@ void AudioCapture::CaptureThread()
     }
 
 
+client_ready:
+
     hr =
         m_audioClient->GetService(
             __uuidof(IAudioCaptureClient),
@@ -626,8 +1001,11 @@ void AudioCapture::CaptureThread()
 
 
     std::cout
-        << "AudioCapture: captura de audio do sistema "
-        << "iniciada (loopback).\n";
+        << "AudioCapture: captura de audio iniciada ("
+        << (m_capturingProcess
+            ? "so a janela escolhida"
+            : "som do dispositivo")
+        << ").\n";
 
 
     // ============================================================
@@ -809,7 +1187,19 @@ void AudioCapture::CaptureThread()
         }
 
 
-        Sleep(5);
+        // Por processo: o Windows avisa quando ha som novo.
+        // Por dispositivo: consulta a cada 5 ms, como antes.
+        if (m_captureEvent)
+        {
+            WaitForSingleObject(
+                m_captureEvent,
+                50
+            );
+        }
+        else
+        {
+            Sleep(5);
+        }
     }
 
 
@@ -850,6 +1240,15 @@ cleanup:
 
         m_mixFormat = nullptr;
     }
+
+    if (m_captureEvent)
+    {
+        CloseHandle(m_captureEvent);
+        m_captureEvent = nullptr;
+    }
+
+    m_capturingProcess =
+        false;
 
     if (m_comInitialized)
     {

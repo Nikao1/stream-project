@@ -55,3 +55,8 @@ void UiEndFrame();
 // true = um campo de texto da interface esta com o foco;
 // atalhos de teclado do programa devem ser ignorados.
 bool UiWantsKeyboard();
+
+// true = o mouse esta em cima de algum painel da interface;
+// cliques do programa (ex.: duplo clique no video) devem ser
+// ignorados.
+bool UiWantsMouse();

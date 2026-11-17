@@ -166,7 +166,7 @@ void DrawClientSetupScreen(
     if (UiPrimaryButton(
             model.busy
                 ? "Preparando..."
-                : "Escolher tela e transmitir",
+                : "Escolher o que transmitir",
             !model.busy))
     {
         actions.start = true;
@@ -187,8 +187,8 @@ void DrawClientSetupScreen(
     else
     {
         UiMutedText(
-            "Em seguida o Windows pergunta qual tela ou janela "
-            "você quer compartilhar."
+            "Na próxima tela você escolhe uma tela inteira ou "
+            "uma janela."
         );
     }
 
@@ -208,48 +208,52 @@ void DrawClientLiveScreen(
     static double codeCopiedAt = 0.0;
     static double inviteCopiedAt = 0.0;
 
-    // Com a tela ja sendo capturada, o painel vai pro canto
-    // pra previa aparecer atras; antes disso fica no centro.
-    if (model.capturing)
+    // O painel fica no canto, pra previa aparecer atras.
+    UiBeginCornerPanel("##aovivo", 380.0f);
+
+    UiTitle("Transmitindo");
+
+    if (!model.sharingLabel.empty())
     {
-        UiBeginCornerPanel("##aovivo", 380.0f);
+        std::string sharing =
+            model.sharingLabel +
+            (model.windowAudioOnly
+                ? "  ·  som só desta janela"
+                : "  ·  som do computador");
+
+        UiMutedText(sharing.c_str());
     }
-    else
+
+    if (ImGui::Button(
+            "Trocar o que está sendo compartilhado",
+            ImVec2(
+                ImGui::GetContentRegionAvail().x,
+                0.0f)))
     {
-        UiBeginCenteredPanel("##aovivo", 480.0f);
+        actions.openPicker = true;
     }
 
-    UiTitle(
-        model.capturing
-            ? "Transmitindo"
-            : "Escolha o que compartilhar"
-    );
-
-    if (!model.capturing)
-    {
-        UiMutedText(
-            "Selecione a tela ou janela na caixa do Windows que "
-            "acabou de abrir."
-        );
-
-        if (ImGui::Button(
-                "Abrir o seletor de novo",
-                ImVec2(
-                    ImGui::GetContentRegionAvail().x,
-                    0.0f)))
-        {
-            actions.openPicker = true;
-        }
-
-        ImGui::Separator();
-    }
+    ImGui::Separator();
 
 
     // --------------------------------------------------------
     // Como as pessoas entram: codigo da sessao ou convite
     // --------------------------------------------------------
 
-    if (!model.sessionCode.empty())
+    if (model.sessionPending)
+    {
+        UiFieldLabel("Código da sessão");
+
+        UiMutedText(
+            (model.sessionStatus + UiBusyDots()).c_str()
+        );
+
+        UiMutedText(
+            "Na primeira transmissão depois de um tempo "
+            "parado, o servidor pode levar até 1 minuto."
+        );
+    }
+    else if (!model.sessionCode.empty())
     {
         UiFieldLabel("Código da sessão");
 
@@ -399,6 +403,298 @@ void DrawClientLiveScreen(
             "Sua rede usa NAT simétrico: quem estiver fora da "
             "sua rede local pode não conseguir conectar."
         );
+    }
+
+    UiEndPanel();
+}
+
+
+// ============================================================
+// Seletor: o que compartilhar
+// ============================================================
+
+namespace
+{
+
+// Corta o texto com "..." pra caber na largura.
+std::string Ellipsize(
+    const std::string& text,
+    float maxWidth)
+{
+    if (ImGui::CalcTextSize(text.c_str()).x <= maxWidth)
+        return text;
+
+    std::string cut = text;
+
+    while (!cut.empty())
+    {
+        // Volta um caractere inteiro (UTF-8 pode ter varios
+        // bytes por caractere).
+        do
+        {
+            cut.pop_back();
+        }
+        while (!cut.empty() &&
+               (static_cast<unsigned char>(cut.back()) & 0xC0) ==
+                   0x80);
+
+        if (!cut.empty())
+        {
+            cut.pop_back();
+        }
+
+        std::string candidate = cut + "...";
+
+        if (ImGui::CalcTextSize(candidate.c_str()).x <= maxWidth)
+            return candidate;
+    }
+
+    return "...";
+}
+
+
+// Item da lista: titulo + linha cinza embaixo, ocupando a
+// largura toda. Devolve true no clique.
+bool PickerItem(
+    const PickerEntry& entry,
+    int id)
+{
+    const ImGuiStyle& style = ImGui::GetStyle();
+
+    float width =
+        ImGui::GetContentRegionAvail().x;
+
+    float lineHeight =
+        ImGui::GetTextLineHeight();
+
+    float height =
+        lineHeight * 2.0f +
+        style.FramePadding.y * 1.4f;
+
+    ImVec2 start =
+        ImGui::GetCursorScreenPos();
+
+    ImGui::PushID(id);
+
+    bool clicked =
+        ImGui::Selectable(
+            "##item",
+            false,
+            ImGuiSelectableFlags_None,
+            ImVec2(width, height)
+        );
+
+    ImGui::PopID();
+
+    ImDrawList* draw =
+        ImGui::GetWindowDrawList();
+
+    float textX =
+        start.x + style.FramePadding.x;
+
+    float textWidth =
+        width - style.FramePadding.x * 2.0f;
+
+    std::string title =
+        Ellipsize(entry.title, textWidth);
+
+    std::string detail =
+        Ellipsize(entry.detail, textWidth);
+
+    float textTop =
+        start.y + style.FramePadding.y * 0.7f;
+
+    draw->AddText(
+        ImVec2(textX, textTop),
+        ImGui::GetColorU32(ImGuiCol_Text),
+        title.c_str()
+    );
+
+    draw->AddText(
+        ImVec2(
+            textX,
+            textTop + lineHeight),
+        ImGui::GetColorU32(UiColorMuted()),
+        detail.c_str()
+    );
+
+    return clicked;
+}
+
+} // namespace
+
+
+void DrawClientPickerScreen(
+    ClientPickerModel& model,
+    ClientScreenActions& actions)
+{
+    UiBeginCenteredPanel("##seletor", 560.0f);
+
+    UiTitle("O que você quer compartilhar?");
+
+    if (!model.error.empty())
+    {
+        UiWrappedColored(
+            UiColorError(),
+            model.error.c_str()
+        );
+    }
+
+
+    // --------------------------------------------------------
+    // Telas
+    // --------------------------------------------------------
+
+    UiFieldLabel("Telas inteiras");
+
+    const std::vector<PickerEntry>& monitors =
+        *model.monitors;
+
+    ImGui::PushStyleVar(
+        ImGuiStyleVar_ItemSpacing,
+        ImVec2(
+            ImGui::GetStyle().ItemSpacing.x,
+            2.0f * UiScale())
+    );
+
+    for (int i = 0;
+         i < static_cast<int>(monitors.size());
+         ++i)
+    {
+        if (PickerItem(monitors[i], i))
+        {
+            actions.pickMonitor = i;
+        }
+    }
+
+    ImGui::PopStyleVar();
+
+    ImGui::Dummy(ImVec2(0.0f, 4.0f * UiScale()));
+
+
+    // --------------------------------------------------------
+    // Janelas (rolavel)
+    // --------------------------------------------------------
+
+    UiFieldLabel("Janelas");
+
+    const std::vector<PickerEntry>& windows =
+        *model.windows;
+
+    // A lista ocupa o que sobrar da janela (com limites), pra
+    // o painel inteiro caber mesmo em janelas baixas.
+    float reserved =
+        (470.0f + (model.error.empty() ? 0.0f : 30.0f) +
+         40.0f * static_cast<float>(monitors.size() > 1
+             ? monitors.size() - 1
+             : 0)) *
+        UiScale();
+
+    float listHeight =
+        ImGui::GetMainViewport()->WorkSize.y - reserved;
+
+    float minList = 110.0f * UiScale();
+    float maxList = 320.0f * UiScale();
+
+    if (listHeight < minList) listHeight = minList;
+    if (listHeight > maxList) listHeight = maxList;
+
+    ImGui::PushStyleVar(
+        ImGuiStyleVar_WindowPadding,
+        ImVec2(6.0f * UiScale(), 6.0f * UiScale())
+    );
+
+    ImGui::BeginChild(
+        "##janelas",
+        ImVec2(0.0f, listHeight),
+        ImGuiChildFlags_Borders |
+        ImGuiChildFlags_AlwaysUseWindowPadding
+    );
+
+    ImGui::PopStyleVar();
+
+    // Itens colados um no outro (o destaque ao passar o mouse
+    // ja separa visualmente).
+    ImGui::PushStyleVar(
+        ImGuiStyleVar_ItemSpacing,
+        ImVec2(
+            ImGui::GetStyle().ItemSpacing.x,
+            2.0f * UiScale())
+    );
+
+    if (windows.empty())
+    {
+        UiMutedText("Nenhuma janela aberta.");
+    }
+
+    for (int i = 0;
+         i < static_cast<int>(windows.size());
+         ++i)
+    {
+        if (PickerItem(windows[i], 1000 + i))
+        {
+            actions.pickWindow = i;
+        }
+    }
+
+    ImGui::PopStyleVar();
+
+    ImGui::EndChild();
+
+
+    // --------------------------------------------------------
+    // Som
+    // --------------------------------------------------------
+
+    ImGui::BeginDisabled(!model.windowAudioSupported);
+
+    ImGui::Checkbox(
+        "Ao compartilhar uma janela, transmitir só o som dela",
+        model.windowAudioOnly
+    );
+
+    ImGui::EndDisabled();
+
+    if (!model.windowAudioSupported)
+    {
+        UiMutedText(
+            "Disponível a partir do Windows 11. Aqui vai o som "
+            "do computador."
+        );
+    }
+    else
+    {
+        UiMutedText(
+            "Em navegadores, vai o som do navegador inteiro "
+            "(todas as abas)."
+        );
+    }
+
+
+    // --------------------------------------------------------
+    // Botoes
+    // --------------------------------------------------------
+
+    const ImGuiStyle& style = ImGui::GetStyle();
+
+    float half =
+        (ImGui::GetContentRegionAvail().x -
+         style.ItemSpacing.x) * 0.5f;
+
+    if (ImGui::Button(
+            "Atualizar lista",
+            ImVec2(half, 0.0f)))
+    {
+        actions.refreshPicker = true;
+    }
+
+    ImGui::SameLine();
+
+    if (ImGui::Button(
+            model.switching ? "Cancelar" : "Voltar",
+            ImVec2(half, 0.0f)))
+    {
+        actions.cancelPicker = true;
     }
 
     UiEndPanel();

@@ -66,6 +66,25 @@ public:
         m_selectedDeviceId = deviceId;
     }
 
+    // Captura so o som de um processo (e dos processos que ele
+    // abriu - ex.: as abas de um navegador), em vez do som do
+    // dispositivo inteiro. 0 = volta ao dispositivo. Exige
+    // Windows 11 / build 20348+ (ver SupportsPerWindowAudio);
+    // se nao der, a captura cai pro dispositivo sozinha.
+    // Vale a partir do proximo Start().
+    void SelectProcess(
+        DWORD processId)
+    {
+        m_targetProcessId = processId;
+    }
+
+    // true se a captura em andamento e de um processo so (a
+    // por processo pode ter falhado e caido pro dispositivo).
+    bool IsCapturingProcess() const
+    {
+        return m_capturingProcess;
+    }
+
     bool Start();
 
     void Stop();
@@ -91,6 +110,15 @@ private:
 
     // Vazio = usar o dispositivo de saída padrão do Windows.
     std::wstring m_selectedDeviceId;
+
+    // 0 = som do dispositivo; outro valor = so deste processo.
+    std::atomic<DWORD> m_targetProcessId{ 0 };
+
+    std::atomic<bool> m_capturingProcess{ false };
+
+    // Captura por processo e avisada por evento (a do
+    // dispositivo e consultada em intervalos).
+    HANDLE m_captureEvent = nullptr;
 
     std::thread m_thread;
 

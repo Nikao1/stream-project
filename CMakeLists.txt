@@ -123,6 +123,8 @@ add_executable(stream-client WIN32
     src/client_view.h
     src/client_screens.cpp
     src/client_screens.h
+    src/capture_targets.cpp
+    src/capture_targets.h
     src/ui_common.cpp
     src/ui_common.h
     src/ui_widgets.cpp

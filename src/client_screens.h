@@ -16,12 +16,20 @@
 
 struct ClientScreenActions
 {
-    // "Escolher tela e transmitir"
+    // "Continuar" na tela inicial
     bool start = false;
 
-    // "Abrir o seletor de novo" (o usuario fechou o seletor de
-    // tela do Windows sem escolher nada)
+    // "Trocar o que está sendo compartilhado"
     bool openPicker = false;
+
+    // Seletor: item clicado (indice na lista de telas ou de
+    // janelas; -1 = nenhum).
+    int pickMonitor = -1;
+    int pickWindow = -1;
+
+    bool refreshPicker = false;
+
+    bool cancelPicker = false;
 
     // "Aplicar" a resposta colada (convite manual)
     bool applyReply = false;
@@ -66,9 +74,22 @@ void DrawClientSetupScreen(
 
 struct ClientLiveModel
 {
-    // Codigo da sessao. Vazio = sem servidor de sessoes; ai
-    // vale o convite manual abaixo.
+    // true = a sessao ainda esta sendo criada (o servidor pode
+    // levar ate ~1 minuto pra acordar).
+    bool sessionPending = false;
+
+    std::string sessionStatus;
+
+    // Codigo da sessao. Vazio (e sem sessionPending) = sem
+    // servidor de sessoes; ai vale o convite manual abaixo.
     std::string sessionCode;
+
+    // O que esta sendo compartilhado, ex.: "Tela 1" / titulo
+    // da janela.
+    std::string sharingLabel;
+
+    // true = so o som da janela compartilhada.
+    bool windowAudioOnly = false;
 
     std::string invite;
 
@@ -104,6 +125,42 @@ struct ClientLiveModel
 
 void DrawClientLiveScreen(
     ClientLiveModel& model,
+    ClientScreenActions& actions
+);
+
+
+// ------------------------------------------------------------
+// Seletor: o que compartilhar
+// ------------------------------------------------------------
+
+struct PickerEntry
+{
+    std::string title;
+
+    std::string detail;
+};
+
+struct ClientPickerModel
+{
+    const std::vector<PickerEntry>* monitors = nullptr;
+
+    const std::vector<PickerEntry>* windows = nullptr;
+
+    // "So o som da janela" (a tela altera direto).
+    bool* windowAudioOnly = nullptr;
+
+    bool windowAudioSupported = false;
+
+    // true = ja esta transmitindo (o seletor esta trocando a
+    // fonte); habilita "Cancelar".
+    bool switching = false;
+
+    // Erro da ultima tentativa (ex.: a janela foi fechada).
+    std::string error;
+};
+
+void DrawClientPickerScreen(
+    ClientPickerModel& model,
     ClientScreenActions& actions
 );
 

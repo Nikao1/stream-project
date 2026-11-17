@@ -13,12 +13,12 @@
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <windows.h>
-#include <shobjidl.h>
 
 #include <d3d11.h>
 #include <dxgi1_2.h>
 
 #include <windows.graphics.capture.h>
+#include <windows.graphics.capture.interop.h>
 #include <windows.graphics.directx.direct3d11.interop.h>
 #include <windows.graphics.directx.direct3d11.h>
 
@@ -114,6 +114,10 @@ uint32_t g_targetOutputHeight =
 // usado pra atrasar o prompt de dispositivo de áudio, evitando
 // os dois disputarem foco de janela ao mesmo tempo.
 std::atomic<bool> g_captureItemSelected{ false };
+
+// true = a fonte do som mudou (outra janela escolhida); a thread
+// de audio reinicia a captura com a fonte nova.
+std::atomic<bool> g_audioRestartRequested{ false };
 
 
 // ============================================================
@@ -270,7 +274,7 @@ void UdpAudioServerThread();
 
 void AudioSendThread();
 
-winrt::fire_and_forget StartCaptureAsync();
+void StopCapture();
 
 bool CopyTextureToPixels(
     ID3D11Texture2D* texture,
@@ -1416,6 +1420,21 @@ void AudioSendThread()
 
     while (g_audioSendRunning)
     {
+        // Outra janela escolhida: reinicia a captura de som com
+        // a fonte nova (ver StartCaptureForTarget).
+        if (g_audioRestartRequested.exchange(false))
+        {
+            g_audioCapture.Stop();
+
+            if (!g_audioCapture.Start())
+            {
+                std::cout
+                    << "AudioSendThread: falha ao reiniciar "
+                    << "a captura de audio.\n";
+            }
+        }
+
+
         std::vector<float> pcmFrame;
 
 
@@ -1791,99 +1810,159 @@ void OnFrameArrived(
 
     }
 }
-
-
 // ============================================================
-// CREATE CAPTURE - ASYNC
+// StopCapture
+// ============================================================
+//
+// Para a captura atual (se houver) e solta a tela/janela que
+// estava sendo compartilhada. Usado ao trocar o que esta sendo
+// compartilhado e ao fechar o programa.
 // ============================================================
 
-winrt::fire_and_forget StartCaptureAsync()
+void StopCapture()
 {
+    g_captureRunning =
+        false;
+
+
+    if (g_captureSession)
+    {
+        g_captureSession.Close();
+
+        g_captureSession =
+            nullptr;
+    }
+
+
+    if (g_framePool)
+    {
+        if (g_frameArrivedToken.value != 0)
+        {
+            try
+            {
+                g_framePool.FrameArrived(
+                    g_frameArrivedToken
+                );
+            }
+            catch (...)
+            {
+            }
+
+            g_frameArrivedToken =
+                {};
+        }
+
+        g_framePool.Close();
+
+        g_framePool =
+            nullptr;
+    }
+
+
+    // Referencia a um recurso do sistema (a janela/tela
+    // escolhida) - soltar explicitamente ajuda o Windows a
+    // liberar o que rastreia sobre a captura mais cedo.
+    g_captureItem =
+        nullptr;
+}
+
+
+// ============================================================
+// StartCaptureForTarget
+// ============================================================
+//
+// Comeca a capturar a tela ou janela escolhida no seletor da
+// interface (ver capture_targets). Chamar pela thread da
+// janela.
+//
+// Diferente do seletor do Windows, aqui sabemos exatamente qual
+// janela foi escolhida - o que permite capturar so o som dela.
+// ============================================================
+
+bool StartCaptureForTarget(
+    const CaptureTarget& target,
+    bool windowAudioOnly,
+    std::string& outError)
+{
+    if (!CaptureTargetStillValid(target))
+    {
+        outError =
+            target.kind == CaptureTargetKind::Window
+            ? "Essa janela foi fechada. Atualize a lista."
+            : "Essa tela não está mais disponível. Atualize a "
+              "lista.";
+
+        return false;
+    }
+
     try
     {
-        std::cout
-            << "\nIniciando Graphics Capture Picker...\n";
+        // ----------------------------------------------------
+        // Item de captura a partir da janela/monitor
+        // ----------------------------------------------------
+
+        auto interop =
+            winrt::get_activation_factory<
+                GraphicsCaptureItem,
+                IGraphicsCaptureItemInterop>();
+
+        GraphicsCaptureItem item{ nullptr };
+
+        if (target.kind == CaptureTargetKind::Window)
+        {
+            winrt::check_hresult(
+                interop->CreateForWindow(
+                    target.window,
+                    winrt::guid_of<
+                        ABI::Windows::Graphics::Capture::
+                            IGraphicsCaptureItem>(),
+                    winrt::put_abi(item)
+                )
+            );
+        }
+        else
+        {
+            winrt::check_hresult(
+                interop->CreateForMonitor(
+                    target.monitor,
+                    winrt::guid_of<
+                        ABI::Windows::Graphics::Capture::
+                            IGraphicsCaptureItem>(),
+                    winrt::put_abi(item)
+                )
+            );
+        }
+
+
+        // Trocando de tela/janela: para a captura anterior so
+        // depois que a nova foi criada com sucesso (se falhar,
+        // a transmissao atual continua).
+        StopCapture();
 
 
         auto device =
             CreateWinRTDirect3DDevice();
 
-
-        GraphicsCapturePicker picker;
-
-
-        picker.as<IInitializeWithWindow>()->Initialize(
-            g_hwnd
-        );
-
-
-        std::cout
-            << "Aguardando selecao da janela...\n";
-
-
-        // --------------------------------------------------------
-        // Usar co_await para não bloquear a message loop
-        // --------------------------------------------------------
-
-        auto item =
-            co_await picker.PickSingleItemAsync();
-
-
-        if (!item)
-        {
-            std::cout
-                << "Nenhuma janela selecionada.\n";
-
-
-            PostMessageW(
-                g_hwnd,
-                WM_CLOSE,
-                0,
-                0
-            );
-
-
-            co_return;
-        }
-
-
-        // Sinaliza que a seleção terminou - libera o prompt de
-        // dispositivo de áudio (que fica esperando essa flag),
-        // evitando os dois disputarem foco de janela juntos.
-        g_captureItemSelected =
-            true;
-
-
         g_captureItem =
             item;
-
 
         auto size =
             item.Size();
 
-
         g_captureWidth =
             size.Width;
-
 
         g_captureHeight =
             size.Height;
 
-
         std::cout
             << "Captura selecionada: "
+            << target.title
+            << " ("
             << g_captureWidth
             << "x"
             << g_captureHeight
-            << "\n";
-
-
-        // --------------------------------------------------------
-        // Criar Frame Pool
-        // --------------------------------------------------------
-
-        std::cout
-            << "Criando Frame Pool...\n";
+            << ")\n";
 
 
         g_framePool =
@@ -1894,93 +1973,96 @@ winrt::fire_and_forget StartCaptureAsync()
                 size
             );
 
-
         g_framePoolWidth =
             size.Width;
 
         g_framePoolHeight =
             size.Height;
 
-
-        // --------------------------------------------------------
-        // Criar sessão
-        // --------------------------------------------------------
-
         g_captureSession =
             g_framePool.CreateCaptureSession(
                 item
             );
-
-
-        // --------------------------------------------------------
-        // Registrar callback
-        // --------------------------------------------------------
 
         g_frameArrivedToken =
             g_framePool.FrameArrived(
                 &OnFrameArrived
             );
 
-
         g_captureRunning =
             true;
-
 
         g_fpsStartTime =
             GetTickCount64();
 
-
         g_fpsFrameCounter =
             0;
-
-
-        // --------------------------------------------------------
-        // Iniciar captura
-        // --------------------------------------------------------
 
         g_captureSession.StartCapture();
 
 
+        // ----------------------------------------------------
+        // Fonte do som
+        //
+        // Janela + opcao marcada: so o som do programa dela.
+        // Senao, o som do dispositivo escolhido na tela inicial.
+        // ----------------------------------------------------
+
+        DWORD audioProcess =
+            (target.kind == CaptureTargetKind::Window &&
+             windowAudioOnly)
+            ? target.processId
+            : 0;
+
+        g_audioCapture.SelectProcess(
+            audioProcess
+        );
+
+        // Ja havia captura de audio rodando: reinicia com a
+        // fonte nova. Na primeira vez, a thread de audio ainda
+        // esta esperando e comeca sozinha.
+        if (g_captureItemSelected)
+        {
+            g_audioRestartRequested =
+                true;
+        }
+
+        g_captureItemSelected =
+            true;
+
         std::cout
-            << "========================================\n"
-            << "CAPTURA INICIADA!\n"
-            << "========================================\n";
+            << "CAPTURA INICIADA ("
+            << (audioProcess != 0
+                ? "som so da janela"
+                : "som do computador")
+            << ").\n";
+
+        return true;
     }
     catch (const winrt::hresult_error& error)
     {
-        std::wcerr
-            << L"Erro ao iniciar captura: "
-            << error.message()
-            << L"\n";
+        outError =
+            "Não foi possível capturar: " +
+            winrt::to_string(error.message());
 
-
-        if (g_hwnd)
-        {
-            PostMessageW(
-                g_hwnd,
-                WM_CLOSE,
-                0,
-                0
-            );
-        }
+        std::cout
+            << outError
+            << "\n";
     }
     catch (...)
     {
+        outError =
+            "Não foi possível capturar (erro desconhecido).";
+
         std::cout
-            << "Erro desconhecido ao iniciar captura.\n";
-
-
-        if (g_hwnd)
-        {
-            PostMessageW(
-                g_hwnd,
-                WM_CLOSE,
-                0,
-                0
-            );
-        }
+            << outError
+            << "\n";
     }
+
+    return false;
 }
+
+
 
 
 // ============================================================
@@ -2016,35 +2098,6 @@ LRESULT CALLBACK WindowProc(
 
         return 0;
     }
-
-    // ========================================================
-    // INICIAR CAPTURA
-    // ========================================================
-
-    case WM_APP + 1:
-    {
-        // ----------------------------------------------------
-        // Forçar a janela pro primeiro plano antes do picker.
-        //
-        // Sem isso, se muito tempo se passou desde que a
-        // janela foi criada (ex: esperando o usuário responder
-        // o prompt de qualidade em outra thread), o Windows
-        // pode ter revogado o direito automático dela de trazer
-        // novas janelas pro primeiro plano sem pedir permissão
-        // - fazendo o GraphicsCapturePicker abrir e fechar
-        // sozinho instantaneamente (ou nem abrir).
-        // ----------------------------------------------------
-
-        SetForegroundWindow(
-            hwnd
-        );
-
-
-        StartCaptureAsync();
-
-        return 0;
-    }
-
 
     // ========================================================
     // PAINT
@@ -2098,56 +2151,7 @@ LRESULT CALLBACK WindowProc(
         // Parar captura
         // ----------------------------------------------------
 
-        g_captureRunning =
-            false;
-
-
-        if (g_captureSession)
-        {
-            g_captureSession.Close();
-
-
-            g_captureSession =
-                nullptr;
-        }
-
-
-        if (g_framePool)
-        {
-            if (g_frameArrivedToken.value != 0)
-            {
-                try
-                {
-                    g_framePool.FrameArrived(
-                        g_frameArrivedToken
-                    );
-                }
-                catch (...)
-                {
-                }
-            }
-
-
-            g_framePool.Close();
-
-
-            g_framePool =
-                nullptr;
-        }
-
-
-        // ----------------------------------------------------
-        // Liberar o item de captura selecionado
-        //
-        // Referência a um recurso do sistema (a janela/tela
-        // escolhida no seletor) - soltar explicitamente ajuda
-        // o broker do Windows a liberar o que rastreia sobre
-        // essa sessão de captura mais cedo, em vez de só
-        // quando o processo inteiro encerra.
-        // ----------------------------------------------------
-
-        g_captureItem =
-            nullptr;
+        StopCapture();
 
 
         // ----------------------------------------------------
@@ -2566,9 +2570,9 @@ int WINAPI wWinMain(
         );
 
 
-    // (a qualidade, o FPS e o dispositivo de som sao escolhidos
-    // na tela inicial - ver client_ui.cpp. E de la que parte o
-    // WM_APP + 1 que abre o seletor de tela.)
+    // (a qualidade, o FPS, o dispositivo de som e o que vai ser
+    // compartilhado sao escolhidos na interface - ver
+    // client_ui.cpp.)
 
 
     // =========================================================

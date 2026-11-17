@@ -26,16 +26,17 @@ namespace
 // ============================================================
 //
 //   FfmpegProblem -> ffmpeg.exe ausente ou quebrado
-//   Setup         -> escolha de qualidade / fluidez / som
-//   Starting      -> criando a sessao (thread propria)
-//   Live          -> seletor de tela aberto, ou transmitindo
+//   Setup         -> escolha de qualidade / FPS / som
+//   Picking       -> escolha da tela ou janela (a sessao ja
+//                    vai sendo criada em segundo plano)
+//   Live          -> transmitindo
 // ============================================================
 
 enum class State
 {
     FfmpegProblem,
     Setup,
-    Starting,
+    Picking,
     Live
 };
 
@@ -71,6 +72,104 @@ std::vector<std::string> g_audioDeviceNames;
 char g_replyInput[64]{};
 
 
+// ------------------------------------------------------------
+// Sessao (criada em segundo plano, ver StartStreamingWorker)
+// ------------------------------------------------------------
+
+std::atomic<bool> g_sessionStarted{ false };
+
+std::atomic<bool> g_sessionPending{ false };
+
+
+// ------------------------------------------------------------
+// Seletor (so a thread da janela mexe)
+// ------------------------------------------------------------
+
+std::vector<CaptureTarget> g_monitors;
+std::vector<CaptureTarget> g_windows;
+
+std::vector<PickerEntry> g_monitorEntries;
+std::vector<PickerEntry> g_windowEntries;
+
+bool g_windowAudioSupported = false;
+
+bool g_windowAudioOnly = false;
+
+std::string g_pickerError;
+
+// O que esta sendo compartilhado agora (vazio = nada ainda).
+std::string g_sharingLabel;
+
+
+void RefreshPickerLists()
+{
+    g_monitors = ListCaptureMonitors();
+
+    g_windows = ListCaptureWindows(g_hwnd);
+
+    g_monitorEntries.clear();
+
+    for (const CaptureTarget& target : g_monitors)
+    {
+        g_monitorEntries.push_back(
+            { target.title, target.detail });
+    }
+
+    g_windowEntries.clear();
+
+    for (const CaptureTarget& target : g_windows)
+    {
+        g_windowEntries.push_back(
+            { target.title,
+              target.detail +
+                  (target.minimized
+                      ? "  ·  minimizada (pode aparecer "
+                        "em preto)"
+                      : "") });
+    }
+}
+
+
+void OpenPicker()
+{
+    g_pickerError.clear();
+
+    RefreshPickerLists();
+
+    g_state = State::Picking;
+}
+
+
+void PickTarget(
+    const CaptureTarget& target)
+{
+    std::string error;
+
+    bool windowAudio =
+        g_windowAudioSupported &&
+        g_windowAudioOnly;
+
+    if (!StartCaptureForTarget(
+            target,
+            windowAudio,
+            error))
+    {
+        g_pickerError = error;
+
+        RefreshPickerLists();
+
+        return;
+    }
+
+    g_sharingLabel =
+        target.kind == CaptureTargetKind::Monitor
+        ? target.title + " (" + target.detail + ")"
+        : target.title;
+
+    g_state = State::Live;
+}
+
+
 void SetStatus(
     const std::string& text)
 {
@@ -86,8 +185,8 @@ void SetStatus(
 //
 // Roda em thread propria depois que o usuario clica em
 // transmitir: registra a sessao no servidor de sinalizacao (ou
-// prepara o convite manual, se nao houver servidor) e so entao
-// pede pra janela abrir o seletor de tela do Windows.
+// prepara o convite manual, se nao houver servidor), enquanto a
+// pessoa escolhe o que compartilhar.
 //
 // Fica fora da thread da janela porque pode demorar: o servidor
 // gratuito leva ate ~1 minuto pra "acordar".
@@ -95,6 +194,8 @@ void SetStatus(
 
 void StartStreamingWorker()
 {
+    g_sessionPending = true;
+
     SetStatus("Preparando a rede");
 
     // Os sockets de video/audio sobem em threads proprias e
@@ -236,16 +337,7 @@ void StartStreamingWorker()
         g_udpAudioServer.SetAllowAnonymous(true);
     }
 
-    // Abre o seletor de tela. PostMessageW e seguro entre
-    // threads; a janela trata o WM_APP + 1.
-    PostMessageW(
-        g_hwnd,
-        WM_APP + 1,
-        0,
-        0
-    );
-
-    g_state = State::Live;
+    g_sessionPending = false;
 }
 
 
@@ -338,6 +430,10 @@ void BeginStreaming()
     if (g_state != State::Setup)
         return;
 
+    // Ao voltar do seletor pra esta tela, as escolhas podem
+    // mudar (valem pra proxima captura), mas a sessao ja
+    // criada continua a mesma.
+
     static const uint32_t heights[] =
         { 480, 720, 1080, 0 };
 
@@ -379,11 +475,14 @@ void BeginStreaming()
         << g_targetFps
         << " FPS\n";
 
-    g_state = State::Starting;
+    if (!g_sessionStarted.exchange(true))
+    {
+        std::thread(
+            StartStreamingWorker
+        ).detach();
+    }
 
-    std::thread(
-        StartStreamingWorker
-    ).detach();
+    OpenPicker();
 }
 
 
@@ -434,8 +533,26 @@ void DrawUi(
         return;
     }
 
-    if (state == State::Setup ||
-        state == State::Starting)
+    if (state == State::Picking)
+    {
+        ClientPickerModel model;
+
+        model.monitors = &g_monitorEntries;
+        model.windows = &g_windowEntries;
+        model.windowAudioOnly = &g_windowAudioOnly;
+        model.windowAudioSupported = g_windowAudioSupported;
+        model.switching = g_captureRunning;
+        model.error = g_pickerError;
+
+        DrawClientPickerScreen(
+            model,
+            actions
+        );
+
+        return;
+    }
+
+    if (state == State::Setup)
     {
         ClientSetupModel model;
 
@@ -443,7 +560,7 @@ void DrawUi(
         model.qualityIndex = &g_qualityIndex;
         model.fpsIndex = &g_fpsIndex;
         model.audioIndex = &g_audioIndex;
-        model.busy = state == State::Starting;
+        model.busy = false;
 
         {
             std::lock_guard<std::mutex> lock(g_textMutex);
@@ -461,12 +578,20 @@ void DrawUi(
 
     ClientLiveModel model;
 
+    model.sessionPending = g_sessionPending;
+
     model.sessionCode =
         g_signalingHost.GetCode();
+
+    model.sharingLabel = g_sharingLabel;
+
+    model.windowAudioOnly =
+        g_audioCapture.IsCapturingProcess();
 
     {
         std::lock_guard<std::mutex> lock(g_textMutex);
 
+        model.sessionStatus = g_status;
         model.invite = g_inviteText;
         model.localIp = g_localIp;
         model.replyStatus = g_replyStatus;
@@ -545,6 +670,16 @@ bool ClientUiInit(
 {
     if (!ClientViewInit(hwnd))
         return false;
+
+    // Som so da janela: so existe no Windows 11 em diante.
+    // Quando existe, ja vem marcado (e o que normalmente se
+    // quer ao compartilhar uma janela).
+    g_windowAudioSupported =
+        SupportsPerWindowAudio();
+
+    g_windowAudioOnly =
+        g_windowAudioSupported;
+
 
     // Dispositivos de som pra lista da tela inicial.
     AudioCapture::ListDevices(g_audioDevices);
@@ -680,12 +815,45 @@ void ClientUiRenderFrame()
 
     if (actions.openPicker)
     {
-        PostMessageW(
-            g_hwnd,
-            WM_APP + 1,
-            0,
-            0
-        );
+        OpenPicker();
+    }
+
+    if (actions.refreshPicker)
+    {
+        g_pickerError.clear();
+
+        RefreshPickerLists();
+    }
+
+    if (actions.cancelPicker)
+    {
+        // Ja transmitindo: volta pra transmissao. Antes da
+        // primeira escolha: volta pras opcoes.
+        g_state =
+            g_captureRunning
+            ? State::Live
+            : State::Setup;
+    }
+
+    if (actions.pickMonitor >= 0 &&
+        actions.pickMonitor <
+            static_cast<int>(g_monitors.size()))
+    {
+        // Copia: PickTarget pode atualizar a lista.
+        CaptureTarget target =
+            g_monitors[actions.pickMonitor];
+
+        PickTarget(target);
+    }
+
+    if (actions.pickWindow >= 0 &&
+        actions.pickWindow <
+            static_cast<int>(g_windows.size()))
+    {
+        CaptureTarget target =
+            g_windows[actions.pickWindow];
+
+        PickTarget(target);
     }
 
     if (actions.applyReply)
