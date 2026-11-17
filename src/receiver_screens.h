@@ -50,3 +50,36 @@ void DrawConnectScreen(
 void DrawWaitingScreen(
     const std::string& reply
 );
+
+
+// ------------------------------------------------------------
+// Painel sobre o video (volume + estatisticas)
+// ------------------------------------------------------------
+
+struct StreamOverlayModel
+{
+    // 0.0 a 1.0; a tela altera direto.
+    float* volume = nullptr;
+
+    bool* muted = nullptr;
+
+    int fps = 0;
+
+    unsigned width = 0;
+    unsigned height = 0;
+
+    // Frames perdidos na rede e descartados por atraso (ver
+    // g_statLostNetwork / g_statLate no receiver).
+    unsigned long long lostNetwork = 0;
+    unsigned long long late = 0;
+
+    // 0 = invisivel, 1 = totalmente visivel (o painel some
+    // aos poucos quando o mouse fica parado).
+    float alpha = 1.0f;
+};
+
+// Devolve true se o mouse esta em cima do painel (pra ele nao
+// sumir enquanto a pessoa mexe no volume).
+bool DrawStreamOverlay(
+    StreamOverlayModel& model
+);

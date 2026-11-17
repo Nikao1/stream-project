@@ -131,5 +131,11 @@ private:
     // Frames completos, prontos para GetFrame().
     std::deque<EncodedFrame> m_frameQueue;
 
+    // true = a fila transbordou; descartar frames comuns ate o
+    // proximo keyframe (ver ExtractAccessUnits).
+    bool m_skipUntilKeyframe = false;
+
+    uint64_t m_droppedFrames = 0;
+
     std::atomic<bool> m_running;
 };

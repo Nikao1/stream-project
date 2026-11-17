@@ -1,0 +1,63 @@
+=============================================
+       STREAM PROJECT - SERVER
+=============================================
+H264 (NVENC/AMF/QSV/x264) + UDP
+=============================================
+
+D3D11 Device criada.
+Feature Level: 0xb100
+GPU: NVIDIA GeForce RTX 3060
+Iniciando servidor UDP...
+Iniciando servidor UDP de audio...
+Thread H264 encoder iniciada.
+UDP: buffer de envio configurado para 64 MB.
+UDP: endereco publico (STUN): 177.18.210.203:5001
+UDP server iniciado na porta 5001
+Servidor UDP iniciado na porta 5001.
+Aguardando HELLO do receiver UDP...
+UDP audio: endereco publico (STUN): 177.18.210.203:5003
+UDP audio server iniciado na porta 5003
+Aguardando HELLO do receiver (audio)...
+Qualidade selecionada: 720p @ 60 FPS
+CODIGO DA SESSAO: X27MNH
+
+Iniciando Graphics Capture Picker...
+Aguardando selecao da janela...
+Captura selecionada: 1920x1080
+Criando Frame Pool...
+========================================
+CAPTURA INICIADA!
+========================================
+AudioEncoder: Opus iniciado (48000 Hz, 2 canais, 128 kbps).
+AudioCapture: dispositivo padrao - 48000 Hz, 2 canal(is), 32 bits.
+AudioCapture: captura de audio do sistema iniciada (loopback).
+Espectador conectado (audio): 73.231.131.176:5004
+
+========================================
+ESPECTADOR CONECTADO (video): 186.194.41.161:57195
+Assistindo agora: 1 de 4
+========================================
+H264: iniciando encoder em 1920x1080...
+H264Encoder: GPU detectada - NVIDIA GeForce RTX 3060
+
+========================================
+H264 ENCODER: h264_nvenc (NVIDIA)
+Resolucao: 1920x1080
+FPS: 60
+Bitrate: 6 Mbps
+========================================
+H264Encoder: FFmpeg + NVENC iniciado.
+H264: encoder iniciado em 1920x1080 -> saida 720p @ 60 FPS.
+Espectador conectado (audio): 186.194.41.161:55551
+
+========================================
+ESPECTADOR CONECTADO (video): 73.231.131.176:5002
+Assistindo agora: 2 de 4
+========================================
+
+Encerrando Stream Project...
+Thread H264 encoder encerrada.
+Thread UDP encerrada.
+Thread de envio de audio encerrada.
+Thread UDP de audio encerrada.
+Stream Project encerrado.

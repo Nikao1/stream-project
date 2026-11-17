@@ -58,6 +58,31 @@ AudioPlayback::~AudioPlayback()
 // Start
 // ============================================================
 
+// ============================================================
+// SetVolume
+// ============================================================
+//
+// O ouvido percebe volume de forma logaritmica: com ganho
+// linear, quase toda a variacao audivel ficaria no comeco do
+// controle. Elevar ao quadrado deixa o controle "uniforme" ao
+// ouvido (metade do controle soa como mais ou menos metade do
+// volume). O maximo e o volume original - sem amplificar, que
+// distorceria.
+// ============================================================
+
+void AudioPlayback::SetVolume(
+    float volume)
+{
+    if (volume < 0.0f)
+        volume = 0.0f;
+
+    if (volume > 1.0f)
+        volume = 1.0f;
+
+    m_gain = volume * volume;
+}
+
+
 bool AudioPlayback::Start()
 {
     if (m_running)
@@ -458,12 +483,17 @@ void AudioPlayback::RenderThread()
                     : samplesNeeded;
 
 
+                float gain =
+                    m_muted
+                    ? 0.0f
+                    : m_gain.load();
+
                 for (uint32_t i = 0;
                      i < samplesToCopy;
                      ++i)
                 {
                     out[i] =
-                        m_pcmQueue.front();
+                        m_pcmQueue.front() * gain;
 
                     m_pcmQueue.pop_front();
                 }

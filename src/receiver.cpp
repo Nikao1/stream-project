@@ -609,6 +609,38 @@ std::vector<unsigned char>
 g_framePixels;
 
 
+// Dimensoes DO FRAME QUE ESTA EM g_framePixels - mudam junto
+// com ele (sob g_frameMutex), na hora em que o frame vai pra
+// tela.
+//
+// Nao confundir com g_frameWidth/g_frameHeight logo abaixo,
+// que sao a resolucao do STREAM e mudam assim que chega um
+// pacote com resolucao nova - enquanto g_framePixels ainda
+// guarda o ultimo frame no tamanho antigo. Desenhar usando
+// uma com os pixels da outra fazia o receiver ler alem do fim
+// do buffer e fechar sozinho quando quem transmite trocava a
+// janela compartilhada.
+uint32_t g_shownWidth =
+    0;
+
+uint32_t g_shownHeight =
+    0;
+
+
+// true se "pixels" tem pelo menos width x height x 4 bytes.
+bool PixelsFit(
+    const std::vector<unsigned char>& pixels,
+    uint32_t width,
+    uint32_t height)
+{
+    return
+        width > 0 &&
+        height > 0 &&
+        pixels.size() >=
+            static_cast<size_t>(width) * height * 4;
+}
+
+
 uint32_t g_frameWidth =
     0;
 
@@ -778,6 +810,24 @@ ULONGLONG g_lastDecoderRestart =
 int g_decoderDeaths =
     0;
 
+// ------------------------------------------------------------
+// Estatisticas por causa (vao pro log a cada 5s e pra tela, no
+// painel de volume). Servem pra separar "a rede perdeu" de "o
+// computador nao deu conta" quando a imagem trava.
+// ------------------------------------------------------------
+
+// Frames que nao chegaram inteiros (pacote perdido na rede).
+std::atomic<uint64_t> g_statLostNetwork{ 0 };
+
+// Frames que chegaram, mas foram descartados esperando o
+// proximo keyframe (consequencia de uma perda anterior).
+std::atomic<uint64_t> g_statSkippedForKeyframe{ 0 };
+
+// Frames decodificados descartados por atraso (este computador
+// nao conseguiu mostrar a tempo).
+std::atomic<uint64_t> g_statLate{ 0 };
+
+
 uint64_t g_framesDropped =
     0;
 
@@ -807,6 +857,19 @@ void ProcessDecodedFrame()
         if (decodedFrame.empty())
         {
             return;
+        }
+
+
+        // Frame que ainda saiu do decoder antigo, logo depois de
+        // uma troca de resolucao: o tamanho nao bate com a
+        // resolucao atual. Descarta.
+        if (decodedFrame.size() !=
+            static_cast<size_t>(g_frameWidth) *
+                g_frameHeight * 4)
+        {
+            decodedFrame.clear();
+
+            continue;
         }
 
 
@@ -885,6 +948,8 @@ void ProcessDecodedFrame()
                 g_pendingVideoFrames.pop_front();
 
                 g_framesDropped++;
+
+                g_statLate++;
             }
         }
 
@@ -954,10 +1019,29 @@ void TryPresentPendingFrames()
             }
 
 
+            // Frame com tamanho que nao bate (sobra de antes de
+            // uma troca de resolucao): descarta.
+            if (!PixelsFit(
+                    front.pixels,
+                    front.width,
+                    front.height))
+            {
+                g_pendingVideoFrames.pop_front();
+
+                continue;
+            }
+
+
             g_framePixels =
                 std::move(
                     front.pixels
                 );
+
+            g_shownWidth =
+                front.width;
+
+            g_shownHeight =
+                front.height;
 
 
             g_pendingVideoFrames.pop_front();
@@ -1018,16 +1102,10 @@ void TryPresentPendingFrames()
 
         swprintf_s(
             title,
-            L"Stream Receiver UDP - H264 - FPS: %d - Frame: %llu - %ux%u - Dropped: %llu",
-            g_fps.load(),
-            static_cast<unsigned long long>(
-                g_frameNumber
-            ),
+            L"Stream Receiver - %ux%u - %d FPS",
             g_frameWidth,
             g_frameHeight,
-            static_cast<unsigned long long>(
-                g_framesDropped
-            )
+            g_fps.load()
         );
 
 
@@ -1109,6 +1187,8 @@ void StartNewPendingFrame(
         // descartado.
 
         g_framesDropped++;
+
+        g_statLostNetwork++;
 
         g_waitingKeyframe =
             true;
@@ -1475,6 +1555,10 @@ void ProcessUdpPacket(
     {
         g_framesDropped++;
 
+        g_statLostNetwork +=
+            g_pendingFrame.frameId -
+            g_lastCompletedFrameId - 1;
+
         g_waitingKeyframe =
             true;
     }
@@ -1505,6 +1589,8 @@ void ProcessUdpPacket(
 
     if (g_waitingKeyframe)
     {
+        g_statSkippedForKeyframe++;
+
         return;
     }
 
@@ -2518,9 +2604,10 @@ void SaveCurrentFrameAsBmp()
         );
 
 
-        if (g_framePixels.empty() ||
-            g_frameWidth == 0 ||
-            g_frameHeight == 0)
+        if (!PixelsFit(
+                g_framePixels,
+                g_shownWidth,
+                g_shownHeight))
         {
             std::cout
                 << "\nSaveCurrentFrameAsBmp: nenhum frame "
@@ -2534,10 +2621,10 @@ void SaveCurrentFrameAsBmp()
             g_framePixels;
 
         width =
-            g_frameWidth;
+            g_shownWidth;
 
         height =
-            g_frameHeight;
+            g_shownHeight;
     }
 
 
@@ -3259,6 +3346,12 @@ std::string g_ffmpegProblem;
 // mexe nele).
 char g_uiInput[256]{};
 
+// Volume (0.0 a 1.0) e mudo - so a thread da interface mexe;
+// aplicados no g_audioPlayback a cada frame.
+float g_volume = 1.0f;
+
+bool g_muted = false;
+
 std::atomic<bool> g_connectBusy{ false };
 
 std::thread g_connectThread;
@@ -3863,7 +3956,84 @@ void DrawReceiverUi()
             actions
         );
     }
-    else if (!g_streamReceived)
+    else if (g_streamReceived)
+    {
+        // ----------------------------------------------------
+        // Painel sobre o video: aparece quando o mouse mexe e
+        // some sozinho depois de uns segundos parado.
+        // ----------------------------------------------------
+
+        static double lastActivity = -100.0;
+
+        static bool overlayHovered = false;
+
+        ImGuiIO& io = ImGui::GetIO();
+
+        double now = ImGui::GetTime();
+
+        bool keyboardFree = !io.WantTextInput;
+
+        if (io.MouseDelta.x != 0.0f ||
+            io.MouseDelta.y != 0.0f ||
+            overlayHovered)
+        {
+            lastActivity = now;
+        }
+
+        // Atalhos de teclado (tambem mostram o painel).
+        if (keyboardFree)
+        {
+            if (ImGui::IsKeyPressed(ImGuiKey_M, false))
+            {
+                g_muted = !g_muted;
+
+                lastActivity = now;
+            }
+
+            if (ImGui::IsKeyPressed(ImGuiKey_UpArrow))
+            {
+                g_volume += 0.05f;
+
+                g_muted = false;
+
+                lastActivity = now;
+            }
+
+            if (ImGui::IsKeyPressed(ImGuiKey_DownArrow))
+            {
+                g_volume -= 0.05f;
+
+                lastActivity = now;
+            }
+
+            if (g_volume < 0.0f) g_volume = 0.0f;
+            if (g_volume > 1.0f) g_volume = 1.0f;
+        }
+
+        // Visivel por 2,5s depois da ultima atividade, sumindo
+        // ao longo de mais 0,5s.
+        double idle = now - lastActivity;
+
+        float alpha =
+            idle < 2.5 ? 1.0f :
+            idle < 3.0 ? static_cast<float>((3.0 - idle) / 0.5) :
+            0.0f;
+
+        StreamOverlayModel overlay;
+
+        overlay.volume = &g_volume;
+        overlay.muted = &g_muted;
+        overlay.fps = g_fps.load();
+        overlay.width = g_frameWidth;
+        overlay.height = g_frameHeight;
+        overlay.lostNetwork = g_statLostNetwork.load();
+        overlay.late = g_statLate.load();
+        overlay.alpha = alpha;
+
+        overlayHovered =
+            DrawStreamOverlay(overlay);
+    }
+    else
     {
         std::string reply;
 
@@ -3881,6 +4051,43 @@ void DrawReceiverUi()
 
 
     UiEndFrame();
+
+
+    // Volume escolhido na tela -> reproducao de audio.
+    g_audioPlayback.SetVolume(g_volume);
+
+    g_audioPlayback.SetMuted(g_muted);
+
+
+    // --------------------------------------------------------
+    // Estatisticas no log, a cada 5s durante o stream (pra
+    // diagnosticar travadas: rede x este computador).
+    // --------------------------------------------------------
+
+    static ULONGLONG lastStatsLog = 0;
+
+    ULONGLONG nowMs = GetTickCount64();
+
+    if (g_streamReceived &&
+        nowMs - lastStatsLog >= 5000)
+    {
+        lastStatsLog = nowMs;
+
+        std::cout
+            << "[stats] "
+            << g_frameWidth
+            << "x"
+            << g_frameHeight
+            << " "
+            << g_fps.load()
+            << " FPS | perdidos na rede: "
+            << g_statLostNetwork.load()
+            << " | descartados esperando keyframe: "
+            << g_statSkippedForKeyframe.load()
+            << " | atrasados: "
+            << g_statLate.load()
+            << "\n";
+    }
 
 
     // --------------------------------------------------------
@@ -3998,15 +4205,16 @@ void RenderFrame()
         );
 
 
-        if (!g_framePixels.empty() &&
-            g_frameWidth > 0 &&
-            g_frameHeight > 0)
+        if (PixelsFit(
+                g_framePixels,
+                g_shownWidth,
+                g_shownHeight))
         {
             width =
-                g_frameWidth;
+                g_shownWidth;
 
             height =
-                g_frameHeight;
+                g_shownHeight;
 
 
             if (EnsureVideoTexture(

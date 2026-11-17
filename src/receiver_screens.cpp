@@ -193,3 +193,152 @@ void DrawWaitingScreen(
 
     UiEndPanel();
 }
+
+
+// ============================================================
+// Painel sobre o video
+// ============================================================
+
+bool DrawStreamOverlay(
+    StreamOverlayModel& model)
+{
+    if (model.alpha <= 0.0f)
+        return false;
+
+    const ImGuiViewport* viewport =
+        ImGui::GetMainViewport();
+
+    float margin = 16.0f * UiScale();
+
+    // Canto inferior esquerdo.
+    ImGui::SetNextWindowPos(
+        ImVec2(
+            viewport->WorkPos.x + margin,
+            viewport->WorkPos.y + viewport->WorkSize.y - margin),
+        ImGuiCond_Always,
+        ImVec2(0.0f, 1.0f)
+    );
+
+    ImGui::SetNextWindowBgAlpha(0.85f);
+
+    ImGui::PushStyleVar(
+        ImGuiStyleVar_Alpha,
+        model.alpha
+    );
+
+    ImGui::PushStyleVar(
+        ImGuiStyleVar_WindowPadding,
+        ImVec2(14.0f * UiScale(), 10.0f * UiScale())
+    );
+
+    ImGui::Begin(
+        "##sobrevideo",
+        nullptr,
+        ImGuiWindowFlags_NoTitleBar |
+        ImGuiWindowFlags_NoResize |
+        ImGuiWindowFlags_NoMove |
+        ImGuiWindowFlags_NoCollapse |
+        ImGuiWindowFlags_NoSavedSettings |
+        ImGuiWindowFlags_AlwaysAutoResize |
+        ImGuiWindowFlags_NoFocusOnAppearing
+    );
+
+
+    // --------------------------------------------------------
+    // Volume
+    // --------------------------------------------------------
+
+    bool& muted = *model.muted;
+
+    float& volume = *model.volume;
+
+    const char* muteLabel =
+        muted ? "Som desligado" : "Som ligado";
+
+    float muteWidth =
+        ImGui::CalcTextSize("Som desligado").x +
+        ImGui::GetStyle().FramePadding.x * 2.0f;
+
+    if (muted)
+    {
+        ImGui::PushStyleColor(
+            ImGuiCol_Text,
+            UiColorError());
+    }
+
+    if (ImGui::Button(
+            muteLabel,
+            ImVec2(muteWidth, 0.0f)))
+    {
+        muted = !muted;
+    }
+
+    if (muted)
+    {
+        ImGui::PopStyleColor();
+    }
+
+    ImGui::SameLine();
+
+    ImGui::SetNextItemWidth(180.0f * UiScale());
+
+    int percent =
+        static_cast<int>(volume * 100.0f + 0.5f);
+
+    ImGui::BeginDisabled(muted);
+
+    if (ImGui::SliderInt(
+            "##volume",
+            &percent,
+            0,
+            100,
+            "%d%%"))
+    {
+        volume = percent / 100.0f;
+    }
+
+    ImGui::EndDisabled();
+
+
+    // --------------------------------------------------------
+    // Estatisticas
+    // --------------------------------------------------------
+
+    std::string stats =
+        std::to_string(model.width) +
+        " x " +
+        std::to_string(model.height) +
+        "  ·  " +
+        std::to_string(model.fps) +
+        " FPS  ·  perdidos na rede: " +
+        std::to_string(model.lostNetwork);
+
+    if (model.late > 0)
+    {
+        stats +=
+            "  ·  atrasados: " +
+            std::to_string(model.late);
+    }
+
+    ImGui::PushStyleColor(
+        ImGuiCol_Text,
+        UiColorMuted());
+
+    ImGui::TextUnformatted(stats.c_str());
+
+    ImGui::TextUnformatted(
+        "M: liga/desliga o som  ·  setas: volume");
+
+    ImGui::PopStyleColor();
+
+    bool hovered =
+        ImGui::IsWindowHovered(
+            ImGuiHoveredFlags_ChildWindows) ||
+        ImGui::IsAnyItemActive();
+
+    ImGui::End();
+
+    ImGui::PopStyleVar(2);
+
+    return hovered;
+}

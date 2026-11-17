@@ -402,6 +402,33 @@ std::string H264Encoder::BuildFfmpegCommand(
         : m_gpuVendor;
 
 
+    // --------------------------------------------------------
+    // Tamanho do buffer de controle de taxa (VBV)
+    //
+    // Define o quanto UM frame pode passar da media. Antes era
+    // 2 SEGUNDOS de video: um keyframe podia sair com centenas
+    // de KB (centenas de pacotes UDP de uma vez). Na internet,
+    // uma rajada dessas perde pacotes facil - e um pacote
+    // perdido inutiliza o frame inteiro, congelando a imagem
+    // ate o proximo keyframe. Em 1080p60 isso aparecia como
+    // travadas curtas de vez em quando.
+    //
+    // Com ~2 frames de buffer (o que hosts de streaming em
+    // tempo real costumam usar), o keyframe fica so um pouco
+    // maior que um frame comum. Custo: o keyframe sai com um
+    // pouco menos de detalhe, recuperado nos frames seguintes.
+    // --------------------------------------------------------
+
+    const uint32_t vbvKbits =
+        (m_bitrateMbps * 1000u * 2u) /
+        (m_fps > 0 ? m_fps : 60u);
+
+    const std::string vbv =
+        "-bufsize " +
+        std::to_string(vbvKbits < 100u ? 100u : vbvKbits) +
+        "k ";
+
+
     switch (vendor)
     {
         case GpuVendor::Nvidia:
@@ -426,8 +453,8 @@ std::string H264Encoder::BuildFfmpegCommand(
                 "-aq-strength 8 "
                 "-rc cbr "
                 "-b:v " + std::to_string(m_bitrateMbps) + "M "
-                "-maxrate " + std::to_string(m_bitrateMbps) + "M "
-                "-bufsize " + std::to_string(m_bitrateMbps * 2) + "M "
+                "-maxrate " + std::to_string(m_bitrateMbps) + "M " +
+                vbv +
                 "-bf 0 "
                 "-forced-idr 1 "
                 "-zerolatency 1 ";
@@ -448,7 +475,8 @@ std::string H264Encoder::BuildFfmpegCommand(
                 "-quality speed "
                 "-rc cbr "
                 "-b:v " + std::to_string(m_bitrateMbps) + "M "
-                "-maxrate " + std::to_string(m_bitrateMbps) + "M "
+                "-maxrate " + std::to_string(m_bitrateMbps) + "M " +
+                vbv +
                 "-bf 0 ";
 
             break;
@@ -466,7 +494,8 @@ std::string H264Encoder::BuildFfmpegCommand(
                 "-look_ahead 0 "
                 "-rc cbr "
                 "-b:v " + std::to_string(m_bitrateMbps) + "M "
-                "-maxrate " + std::to_string(m_bitrateMbps) + "M "
+                "-maxrate " + std::to_string(m_bitrateMbps) + "M " +
+                vbv +
                 "-bf 0 ";
 
             break;
@@ -487,8 +516,8 @@ std::string H264Encoder::BuildFfmpegCommand(
                 "-tune zerolatency "
                 "-x264-params nal-hrd=cbr "
                 "-b:v " + std::to_string(m_bitrateMbps) + "M "
-                "-maxrate " + std::to_string(m_bitrateMbps) + "M "
-                "-bufsize " + std::to_string(m_bitrateMbps * 2) + "M "
+                "-maxrate " + std::to_string(m_bitrateMbps) + "M " +
+                vbv +
                 "-bf 0 ";
 
             break;
@@ -835,6 +864,9 @@ bool H264Encoder::StartProcess(
             false;
 
         m_frameQueue.clear();
+
+        m_skipUntilKeyframe =
+            false;
     }
 
 
@@ -1145,33 +1177,67 @@ void H264Encoder::ExtractAccessUnits()
                 m_currentAccessUnitKeyframe;
 
 
-            m_frameQueue.push_back(
-                std::move(frame)
-            );
+            // --------------------------------------------------
+            // Fila de saida
+            //
+            // Se o envio nao acompanhar o encoder, a fila
+            // enche. Antes, os frames mais antigos eram
+            // descartados em silencio - mas um frame comum
+            // depende do anterior, e sem ele o receiver
+            // decodificava imagem corrompida (ou o decoder
+            // parava). Agora, se for preciso descartar, descarta
+            // tudo ate o proximo keyframe: a imagem congela por
+            // ate 1s, mas volta limpa.
+            //
+            // O limite cobre a rajada de um keyframe sem
+            // descartar nada no uso normal.
+            // --------------------------------------------------
+
+            constexpr size_t MAX_QUEUED_FRAMES =
+                6;
+
+            bool isKeyframe =
+                frame.isKeyframe;
+
+            if (m_skipUntilKeyframe &&
+                !isKeyframe)
+            {
+                ++m_droppedFrames;
+            }
+            else
+            {
+                m_skipUntilKeyframe =
+                    false;
+
+                m_frameQueue.push_back(
+                    std::move(frame)
+                );
+
+                if (m_frameQueue.size() >
+                    MAX_QUEUED_FRAMES)
+                {
+                    m_droppedFrames +=
+                        m_frameQueue.size();
+
+                    m_frameQueue.clear();
+
+                    m_skipUntilKeyframe =
+                        true;
+
+                    std::cout
+                        << "H264Encoder: envio atrasado - "
+                        << "descartando ate o proximo "
+                        << "keyframe (total descartado: "
+                        << m_droppedFrames
+                        << ").\n";
+                }
+            }
 
 
             m_currentAccessUnit.clear();
 
             m_currentAccessUnitKeyframe =
                 false;
-
-
-            // --------------------------------------------------
-            // Limite de segurança: se o envio UDP não consegue
-            // acompanhar o encoder, descartamos os frames mais
-            // antigos (favorece latência baixa em vez de atraso
-            // acumulado).
-            // --------------------------------------------------
-
-            constexpr size_t MAX_QUEUED_FRAMES =
-                2;
-
-
-            while (m_frameQueue.size() >
-                   MAX_QUEUED_FRAMES)
-            {
-                m_frameQueue.pop_front();
-            }
         }
     }
 
@@ -1461,6 +1527,9 @@ void H264Encoder::Stop()
             false;
 
         m_frameQueue.clear();
+
+        m_skipUntilKeyframe =
+            false;
     }
 }
 

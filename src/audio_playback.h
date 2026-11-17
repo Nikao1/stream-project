@@ -43,6 +43,19 @@ public:
         const std::vector<float>& samples
     );
 
+    // Volume de 0.0 a 1.0 (posicao do controle na tela) e
+    // mudo. Podem ser chamados de qualquer thread, a qualquer
+    // momento.
+    void SetVolume(
+        float volume
+    );
+
+    void SetMuted(
+        bool muted)
+    {
+        m_muted = muted;
+    }
+
 private:
     void RenderThread();
 
@@ -59,6 +72,11 @@ private:
     std::deque<float> m_pcmQueue;
 
     std::atomic<bool> m_running;
+
+    // Ganho aplicado em cada amostra (ver SetVolume).
+    std::atomic<float> m_gain{ 1.0f };
+
+    std::atomic<bool> m_muted{ false };
 
     bool m_comInitialized;
 };
