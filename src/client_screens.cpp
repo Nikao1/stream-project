@@ -81,9 +81,9 @@ void DrawClientSetupScreen(
 
     static const char* const frameRates[] =
     {
-        "60 quadros por segundo",
-        "30 quadros por segundo",
-        "15 quadros por segundo"
+        "60 FPS",
+        "30 FPS",
+        "15 FPS"
     };
 
     UiBeginCenteredPanel("##transmitir", 460.0f);
@@ -108,7 +108,7 @@ void DrawClientSetupScreen(
     );
 
     LabeledCombo(
-        "Fluidez",
+        "FPS",
         "##fps",
         model.fpsIndex,
         frameRates,
