@@ -4,6 +4,9 @@
 
 #include <cstdint>
 #include <string>
+#include <vector>
+
+#include "udp_viewers.h"
 
 // ============================================================
 // NAT TRAVERSAL (STUN + hole punching)
@@ -71,22 +74,30 @@ void UdpSendPunch(
 );
 
 
-// Descarta o que estiver parado no buffer de entrada do socket
-// (keepalives da outra ponta, respostas STUN atrasadas), sem
-// bloquear.
-void UdpDrain(
-    SOCKET socket
+// Atende os espectadores de um socket do client. Espera ate
+// ~200 ms por pacotes e processa o que chegar:
+//
+//   "HELLO" -> espectador novo entra na lista (ou renova)
+//   "KEEP"  -> espectador conhecido renova o prazo
+//   resto   -> ignorado
+//
+// Tambem remove quem expirou e, enquanto nao ha ninguem
+// conectado, mantem o mapeamento do roteador vivo (keepalive
+// STUN a cada 15s, se stunKeepAlive for true).
+//
+// outJoined/outLeft recebem quem entrou e quem saiu nesta
+// chamada. Retorna false quando o socket e fechado.
+bool UdpServiceViewers(
+    SOCKET socket,
+    UdpViewerList& viewers,
+    bool stunKeepAlive,
+    ULONGLONG& lastStunKeepAlive,
+    std::vector<sockaddr_in>& outJoined,
+    std::vector<sockaddr_in>& outLeft
 );
 
 
-// Espera um "HELLO" da outra ponta neste socket e devolve de
-// onde ele veio. Ignora qualquer outro pacote. Enquanto
-// espera, mantem o mapeamento do roteador vivo (keepalive
-// STUN a cada 15s) se stunKeepAlive for true.
-//
-// Retorna false quando o socket e fechado (encerramento).
-bool UdpWaitForHello(
-    SOCKET socket,
-    bool stunKeepAlive,
-    sockaddr_in& outClientAddress
+// "1.2.3.4:5678" a partir de um sockaddr_in (pra logs).
+std::string EndpointToString(
+    const sockaddr_in& address
 );

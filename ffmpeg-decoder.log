@@ -1,7 +1,7 @@
-[vost#0:0/rawvideo @ 000002367ab1e040] Error submitting a packet to the muxer: Broken pipe
+[vost#0:0/rawvideo @ 000002689492b040] Error submitting a packet to the muxer: Broken pipe
     Last message repeated 1 times
-[out#0/rawvideo @ 000002367a804740] Error muxing a packet
-[out#0/rawvideo @ 000002367a804740] Task finished with error code: -32 (Broken pipe)
-[out#0/rawvideo @ 000002367a804740] Terminating thread with return code -32 (Broken pipe)
-[out#0/rawvideo @ 000002367a804740] Error writing trailer: Broken pipe
-[out#0/rawvideo @ 000002367a804740] Error closing file: Broken pipe
+[out#0/rawvideo @ 0000026894244cc0] Error muxing a packet
+[out#0/rawvideo @ 0000026894244cc0] Task finished with error code: -32 (Broken pipe)
+[out#0/rawvideo @ 0000026894244cc0] Terminating thread with return code -32 (Broken pipe)
+[out#0/rawvideo @ 0000026894244cc0] Error writing trailer: Broken pipe
+[out#0/rawvideo @ 0000026894244cc0] Error closing file: Broken pipe

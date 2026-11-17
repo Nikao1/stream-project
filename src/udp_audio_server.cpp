@@ -6,6 +6,7 @@
 
 #include <iostream>
 #include <cstring>
+#include <vector>
 
 #pragma comment(lib, "ws2_32.lib")
 
@@ -16,8 +17,7 @@
 
 UdpAudioServer::UdpAudioServer()
     : m_socket(INVALID_SOCKET),
-      m_clientAddress{},
-      m_clientKnown(false),
+      m_lastStunKeepAlive(0),
       m_sequence(0)
 {
 }
@@ -118,11 +118,10 @@ bool UdpAudioServer::Start(
     }
 
 
-    m_clientKnown =
-        false;
+    m_viewers.Clear();
 
-    m_clientAddress =
-        {};
+    m_lastStunKeepAlive =
+        GetTickCount64();
 
     m_sequence =
         0;
@@ -139,66 +138,45 @@ bool UdpAudioServer::Start(
 
 
 // ============================================================
-// WaitForClient
+// Service
 // ============================================================
 
-bool UdpAudioServer::WaitForClient()
+bool UdpAudioServer::Service()
 {
-    if (m_socket ==
-        INVALID_SOCKET)
-    {
-        return false;
-    }
+    std::vector<sockaddr_in> joined;
+    std::vector<sockaddr_in> left;
 
 
-    sockaddr_in clientAddress{};
-
-
-    std::cout
-        << "UDP audio: aguardando HELLO...\n";
-
-
-    if (!UdpWaitForHello(
+    bool ok =
+        UdpServiceViewers(
             m_socket,
+            m_viewers,
             m_stun.ok,
-            clientAddress))
+            m_lastStunKeepAlive,
+            joined,
+            left
+        );
+
+
+    for (const sockaddr_in& address : joined)
     {
-        return false;
+        std::cout
+            << "Espectador conectado (audio): "
+            << EndpointToString(address)
+            << "\n";
     }
 
 
-    m_clientAddress =
-        clientAddress;
-
-    m_clientKnown =
-        true;
-
-    m_sequence =
-        0;
-
-
-    char ip[INET_ADDRSTRLEN]{};
+    for (const sockaddr_in& address : left)
+    {
+        std::cout
+            << "Espectador saiu (audio): "
+            << EndpointToString(address)
+            << "\n";
+    }
 
 
-    inet_ntop(
-        AF_INET,
-        &clientAddress.sin_addr,
-        ip,
-        sizeof(ip)
-    );
-
-
-    std::cout
-        << "UDP audio: receiver conectado: "
-        << ip
-        << ":"
-        << ntohs(
-            clientAddress.sin_port
-        )
-        << "\n";
-
-
-    return true;
+    return ok;
 }
 
 
@@ -214,7 +192,6 @@ bool UdpAudioServer::SendAudioPacket(
     if (
         m_socket ==
             INVALID_SOCKET ||
-        !m_clientKnown ||
         !opusData ||
         opusSize == 0 ||
         opusSize >
@@ -268,7 +245,19 @@ bool UdpAudioServer::SendAudioPacket(
         );
 
 
-    int sent =
+    sockaddr_in viewers[MAX_VIEWERS];
+
+    size_t viewerCount =
+        m_viewers.Snapshot(viewers);
+
+    if (viewerCount == 0)
+    {
+        return false;
+    }
+
+
+    for (size_t v = 0; v < viewerCount; ++v)
+    {
         sendto(
             m_socket,
 
@@ -279,19 +268,11 @@ bool UdpAudioServer::SendAudioPacket(
             0,
 
             reinterpret_cast<sockaddr*>(
-                &m_clientAddress
+                &viewers[v]
             ),
 
-            sizeof(
-                m_clientAddress
-            )
+            sizeof(viewers[v])
         );
-
-
-    if (sent !=
-        packetSize)
-    {
-        return false;
     }
 
 
@@ -300,7 +281,7 @@ bool UdpAudioServer::SendAudioPacket(
 
 
 // ============================================================
-// PunchTo / DrainIncoming
+// PunchTo
 // ============================================================
 
 void UdpAudioServer::PunchTo(
@@ -312,12 +293,6 @@ void UdpAudioServer::PunchTo(
         ip,
         port
     );
-}
-
-
-void UdpAudioServer::DrainIncoming()
-{
-    UdpDrain(m_socket);
 }
 
 
@@ -339,8 +314,7 @@ void UdpAudioServer::Stop()
     }
 
 
-    m_clientKnown =
-        false;
+    m_viewers.Clear();
 
     m_sequence =
         0;

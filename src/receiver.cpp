@@ -77,6 +77,75 @@ uint16_t g_serverAudioPort =
     AUDIO_SERVER_UDP_PORT;
 
 
+// Porta local realmente usada pelo socket de video (pode nao
+// ser a padrao, se ela ja estiver ocupada).
+uint16_t g_localVideoPort =
+    UDP_PORT;
+
+
+// ============================================================
+// BindUdpWithFallback
+// ============================================================
+//
+// Tenta a porta padrao; se ja estiver em uso (ex.: outro
+// receiver aberto nesta mesma maquina), deixa o Windows
+// escolher uma porta livre. Funciona porque o client responde
+// pro endereco de onde o HELLO veio, seja qual for a porta.
+//
+// Devolve a porta usada, ou 0 se nao deu.
+// ============================================================
+
+uint16_t BindUdpWithFallback(
+    SOCKET socket,
+    uint16_t preferredPort)
+{
+    sockaddr_in address{};
+
+    address.sin_family =
+        AF_INET;
+
+    address.sin_addr.s_addr =
+        htonl(INADDR_ANY);
+
+    address.sin_port =
+        htons(preferredPort);
+
+    if (bind(
+            socket,
+            reinterpret_cast<sockaddr*>(&address),
+            sizeof(address)) == 0)
+    {
+        return preferredPort;
+    }
+
+    address.sin_port =
+        0;
+
+    if (bind(
+            socket,
+            reinterpret_cast<sockaddr*>(&address),
+            sizeof(address)) != 0)
+    {
+        return 0;
+    }
+
+    sockaddr_in bound{};
+
+    int boundSize =
+        sizeof(bound);
+
+    if (getsockname(
+            socket,
+            reinterpret_cast<sockaddr*>(&bound),
+            &boundSize) != 0)
+    {
+        return 0;
+    }
+
+    return ntohs(bound.sin_port);
+}
+
+
 // Codigo da sessao em que entramos (vazio = conexao direta por
 // IP, sem servidor de sinalizacao).
 std::string g_sessionCode;
@@ -1370,7 +1439,7 @@ void ReceiverThread()
 
     std::cout
         << "Porta local: "
-        << UDP_PORT
+        << g_localVideoPort
         << "\n";
 
 
@@ -1708,13 +1777,13 @@ void AudioReceiverThread()
         htons(AUDIO_UDP_PORT);
 
 
-    if (bind(
+    uint16_t localAudioPort =
+        BindUdpWithFallback(
             audioSocket,
-            reinterpret_cast<sockaddr*>(
-                &localAddress
-            ),
-            sizeof(localAddress)
-        ) == SOCKET_ERROR)
+            AUDIO_UDP_PORT
+        );
+
+    if (localAudioPort == 0)
     {
         std::cout
             << "AudioReceiver: falha no bind. Erro: "
@@ -1765,7 +1834,7 @@ void AudioReceiverThread()
 
     std::cout
         << "AudioReceiver: escutando na porta "
-        << AUDIO_UDP_PORT
+        << localAudioPort
         << ", servidor em "
         << g_serverIp
         << ":"
@@ -3585,16 +3654,13 @@ int main()
         );
 
 
-    if (
-        bind(
+    g_localVideoPort =
+        BindUdpWithFallback(
             g_udpSocket,
-            reinterpret_cast<
-                sockaddr*
-            >(
-                &localAddress
-            ),
-            sizeof(localAddress)
-        ) == SOCKET_ERROR)
+            UDP_PORT
+        );
+
+    if (g_localVideoPort == 0)
     {
         std::cout
             << "Falha no bind UDP.\n"
@@ -3602,22 +3668,29 @@ int main()
             << WSAGetLastError()
             << "\n";
 
-
         closesocket(
             g_udpSocket
         );
 
-
         WSACleanup();
-
 
         return 1;
     }
 
 
+    if (g_localVideoPort != UDP_PORT)
+    {
+        std::cout
+            << "Porta "
+            << UDP_PORT
+            << " ocupada (outro receiver aberto?) - usando "
+            << "outra.\n";
+    }
+
+
     std::cout
         << "UDP receiver na porta "
-        << UDP_PORT
+        << g_localVideoPort
         << "\n";
 
 

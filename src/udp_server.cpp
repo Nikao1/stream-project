@@ -52,8 +52,7 @@ constexpr int UDP_SEND_BUFFER_SIZE =
 
 UdpServer::UdpServer()
     : m_socket(INVALID_SOCKET),
-      m_clientAddress{},
-      m_clientKnown(false),
+      m_lastStunKeepAlive(0),
       m_frameId(0)
 {
 }
@@ -211,12 +210,11 @@ bool UdpServer::Start(
     // Reset estado
     // --------------------------------------------------------
 
-    m_clientKnown =
-        false;
+    m_viewers.Clear();
 
 
-    m_clientAddress =
-        {};
+    m_lastStunKeepAlive =
+        GetTickCount64();
 
 
     m_frameId =
@@ -234,82 +232,54 @@ bool UdpServer::Start(
 
 
 // ============================================================
-// WaitForClient
+// Service
 // ============================================================
 
-bool UdpServer::WaitForClient()
+bool UdpServer::Service()
 {
-    if (m_socket ==
-        INVALID_SOCKET)
-    {
-        return false;
-    }
+    std::vector<sockaddr_in> joined;
+    std::vector<sockaddr_in> left;
 
 
-    sockaddr_in clientAddress{};
-
-
-    std::cout
-        << "UDP: aguardando HELLO...\n";
-
-
-    // Espera o HELLO ignorando qualquer outro pacote, e mantem
-    // o mapeamento do roteador vivo enquanto isso.
-    if (!UdpWaitForHello(
+    bool ok =
+        UdpServiceViewers(
             m_socket,
+            m_viewers,
             m_stun.ok,
-            clientAddress))
+            m_lastStunKeepAlive,
+            joined,
+            left
+        );
+
+
+    for (const sockaddr_in& address : joined)
     {
-        return false;
+        std::cout
+            << "\n========================================\n"
+            << "ESPECTADOR CONECTADO (video): "
+            << EndpointToString(address)
+            << "\n"
+            << "Assistindo agora: "
+            << m_viewers.Count()
+            << " de "
+            << MAX_VIEWERS
+            << "\n"
+            << "========================================\n";
     }
 
 
-    // --------------------------------------------------------
-    // Guardar endereco do receiver
-    // --------------------------------------------------------
-
-    m_clientAddress =
-        clientAddress;
-
-
-    m_clientKnown =
-        true;
-
-
-    // --------------------------------------------------------
-    // Resetar frameId para nova conexao
-    // --------------------------------------------------------
-
-    m_frameId =
-        0;
+    for (const sockaddr_in& address : left)
+    {
+        std::cout
+            << "\nEspectador saiu (video): "
+            << EndpointToString(address)
+            << " - restam "
+            << m_viewers.Count()
+            << "\n";
+    }
 
 
-    // --------------------------------------------------------
-    // Mostrar IP
-    // --------------------------------------------------------
-
-    char ip[INET_ADDRSTRLEN]{};
-
-
-    inet_ntop(
-        AF_INET,
-        &clientAddress.sin_addr,
-        ip,
-        sizeof(ip)
-    );
-
-
-    std::cout
-        << "UDP receiver conectado: "
-        << ip
-        << ":"
-        << ntohs(
-            clientAddress.sin_port
-        )
-        << "\n";
-
-
-    return true;
+    return ok;
 }
 
 
@@ -350,7 +320,6 @@ bool UdpServer::SendVideoFrame(
     if (
         m_socket ==
             INVALID_SOCKET ||
-        !m_clientKnown ||
         !frameData ||
         frameSize == 0 ||
         width == 0 ||
@@ -380,6 +349,20 @@ bool UdpServer::SendVideoFrame(
     if (fragCount == 0)
     {
         fragCount = 1;
+    }
+
+
+    // Foto da lista de espectadores neste instante: o frame
+    // inteiro vai pros mesmos destinos, mesmo que alguem entre
+    // ou saia no meio do envio.
+    sockaddr_in viewers[MAX_VIEWERS];
+
+    size_t viewerCount =
+        m_viewers.Snapshot(viewers);
+
+    if (viewerCount == 0)
+    {
+        return false;
     }
 
 
@@ -502,7 +485,11 @@ bool UdpServer::SendVideoFrame(
             );
 
 
-        int sent =
+        // Um erro de envio pra UM espectador nao derruba os
+        // outros: quem sumiu de verdade para de dar sinal de
+        // vida e sai da lista pelo prazo (ver Service).
+        for (size_t v = 0; v < viewerCount; ++v)
+        {
             sendto(
                 m_socket,
 
@@ -519,53 +506,11 @@ bool UdpServer::SendVideoFrame(
                 reinterpret_cast<
                     sockaddr*
                 >(
-                    &m_clientAddress
+                    &viewers[v]
                 ),
 
-                sizeof(
-                    m_clientAddress
-                )
+                sizeof(viewers[v])
             );
-
-
-        if (sent ==
-            SOCKET_ERROR)
-        {
-            int error =
-                WSAGetLastError();
-
-
-            std::cout
-                << "\nUDP sendto() falhou. Erro: "
-                << error
-                << "\n";
-
-
-            // ------------------------------------------------
-            // Receiver provavelmente desconectou.
-            // ------------------------------------------------
-
-            m_clientKnown =
-                false;
-
-
-            return false;
-        }
-
-
-        if (sent != packetSize)
-        {
-            std::cout
-                << "\nUDP: datagrama enviado parcialmente.\n"
-                << "Esperado: "
-                << packetSize
-                << "\n"
-                << "Enviado: "
-                << sent
-                << "\n";
-
-
-            return false;
         }
 
 
@@ -574,6 +519,8 @@ bool UdpServer::SendVideoFrame(
 
 
         // Pacing: pausa curta entre rajadas (menos no fim).
+        // (a rajada e por espectador: cada caminho ve no maximo
+        // PACING_BURST_PACKETS pacotes seguidos)
         if ((fragIndex + 1) % PACING_BURST_PACKETS == 0 &&
             fragIndex + 1 < fragCount)
         {
@@ -587,7 +534,7 @@ bool UdpServer::SendVideoFrame(
 
 
 // ============================================================
-// PunchTo / DrainIncoming
+// PunchTo
 // ============================================================
 
 void UdpServer::PunchTo(
@@ -602,24 +549,13 @@ void UdpServer::PunchTo(
 }
 
 
-void UdpServer::DrainIncoming()
-{
-    UdpDrain(m_socket);
-}
-
-
 // ============================================================
 // Stop
 // ============================================================
 
 void UdpServer::Stop()
 {
-    m_clientKnown =
-        false;
-
-
-    m_clientAddress =
-        {};
+    m_viewers.Clear();
 
 
     if (m_socket !=

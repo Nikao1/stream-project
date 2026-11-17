@@ -24,6 +24,7 @@ respostas em texto "chave=valor", uma por linha):
     POST /sessions/<code>/keepalive   token
                                       -> ok, viewers
                                          [viewer_video, viewer_audio]
+                                         (listas "ip:porta,ip:porta")
     POST /sessions/<code>/join                     -> endereco do host
     POST /sessions/<code>/announce    channel (video|audio), ip, port
                                       -> ok
@@ -52,6 +53,12 @@ SESSION_TTL_SECONDS = 60        # sessao some se o host parar de dar keepalive
 MAX_SESSIONS = 5000
 MAX_BODY_BYTES = 2048
 CODE_LENGTH = 6
+
+# Anuncio de espectador (endereco publico pro hole punching):
+# o host so precisa dele por alguns segundos, ate o HELLO do
+# espectador passar. Depois disso o anuncio some sozinho.
+ANNOUNCE_TTL_SECONDS = 60
+MAX_ANNOUNCES_PER_SESSION = 16
 
 # Sem 0/O, 1/I/L: evita confusao ao ditar o codigo pra alguem.
 CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
@@ -259,8 +266,8 @@ class Handler(BaseHTTPRequestHandler):
                 "public_video_port": int(public_video_port),
                 "public_audio_port": int(public_audio_port),
                 "viewers": 0,
-                "viewer_video": "",
-                "viewer_audio": "",
+                # anuncios: [canal, "ip:porta", momento]
+                "announces": [],
                 "expires": _now() + SESSION_TTL_SECONDS,
             }
 
@@ -311,7 +318,11 @@ class Handler(BaseHTTPRequestHandler):
             session = _sessions.get(code)
             if session is None:
                 return self._error(404, "session_not_found")
-            session["viewer_" + channel] = f"{viewer_ip}:{viewer_port}"
+            endpoint = f"{viewer_ip}:{viewer_port}"
+            announces = [a for a in session["announces"]
+                         if not (a[0] == channel and a[1] == endpoint)]
+            announces.append([channel, endpoint, _now()])
+            session["announces"] = announces[-MAX_ANNOUNCES_PER_SESSION:]
 
         self._reply(200, {"ok": 1})
 
@@ -331,10 +342,16 @@ class Handler(BaseHTTPRequestHandler):
                 return self._error(404, "session_not_found")
             session["expires"] = _now() + SESSION_TTL_SECONDS
             fields = {"ok": 1, "viewers": session["viewers"]}
-            if session["viewer_video"]:
-                fields["viewer_video"] = session["viewer_video"]
-            if session["viewer_audio"]:
-                fields["viewer_audio"] = session["viewer_audio"]
+            # Varios espectadores: lista separada por virgula.
+            now = _now()
+            session["announces"] = [
+                a for a in session["announces"]
+                if now - a[2] <= ANNOUNCE_TTL_SECONDS]
+            for channel in ("video", "audio"):
+                endpoints = [a[1] for a in session["announces"]
+                             if a[0] == channel]
+                if endpoints:
+                    fields["viewer_" + channel] = ",".join(endpoints)
         self._reply(200, fields)
 
     def _close(self, code, form):

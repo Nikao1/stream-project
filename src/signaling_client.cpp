@@ -844,18 +844,30 @@ void SignalingHost::KeepAliveLoop()
         auto fields =
             ParseKeyValues(response);
 
-        std::string ip;
-
-        uint16_t port = 0;
-
-        if (ParseEndpoint(fields["viewer_video"], ip, port))
+        // Cada campo e uma lista "ip:porta,ip:porta" - um
+        // item por espectador que anunciou ha pouco.
+        for (int channel = 0; channel < 2; ++channel)
         {
-            m_viewerCallback(false, ip, port);
-        }
+            bool isAudio = channel == 1;
 
-        if (ParseEndpoint(fields["viewer_audio"], ip, port))
-        {
-            m_viewerCallback(true, ip, port);
+            std::istringstream list(
+                fields[isAudio
+                    ? "viewer_audio"
+                    : "viewer_video"]);
+
+            std::string item;
+
+            while (std::getline(list, item, ','))
+            {
+                std::string ip;
+
+                uint16_t port = 0;
+
+                if (ParseEndpoint(item, ip, port))
+                {
+                    m_viewerCallback(isAudio, ip, port);
+                }
+            }
         }
     }
 }

@@ -4,6 +4,7 @@
 #include <winsock2.h>
 #include <ws2tcpip.h>
 
+#include <cstring>
 #include <mutex>
 #include <random>
 
@@ -328,64 +329,49 @@ void UdpSendPunch(
 
 
 // ============================================================
-// UdpDrain
+// EndpointToString
 // ============================================================
 
-void UdpDrain(
-    SOCKET socket)
+std::string EndpointToString(
+    const sockaddr_in& address)
 {
-    if (socket == INVALID_SOCKET)
-        return;
+    char ip[INET_ADDRSTRLEN]{};
 
-    char buffer[2048];
+    inet_ntop(
+        AF_INET,
+        &address.sin_addr,
+        ip,
+        sizeof(ip)
+    );
 
-    for (int i = 0; i < 64; ++i)
-    {
-        fd_set readSet{};
-
-        FD_ZERO(&readSet);
-        FD_SET(socket, &readSet);
-
-        timeval timeout{};
-
-        if (select(
-                0,
-                &readSet,
-                nullptr,
-                nullptr,
-                &timeout) <= 0)
-        {
-            return;
-        }
-
-        recvfrom(
-            socket,
-            buffer,
-            static_cast<int>(sizeof(buffer)),
-            0,
-            nullptr,
-            nullptr
-        );
-    }
+    return
+        std::string(ip) +
+        ":" +
+        std::to_string(ntohs(address.sin_port));
 }
 
 
 // ============================================================
-// UdpWaitForHello
+// UdpServiceViewers
 // ============================================================
 
-bool UdpWaitForHello(
+bool UdpServiceViewers(
     SOCKET socket,
+    UdpViewerList& viewers,
     bool stunKeepAlive,
-    sockaddr_in& outClientAddress)
+    ULONGLONG& lastStunKeepAlive,
+    std::vector<sockaddr_in>& outJoined,
+    std::vector<sockaddr_in>& outLeft)
 {
     if (socket == INVALID_SOCKET)
         return false;
 
-    ULONGLONG lastKeepAlive =
-        GetTickCount64();
+    // Primeira espera: ate 200 ms. Depois, so o que ja estiver
+    // no buffer (espera zero), com um teto pra nao prender a
+    // thread se chegar uma enxurrada.
+    long waitMicroseconds = 200000;
 
-    for (;;)
+    for (int packets = 0; packets < 64; ++packets)
     {
         fd_set readSet{};
 
@@ -394,8 +380,8 @@ bool UdpWaitForHello(
 
         timeval timeout{};
 
-        timeout.tv_sec = 1;
-        timeout.tv_usec = 0;
+        timeout.tv_sec = 0;
+        timeout.tv_usec = waitMicroseconds;
 
         int ready =
             select(
@@ -410,26 +396,16 @@ bool UdpWaitForHello(
         if (ready == SOCKET_ERROR)
             return false;
 
-        ULONGLONG now =
-            GetTickCount64();
-
-        if (stunKeepAlive &&
-            now - lastKeepAlive >= 15000)
-        {
-            StunSendKeepAlive(socket);
-
-            lastKeepAlive = now;
-        }
-
         if (ready == 0)
-            continue;
+            break;
+
+        waitMicroseconds = 0;
 
         char buffer[2048]{};
 
-        sockaddr_in clientAddress{};
+        sockaddr_in from{};
 
-        int clientAddressSize =
-            sizeof(clientAddress);
+        int fromSize = sizeof(from);
 
         int received =
             recvfrom(
@@ -437,20 +413,18 @@ bool UdpWaitForHello(
                 buffer,
                 static_cast<int>(sizeof(buffer)),
                 0,
-                reinterpret_cast<sockaddr*>(
-                    &clientAddress),
-                &clientAddressSize
+                reinterpret_cast<sockaddr*>(&from),
+                &fromSize
             );
 
         if (received == SOCKET_ERROR)
         {
-            int error =
-                WSAGetLastError();
+            int error = WSAGetLastError();
 
             // WSAECONNRESET: um pacote que enviamos antes
-            // (ex.: PUNCH) bateu numa porta fechada. Normal
-            // durante o hole punching - seguir esperando.
-            // WSAEMSGSIZE: pacote maior que o buffer - ignorar.
+            // (PUNCH, ou stream pra quem ja saiu) bateu numa
+            // porta fechada - normal. WSAEMSGSIZE: pacote
+            // maior que o buffer - ignorar.
             if (error == WSAECONNRESET ||
                 error == WSAEMSGSIZE)
             {
@@ -460,12 +434,36 @@ bool UdpWaitForHello(
             return false;
         }
 
+        ULONGLONG now = GetTickCount64();
+
         if (received == 5 &&
             std::memcmp(buffer, "HELLO", 5) == 0)
         {
-            outClientAddress = clientAddress;
-
-            return true;
+            if (viewers.Touch(from, true, now) ==
+                UdpViewerList::TouchResult::Added)
+            {
+                outJoined.push_back(from);
+            }
+        }
+        else if (received == 4 &&
+                 std::memcmp(buffer, "KEEP", 4) == 0)
+        {
+            viewers.Touch(from, false, now);
         }
     }
+
+    ULONGLONG now = GetTickCount64();
+
+    viewers.Prune(now, outLeft);
+
+    if (stunKeepAlive &&
+        viewers.Count() == 0 &&
+        now - lastStunKeepAlive >= 15000)
+    {
+        StunSendKeepAlive(socket);
+
+        lastStunKeepAlive = now;
+    }
+
+    return true;
 }

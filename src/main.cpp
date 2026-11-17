@@ -469,26 +469,23 @@ void SelectQualityInteractively()
 
     // Hole punching: quando um receiver de outra rede entra na
     // sessao, o servidor de sinalizacao informa o endereco
-    // publico dele. Mandamos pacotes pra la ate o HELLO dele
+    // publico dele. Mandamos pacotes pra la pro HELLO dele
     // conseguir passar pelo nosso roteador.
     g_signalingHost.SetViewerCallback(
         [](bool isAudio,
            const std::string& ip,
            uint16_t port)
         {
+            // O servidor so lista quem anunciou nos ultimos
+            // 60s, entao da pra furar sempre - inclusive com
+            // outros espectadores ja assistindo.
             if (isAudio)
             {
-                if (!g_audioReceiverConnected)
-                {
-                    g_udpAudioServer.PunchTo(ip, port);
-                }
+                g_udpAudioServer.PunchTo(ip, port);
             }
             else
             {
-                if (!g_udpReceiverConnected)
-                {
-                    g_udpServer.PunchTo(ip, port);
-                }
+                g_udpServer.PunchTo(ip, port);
             }
         }
     );
@@ -754,7 +751,7 @@ void EncoderThread()
                     : "nativa")
                 << " @ "
                 << g_targetFps
-                << " FPS, 16 Mbps.\n";
+                << " FPS.\n";
         }
 
 
@@ -1565,36 +1562,21 @@ void UdpServerThread()
 
     while (g_udpServerStarted)
     {
-        if (!g_udpReceiverConnected)
+        // Atende os espectadores: quem entrou, quem segue
+        // assistindo e quem saiu. Espera ate ~200 ms por vez.
+        if (!g_udpServer.Service())
         {
-            if (g_udpServer.WaitForClient())
-            {
-                if (!g_udpServerStarted)
-                    break;
-
-
-                g_udpReceiverConnected =
-                    true;
-
-
-                std::cout
-                    << "\n========================================\n"
-                    << "RECEIVER UDP CONECTADO!\n"
-                    << "H264 -> Annex B -> UDP\n"
-                    << "========================================\n";
-            }
-        }
-        else
-        {
-            // Descarta os keepalives que o receiver manda
-            // durante a transmissao.
-            g_udpServer.DrainIncoming();
-
-
             std::this_thread::sleep_for(
                 std::chrono::milliseconds(100)
             );
         }
+
+
+        // "Conectado" = pelo menos um espectador. E isso que
+        // liga/desliga o encoder (sem ninguem assistindo, nao
+        // gasta GPU codificando).
+        g_udpReceiverConnected =
+            g_udpServer.GetViewerCount() > 0;
     }
 
 
@@ -1643,34 +1625,16 @@ void UdpAudioServerThread()
 
     while (g_audioServerStarted)
     {
-        if (!g_audioReceiverConnected)
+        if (!g_udpAudioServer.Service())
         {
-            if (g_udpAudioServer.WaitForClient())
-            {
-                if (!g_audioServerStarted)
-                    break;
-
-
-                g_audioReceiverConnected =
-                    true;
-
-
-                std::cout
-                    << "\n========================================\n"
-                    << "RECEIVER DE AUDIO CONECTADO!\n"
-                    << "Opus -> UDP\n"
-                    << "========================================\n";
-            }
-        }
-        else
-        {
-            g_udpAudioServer.DrainIncoming();
-
-
             std::this_thread::sleep_for(
                 std::chrono::milliseconds(100)
             );
         }
+
+
+        g_audioReceiverConnected =
+            g_udpAudioServer.GetViewerCount() > 0;
     }
 
 

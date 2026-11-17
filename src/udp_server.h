@@ -18,10 +18,22 @@ public:
         uint16_t port
     );
 
-    bool WaitForClient();
+    // Atende os espectadores: quem entrou (HELLO), quem segue
+    // vivo (KEEP) e quem expirou. Chamar em laco, numa thread
+    // propria - espera ate ~200 ms por pacotes. Retorna false
+    // se o socket estiver fechado.
+    bool Service();
 
-    // Fragmenta e envia um frame H264 (Annex B) completo,
-    // usando o protocolo orientado a frame (video_protocol.h).
+    // Quantos espectadores estao conectados agora.
+    size_t GetViewerCount()
+    {
+        return m_viewers.Count();
+    }
+
+    // Fragmenta e envia um frame H264 (Annex B) completo pra
+    // TODOS os espectadores conectados, usando o protocolo
+    // orientado a frame (video_protocol.h). Retorna false se
+    // nao houver ninguem conectado.
     bool SendVideoFrame(
         const void* frameData,
         uint32_t frameSize,
@@ -47,18 +59,15 @@ public:
         uint16_t port
     );
 
-    // Descarta pacotes de entrada parados (keepalives).
-    void DrainIncoming();
-
 private:
 
     StunResult m_stun;
 
     SOCKET m_socket;
 
-    sockaddr_in m_clientAddress;
+    UdpViewerList m_viewers;
 
-    bool m_clientKnown;
+    ULONGLONG m_lastStunKeepAlive;
 
     uint32_t m_frameId;
 };

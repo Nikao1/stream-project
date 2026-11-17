@@ -26,9 +26,17 @@ public:
         uint16_t port
     );
 
-    bool WaitForClient();
+    // Atende os espectadores (HELLO/KEEP/expirados) - mesmo
+    // esquema do UdpServer::Service().
+    bool Service();
 
-    // Envia um pacote Opus (já codificado) completo. Não
+    size_t GetViewerCount()
+    {
+        return m_viewers.Count();
+    }
+
+    // Envia um pacote Opus (já codificado) completo pra todos
+    // os espectadores conectados. Não
     // fragmenta - pacotes Opus típicos (20ms, ~128kbps) cabem
     // tranquilamente em um único datagrama UDP.
     bool SendAudioPacket(
@@ -40,7 +48,7 @@ public:
     void Stop();
 
     // Mesmo esquema do UdpServer (video): endereco publico por
-    // STUN, hole punching e descarte de keepalives.
+    // STUN e hole punching.
     const StunResult& GetStunResult() const
     {
         return m_stun;
@@ -51,17 +59,15 @@ public:
         uint16_t port
     );
 
-    void DrainIncoming();
-
 private:
 
     StunResult m_stun;
 
     SOCKET m_socket;
 
-    sockaddr_in m_clientAddress;
+    UdpViewerList m_viewers;
 
-    bool m_clientKnown;
+    ULONGLONG m_lastStunKeepAlive;
 
     uint32_t m_sequence;
 };
