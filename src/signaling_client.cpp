@@ -22,6 +22,14 @@ namespace
 constexpr int POLL_INTERVAL_SECONDS = 2;
 
 
+// Servidor de sinalizacao padrao (hospedado no Render, plano
+// gratuito). Quem quiser usar outro servidor - o proprio, ou
+// um local pra desenvolvimento - define a variavel de ambiente
+// STREAM_SIGNALING_URL, sem precisar recompilar.
+constexpr const char* DEFAULT_SIGNALING_URL =
+    "https://stream-signaling-2uaz.onrender.com";
+
+
 std::wstring ToWide(
     const std::string& text)
 {
@@ -413,7 +421,7 @@ std::string GetSignalingUrl()
             return url;
     }
 
-    return "http://127.0.0.1:8080";
+    return DEFAULT_SIGNALING_URL;
 }
 
 

@@ -25,9 +25,11 @@
 // Video e audio continuam indo direto de uma ponta pra outra
 // (UDP) - nunca passam por esse servidor.
 //
-// Endereco do servidor: variavel de ambiente
-// STREAM_SIGNALING_URL. Sem ela, usa http://127.0.0.1:8080
-// (servidor rodando na propria maquina, pra testes).
+// Endereco do servidor: o padrao vem embutido no programa
+// (DEFAULT_SIGNALING_URL, em signaling_client.cpp). A variavel
+// de ambiente STREAM_SIGNALING_URL troca o servidor sem
+// recompilar - ex.: http://127.0.0.1:8080 pra testar com o
+// servidor rodando na propria maquina.
 // ============================================================
 
 std::string GetSignalingUrl();
