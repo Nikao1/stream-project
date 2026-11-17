@@ -147,10 +147,19 @@ bool UdpAudioServer::Service()
     std::vector<sockaddr_in> left;
 
 
+    if (!m_hostKeys)
+    {
+        return false;
+    }
+
+
     bool ok =
         UdpServiceViewers(
             m_socket,
             m_viewers,
+            *m_hostKeys,
+            CRYPTO_CHANNEL_AUDIO,
+            m_allowAnonymous,
             m_stun.ok,
             m_lastStunKeepAlive,
             joined,
@@ -245,7 +254,7 @@ bool UdpAudioServer::SendAudioPacket(
         );
 
 
-    sockaddr_in viewers[MAX_VIEWERS];
+    UdpViewer viewers[MAX_VIEWERS];
 
     size_t viewerCount =
         m_viewers.Snapshot(viewers);
@@ -256,22 +265,38 @@ bool UdpAudioServer::SendAudioPacket(
     }
 
 
+    uint8_t sealed[
+        AUDIO_UDP_PACKET_SIZE +
+        CRYPTO_OVERHEAD
+    ];
+
+
     for (size_t v = 0; v < viewerCount; ++v)
     {
+        size_t sealedSize =
+            CryptoSeal(
+                viewers[v].sessionKey,
+                CRYPTO_CHANNEL_AUDIO,
+                m_packetCounter++,
+                reinterpret_cast<const uint8_t*>(packet),
+                static_cast<size_t>(packetSize),
+                sealed
+            );
+
         sendto(
             m_socket,
 
-            packet,
+            reinterpret_cast<const char*>(sealed),
 
-            packetSize,
+            static_cast<int>(sealedSize),
 
             0,
 
             reinterpret_cast<sockaddr*>(
-                &viewers[v]
+                &viewers[v].address
             ),
 
-            sizeof(viewers[v])
+            sizeof(viewers[v].address)
         );
     }
 

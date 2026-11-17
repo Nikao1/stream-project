@@ -2,6 +2,7 @@
 
 #include <winsock2.h>
 
+#include <atomic>
 #include <cstdint>
 #include <string>
 
@@ -21,6 +22,19 @@ class UdpAudioServer
 public:
     UdpAudioServer();
     ~UdpAudioServer();
+
+    // Chaves e modo anonimo: igual ao UdpServer (video).
+    void SetHostKeys(
+        const CryptoKeyPair* hostKeys)
+    {
+        m_hostKeys = hostKeys;
+    }
+
+    void SetAllowAnonymous(
+        bool allow)
+    {
+        m_allowAnonymous = allow;
+    }
 
     bool Start(
         uint16_t port
@@ -66,6 +80,12 @@ private:
     SOCKET m_socket;
 
     UdpViewerList m_viewers;
+
+    const CryptoKeyPair* m_hostKeys = nullptr;
+
+    std::atomic<bool> m_allowAnonymous{ false };
+
+    uint64_t m_packetCounter = 0;
 
     ULONGLONG m_lastStunKeepAlive;
 

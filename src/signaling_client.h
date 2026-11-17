@@ -65,6 +65,10 @@ struct SignalingHostInfo
     uint16_t publicVideoPort = 0;
     uint16_t publicAudioPort = 0;
 
+    // Chave publica de quem transmite, em hex (pra criptografia
+    // do canal). Vazia = client antigo, sem criptografia.
+    std::string hostKey;
+
     // true = as duas pontas estao atras do mesmo roteador (ou
     // na mesma maquina) -> usar localIp em vez de publicIp.
     bool sameNetwork = false;
@@ -124,7 +128,8 @@ public:
         uint16_t audioPort,
         const std::string& stunIp,
         uint16_t publicVideoPort,
-        uint16_t publicAudioPort
+        uint16_t publicAudioPort,
+        const std::string& hostKeyHex
     );
 
     void Stop();
@@ -153,6 +158,8 @@ private:
     uint16_t m_audioPort;
 
     std::string m_stunIp;
+
+    std::string m_hostKeyHex;
 
     uint16_t m_publicVideoPort;
     uint16_t m_publicAudioPort;

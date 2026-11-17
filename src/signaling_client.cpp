@@ -570,6 +570,7 @@ bool SignalingJoinSession(
     outInfo.videoPort = ParsePort(fields["video_port"]);
     outInfo.audioPort = ParsePort(fields["audio_port"]);
     outInfo.sameNetwork = fields["same_network"] == "1";
+    outInfo.hostKey = fields["host_key"];
 
     outInfo.publicVideoPort =
         ParsePort(fields["public_video_port"]);
@@ -680,6 +681,11 @@ bool SignalingHost::CreateSession(
         body += "&stun_ip=" + m_stunIp;
     }
 
+    if (!m_hostKeyHex.empty())
+    {
+        body += "&host_key=" + m_hostKeyHex;
+    }
+
     DWORD status = 0;
 
     std::string response;
@@ -737,10 +743,13 @@ bool SignalingHost::Start(
     uint16_t audioPort,
     const std::string& stunIp,
     uint16_t publicVideoPort,
-    uint16_t publicAudioPort)
+    uint16_t publicAudioPort,
+    const std::string& hostKeyHex)
 {
     if (m_running)
         return true;
+
+    m_hostKeyHex = hostKeyHex;
 
     m_videoPort = videoPort;
     m_audioPort = audioPort;

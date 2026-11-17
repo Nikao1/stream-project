@@ -6,6 +6,7 @@
 #include "audio_protocol.h"
 #include "signaling_client.h"
 #include "ffmpeg_check.h"
+#include "stream_crypto.h"
 
 #include <winsock2.h>
 #include <ws2tcpip.h>
@@ -70,6 +71,10 @@ H264Encoder g_h264Encoder;
 UdpAudioServer g_udpAudioServer;
 
 SignalingHost g_signalingHost;
+
+// Par de chaves desta execucao (criptografia do canal). Criado
+// na abertura do programa; nunca vai pra disco.
+CryptoKeyPair g_hostKeys{};
 
 AudioCapture g_audioCapture;
 
@@ -496,7 +501,10 @@ void SelectQualityInteractively()
             AUDIO_SERVER_UDP_PORT,
             videoStun.ok ? videoStun.publicIp : std::string(),
             videoStun.ok ? videoStun.publicPort : 0,
-            audioStun.ok ? audioStun.publicPort : 0))
+            audioStun.ok ? audioStun.publicPort : 0,
+            CryptoToHex(
+                g_hostKeys.publicKey,
+                CRYPTO_KEY_SIZE)))
     {
         std::string code =
             g_signalingHost.GetCode();
@@ -528,7 +536,16 @@ void SelectQualityInteractively()
             << "O receiver ainda pode conectar digitando o IP "
             << "deste computador: "
             << GetPrimaryLocalIp()
-            << "\n\n";
+            << "\n"
+            << "(nesse modo, qualquer pessoa que alcance este "
+            << "IP pode assistir)\n\n";
+
+        // Sem sessao por codigo nao ha como o receiver provar
+        // que foi convidado - libera a conexao direta por IP.
+        // O stream continua cifrado.
+        g_udpServer.SetAllowAnonymous(true);
+
+        g_udpAudioServer.SetAllowAnonymous(true);
     }
 
 
@@ -3066,6 +3083,23 @@ int WINAPI wWinMain(
     UpdateWindow(
         g_hwnd
     );
+
+
+    // =========================================================
+    // CRIPTOGRAFIA: par de chaves desta execucao
+    // =========================================================
+
+    if (!CryptoGenerateKeyPair(g_hostKeys))
+    {
+        std::cout
+            << "Falha ao gerar as chaves de criptografia.\n";
+
+        return 1;
+    }
+
+    g_udpServer.SetHostKeys(&g_hostKeys);
+
+    g_udpAudioServer.SetHostKeys(&g_hostKeys);
 
 
     // =========================================================

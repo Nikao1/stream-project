@@ -358,6 +358,9 @@ std::string EndpointToString(
 bool UdpServiceViewers(
     SOCKET socket,
     UdpViewerList& viewers,
+    const CryptoKeyPair& hostKeys,
+    uint8_t channel,
+    bool allowAnonymous,
     bool stunKeepAlive,
     ULONGLONG& lastStunKeepAlive,
     std::vector<sockaddr_in>& outJoined,
@@ -436,19 +439,81 @@ bool UdpServiceViewers(
 
         ULONGLONG now = GetTickCount64();
 
-        if (received == 5 &&
-            std::memcmp(buffer, "HELLO", 5) == 0)
+        const uint8_t* bytes =
+            reinterpret_cast<const uint8_t*>(buffer);
+
+        size_t size =
+            static_cast<size_t>(received);
+
+        bool authHello =
+            size == CRYPTO_HELLO_AUTH_SIZE &&
+            CryptoHasTag(bytes, size, "HEL2");
+
+        bool anonHello =
+            allowAnonymous &&
+            size == CRYPTO_HELLO_ANON_SIZE &&
+            CryptoHasTag(bytes, size, "HEL1");
+
+        if (authHello || anonHello)
         {
-            if (viewers.Touch(from, true, now) ==
+            // A chave publica do espectador vem logo depois
+            // da marca. Com ela + a nossa secreta sai a chave
+            // de sessao DESTE espectador.
+            const uint8_t* viewerPublicKey =
+                bytes + 4;
+
+            uint8_t sessionKey[CRYPTO_KEY_SIZE];
+
+            if (!CryptoDeriveSessionKey(
+                    hostKeys.secretKey,
+                    viewerPublicKey,
+                    hostKeys.publicKey,
+                    viewerPublicKey,
+                    sessionKey))
+            {
+                continue;
+            }
+
+            // Prova errada = nao conhece a nossa chave
+            // publica = nao entrou pelo codigo. Ignora.
+            if (authHello &&
+                !CryptoVerifyAuthHello(
+                    bytes,
+                    sessionKey,
+                    channel))
+            {
+                continue;
+            }
+
+            if (viewers.Touch(from, now, sessionKey) ==
                 UdpViewerList::TouchResult::Added)
             {
                 outJoined.push_back(from);
+            }
+
+            if (anonHello)
+            {
+                uint8_t reply[CRYPTO_HOST_KEY_PACKET_SIZE];
+
+                CryptoBuildHostKeyPacket(
+                    hostKeys.publicKey,
+                    reply
+                );
+
+                sendto(
+                    socket,
+                    reinterpret_cast<const char*>(reply),
+                    static_cast<int>(sizeof(reply)),
+                    0,
+                    reinterpret_cast<const sockaddr*>(&from),
+                    sizeof(from)
+                );
             }
         }
         else if (received == 4 &&
                  std::memcmp(buffer, "KEEP", 4) == 0)
         {
-            viewers.Touch(from, false, now);
+            viewers.Touch(from, now);
         }
     }
 

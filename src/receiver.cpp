@@ -25,6 +25,7 @@
 #include "signaling_client.h"
 #include "nat_traversal.h"
 #include "ffmpeg_check.h"
+#include "stream_crypto.h"
 
 #pragma comment(lib, "ws2_32.lib")
 
@@ -75,6 +76,157 @@ uint16_t g_serverVideoPort =
 
 uint16_t g_serverAudioPort =
     AUDIO_SERVER_UDP_PORT;
+
+
+// ============================================================
+// Criptografia do canal (ver stream_crypto.h)
+// ============================================================
+
+// Par de chaves desta execucao.
+CryptoKeyPair g_myKeys{};
+
+// true = entramos por codigo de sessao e ja temos a chave
+// publica de quem transmite -> HELLO com prova ("HEL2").
+// false = conexao direta por IP -> HELLO sem prova ("HEL1"),
+// e a chave publica do outro lado chega num pacote "HKEY".
+bool g_authenticatedMode =
+    false;
+
+std::mutex g_cryptoMutex;
+
+std::atomic<bool> g_haveSessionKey{ false };
+
+uint8_t g_sessionKey[CRYPTO_KEY_SIZE]{};
+
+
+// Calcula e guarda a chave de sessao a partir da chave publica
+// de quem transmite. Nao troca uma chave ja estabelecida.
+bool EstablishSessionKey(
+    const uint8_t hostPublicKey[CRYPTO_KEY_SIZE])
+{
+    std::lock_guard<std::mutex> lock(
+        g_cryptoMutex
+    );
+
+    if (g_haveSessionKey)
+        return true;
+
+    if (!CryptoDeriveSessionKey(
+            g_myKeys.secretKey,
+            hostPublicKey,
+            hostPublicKey,
+            g_myKeys.publicKey,
+            g_sessionKey))
+    {
+        return false;
+    }
+
+    g_haveSessionKey =
+        true;
+
+    return true;
+}
+
+
+bool GetSessionKey(
+    uint8_t outKey[CRYPTO_KEY_SIZE])
+{
+    if (!g_haveSessionKey)
+        return false;
+
+    std::lock_guard<std::mutex> lock(
+        g_cryptoMutex
+    );
+
+    std::memcpy(
+        outKey,
+        g_sessionKey,
+        CRYPTO_KEY_SIZE
+    );
+
+    return true;
+}
+
+
+// Monta o HELLO deste receiver pro canal dado. Devolve o
+// tamanho do pacote.
+int BuildHelloPacket(
+    uint8_t channel,
+    uint8_t outPacket[CRYPTO_HELLO_AUTH_SIZE])
+{
+    uint8_t key[CRYPTO_KEY_SIZE];
+
+    if (g_authenticatedMode &&
+        GetSessionKey(key))
+    {
+        CryptoBuildAuthHello(
+            g_myKeys.publicKey,
+            key,
+            channel,
+            outPacket
+        );
+
+        return static_cast<int>(
+            CRYPTO_HELLO_AUTH_SIZE);
+    }
+
+    CryptoBuildAnonHello(
+        g_myKeys.publicKey,
+        outPacket
+    );
+
+    return static_cast<int>(
+        CRYPTO_HELLO_ANON_SIZE);
+}
+
+
+// Trata um pacote recem-chegado: se for a chave publica de
+// quem transmite ("HKEY", so na conexao direta), guarda; se
+// for dado cifrado, decifra pra outPlain. Devolve o tamanho do
+// conteudo decifrado, ou 0 se nao ha nada pra processar.
+int DecryptIncoming(
+    uint8_t channel,
+    const char* packet,
+    int packetSize,
+    char* outPlain)
+{
+    const uint8_t* bytes =
+        reinterpret_cast<const uint8_t*>(packet);
+
+    size_t size =
+        static_cast<size_t>(packetSize);
+
+    if (size == CRYPTO_HOST_KEY_PACKET_SIZE &&
+        CryptoHasTag(bytes, size, "HKEY"))
+    {
+        if (!g_authenticatedMode)
+        {
+            EstablishSessionKey(bytes + 4);
+        }
+
+        return 0;
+    }
+
+    uint8_t key[CRYPTO_KEY_SIZE];
+
+    if (!GetSessionKey(key))
+        return 0;
+
+    size_t plainSize = 0;
+
+    if (!CryptoOpen(
+            key,
+            channel,
+            bytes,
+            size,
+            reinterpret_cast<uint8_t*>(outPlain),
+            plainSize))
+    {
+        return 0;
+    }
+
+    return static_cast<int>(plainSize);
+}
 
 
 // Porta local realmente usada pelo socket de video (pode nao
@@ -1370,12 +1522,21 @@ void ProcessUdpPacket(
 
 bool SendHello()
 {
+    uint8_t hello[CRYPTO_HELLO_AUTH_SIZE];
+
+    int helloSize =
+        BuildHelloPacket(
+            CRYPTO_CHANNEL_VIDEO,
+            hello
+        );
+
+
     if (g_haveAltAddress)
     {
         sendto(
             g_udpSocket,
-            "HELLO",
-            5,
+            reinterpret_cast<const char*>(hello),
+            helloSize,
             0,
             reinterpret_cast<sockaddr*>(
                 &g_serverAltAddress
@@ -1385,26 +1546,15 @@ bool SendHello()
     }
 
 
-    const char hello[] =
-        "HELLO";
-
-
     int sent =
         sendto(
             g_udpSocket,
-
-            hello,
-
-            static_cast<int>(
-                std::strlen(hello)
-            ),
-
+            reinterpret_cast<const char*>(hello),
+            helloSize,
             0,
-
             reinterpret_cast<sockaddr*>(
                 &g_serverAddress
             ),
-
             sizeof(g_serverAddress)
         );
 
@@ -1447,7 +1597,14 @@ void ReceiverThread()
         << "========================================\n\n";
 
 
+    // Pacote como chega da rede (cifrado, um pouco maior)...
     std::vector<char> buffer(
+        VIDEO_UDP_PACKET_SIZE +
+        CRYPTO_OVERHEAD
+    );
+
+    // ...e o conteudo depois de decifrado.
+    std::vector<char> plainBuffer(
         VIDEO_UDP_PACKET_SIZE
     );
 
@@ -1675,9 +1832,24 @@ void ReceiverThread()
         // de vídeo válido.
         // ====================================================
 
+        // Tudo que chega do client vem cifrado. Pacote que nao
+        // decifra (de outra origem, adulterado, ou anterior a
+        // troca de chaves) e simplesmente ignorado.
+        int plainSize =
+            DecryptIncoming(
+                CRYPTO_CHANNEL_VIDEO,
+                buffer.data(),
+                received,
+                plainBuffer.data()
+            );
+
+        if (plainSize <= 0)
+            continue;
+
+
         ProcessUdpPacket(
-            buffer.data(),
-            received
+            plainBuffer.data(),
+            plainSize
         );
 
 
@@ -1887,6 +2059,11 @@ void AudioReceiverThread()
 
 
     std::vector<char> buffer(
+        AUDIO_UDP_PACKET_SIZE +
+        CRYPTO_OVERHEAD
+    );
+
+    std::vector<char> plainAudio(
         AUDIO_UDP_PACKET_SIZE
     );
 
@@ -1909,10 +2086,18 @@ void AudioReceiverThread()
             (lastHelloTime == 0 ||
              now - lastHelloTime >= 1000))
         {
+            uint8_t hello[CRYPTO_HELLO_AUTH_SIZE];
+
+            int helloSize =
+                BuildHelloPacket(
+                    CRYPTO_CHANNEL_AUDIO,
+                    hello
+                );
+
             sendto(
                 audioSocket,
-                "HELLO",
-                5,
+                reinterpret_cast<const char*>(hello),
+                helloSize,
                 0,
                 reinterpret_cast<sockaddr*>(
                     &serverAddress
@@ -1924,8 +2109,8 @@ void AudioReceiverThread()
             {
                 sendto(
                     audioSocket,
-                    "HELLO",
-                    5,
+                    reinterpret_cast<const char*>(hello),
+                    helloSize,
                     0,
                     reinterpret_cast<sockaddr*>(
                         &altAddress
@@ -2019,6 +2204,37 @@ void AudioReceiverThread()
                 ),
                 &fromSize
             );
+
+
+        if (received <= 0)
+        {
+            continue;
+        }
+
+
+        // Decifra e segue trabalhando no mesmo buffer, ja com
+        // o conteudo original (header + Opus).
+        {
+            int plainSize =
+                DecryptIncoming(
+                    CRYPTO_CHANNEL_AUDIO,
+                    buffer.data(),
+                    received,
+                    plainAudio.data()
+                );
+
+            if (plainSize <= 0)
+                continue;
+
+            std::memcpy(
+                buffer.data(),
+                plainAudio.data(),
+                static_cast<size_t>(plainSize)
+            );
+
+            received =
+                plainSize;
+        }
 
 
         if (received <
@@ -3375,6 +3591,19 @@ int main()
     );
 
 
+    // Par de chaves desta execucao (criptografia do canal).
+    if (!CryptoGenerateKeyPair(g_myKeys))
+    {
+        std::cout
+            << "Falha ao gerar as chaves de criptografia.\n"
+            << "Pressione Enter para sair.\n";
+
+        std::cin.get();
+
+        return 1;
+    }
+
+
     // Sem ffmpeg funcionando nao ha video - melhor avisar ja
     // do que deixar a pessoa olhando pra uma tela preta.
     {
@@ -3482,6 +3711,29 @@ int main()
 
             continue;
         }
+
+
+        // Chave publica de quem transmite: sem ela nao ha como
+        // montar o canal cifrado.
+        uint8_t hostPublicKey[CRYPTO_KEY_SIZE];
+
+        if (!CryptoFromHex(
+                host.hostKey,
+                hostPublicKey,
+                CRYPTO_KEY_SIZE) ||
+            !EstablishSessionKey(hostPublicKey))
+        {
+            std::cout
+                << "Quem esta transmitindo usa uma versao "
+                << "antiga do programa, sem criptografia.\n"
+                << "Peca pra atualizar o stream-client e "
+                << "tente de novo.\n\n";
+
+            continue;
+        }
+
+        g_authenticatedMode =
+            true;
 
 
         g_serverIp =

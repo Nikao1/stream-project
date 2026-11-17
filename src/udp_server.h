@@ -2,6 +2,7 @@
 
 #include <winsock2.h>
 
+#include <atomic>
 #include <cstdint>
 #include <string>
 
@@ -13,6 +14,24 @@ public:
     UdpServer();
 
     ~UdpServer();
+
+    // Par de chaves de quem transmite (ver stream_crypto.h).
+    // Chamar antes de Start(); o objeto precisa continuar
+    // existindo enquanto o servidor rodar.
+    void SetHostKeys(
+        const CryptoKeyPair* hostKeys)
+    {
+        m_hostKeys = hostKeys;
+    }
+
+    // true = aceita espectador sem prova do codigo da sessao
+    // (conexao direta por IP). So ligar quando NAO houver
+    // sessao por codigo.
+    void SetAllowAnonymous(
+        bool allow)
+    {
+        m_allowAnonymous = allow;
+    }
 
     bool Start(
         uint16_t port
@@ -66,6 +85,14 @@ private:
     SOCKET m_socket;
 
     UdpViewerList m_viewers;
+
+    const CryptoKeyPair* m_hostKeys = nullptr;
+
+    std::atomic<bool> m_allowAnonymous{ false };
+
+    // Contador dos pacotes cifrados: nunca repete enquanto o
+    // programa roda (e as chaves mudam a cada execucao).
+    uint64_t m_packetCounter = 0;
 
     ULONGLONG m_lastStunKeepAlive;
 

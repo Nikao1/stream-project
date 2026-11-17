@@ -19,7 +19,7 @@ respostas em texto "chave=valor", uma por linha):
     GET  /health
     POST /sessions                    local_ip, video_port, audio_port
                                       [stun_ip, public_video_port,
-                                       public_audio_port]
+                                       public_audio_port, host_key]
                                       -> code, token, ttl
     POST /sessions/<code>/keepalive   token
                                       -> ok, viewers
@@ -245,6 +245,14 @@ class Handler(BaseHTTPRequestHandler):
                 and _valid_port(public_audio_port)):
             return self._error(400, "invalid_fields")
 
+        # Chave publica de quem transmite (64 digitos hex). O
+        # servidor so repassa - nao consegue decifrar nada com
+        # ela.
+        host_key = form.get("host_key", "").lower()
+        if host_key and not (len(host_key) == 64 and
+                             all(c in "0123456789abcdef" for c in host_key)):
+            return self._error(400, "invalid_fields")
+
         with _lock:
             if len(_sessions) >= MAX_SESSIONS:
                 return self._error(503, "server_full")
@@ -265,6 +273,7 @@ class Handler(BaseHTTPRequestHandler):
                 "audio_port": int(audio_port),
                 "public_video_port": int(public_video_port),
                 "public_audio_port": int(public_audio_port),
+                "host_key": host_key,
                 "viewers": 0,
                 # anuncios: [canal, "ip:porta", momento]
                 "announces": [],
@@ -295,6 +304,7 @@ class Handler(BaseHTTPRequestHandler):
             "public_video_port": info["public_video_port"],
             "public_audio_port": info["public_audio_port"],
             "same_network": same_network,
+            "host_key": info["host_key"],
         })
 
     def _announce(self, code, form):

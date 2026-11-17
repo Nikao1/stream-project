@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.20)
 
 project(stream-client
     VERSION 0.1.0
-    LANGUAGES CXX
+    LANGUAGES C CXX
 )
 
 set(CMAKE_CXX_STANDARD 20)
@@ -27,6 +27,31 @@ FetchContent_Declare(
 )
 
 FetchContent_MakeAvailable(opus)
+
+
+# ================================================================
+# Monocypher (criptografia do canal: X25519 + XChaCha20-Poly1305)
+#
+# Biblioteca pequena (um .c e um .h), de dominio publico. Nao traz
+# CMakeLists proprio, entao o FetchContent so baixa o codigo e a
+# biblioteca e montada aqui.
+# ================================================================
+
+FetchContent_Declare(
+    monocypher
+    GIT_REPOSITORY https://github.com/LoupVaillant/Monocypher.git
+    GIT_TAG        4.0.2
+)
+
+FetchContent_MakeAvailable(monocypher)
+
+add_library(monocypher STATIC
+    ${monocypher_SOURCE_DIR}/src/monocypher.c
+)
+
+target_include_directories(monocypher PUBLIC
+    ${monocypher_SOURCE_DIR}/src
+)
 
 
 add_executable(stream-client WIN32
@@ -58,6 +83,9 @@ add_executable(stream-client WIN32
     src/stun_message.h
     src/udp_viewers.h
 
+    src/stream_crypto.cpp
+    src/stream_crypto.h
+
     src/ffmpeg_check.cpp
     src/ffmpeg_check.h
 )
@@ -82,6 +110,9 @@ add_executable(stream-receiver
     src/nat_traversal.h
     src/stun_message.h
     src/udp_viewers.h
+
+    src/stream_crypto.cpp
+    src/stream_crypto.h
 
     src/ffmpeg_check.cpp
     src/ffmpeg_check.h
@@ -113,6 +144,8 @@ target_link_libraries(stream-client PRIVATE
     opus
     winhttp
     winmm
+    monocypher
+    bcrypt
 )
 
 
@@ -124,4 +157,6 @@ target_link_libraries(stream-receiver PRIVATE
     dxgi
     d3dcompiler
     winhttp
+    monocypher
+    bcrypt
 )

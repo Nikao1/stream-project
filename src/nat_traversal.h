@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "udp_viewers.h"
+#include "stream_crypto.h"
 
 // ============================================================
 // NAT TRAVERSAL (STUN + hole punching)
@@ -77,9 +78,17 @@ void UdpSendPunch(
 // Atende os espectadores de um socket do client. Espera ate
 // ~200 ms por pacotes e processa o que chegar:
 //
-//   "HELLO" -> espectador novo entra na lista (ou renova)
-//   "KEEP"  -> espectador conhecido renova o prazo
-//   resto   -> ignorado
+//   "HEL2" -> HELLO com prova de que o espectador entrou pelo
+//             codigo da sessao: entra na lista (ou renova)
+//   "HEL1" -> HELLO sem prova (conexao direta por IP): so e
+//             aceito se allowAnonymous; respondemos com a
+//             nossa chave publica ("HKEY")
+//   "KEEP" -> espectador conhecido renova o prazo
+//   resto  -> ignorado (inclusive o "HELLO" de versoes antigas,
+//             que nao tinham criptografia)
+//
+// Cada espectador entra com a SUA chave de sessao, calculada a
+// partir da chave publica que veio no HELLO dele.
 //
 // Tambem remove quem expirou e, enquanto nao ha ninguem
 // conectado, mantem o mapeamento do roteador vivo (keepalive
@@ -90,6 +99,9 @@ void UdpSendPunch(
 bool UdpServiceViewers(
     SOCKET socket,
     UdpViewerList& viewers,
+    const CryptoKeyPair& hostKeys,
+    uint8_t channel,
+    bool allowAnonymous,
     bool stunKeepAlive,
     ULONGLONG& lastStunKeepAlive,
     std::vector<sockaddr_in>& outJoined,

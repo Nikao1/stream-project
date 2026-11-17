@@ -3,6 +3,8 @@
 #include <winsock2.h>
 
 #include <cstddef>
+#include <cstdint>
+#include <cstring>
 #include <mutex>
 #include <vector>
 
@@ -29,6 +31,16 @@ constexpr size_t MAX_VIEWERS = 4;
 constexpr ULONGLONG VIEWER_TIMEOUT_MS = 15000;
 
 
+// Um espectador: pra onde enviar e com qual chave cifrar. Cada
+// espectador tem a sua chave de sessao (ver stream_crypto.h).
+struct UdpViewer
+{
+    sockaddr_in address;
+
+    uint8_t sessionKey[32];
+};
+
+
 class UdpViewerList
 {
 public:
@@ -42,32 +54,57 @@ public:
     };
 
 
-    // Registra sinal de vida de um endereco. Com allowAdd, um
-    // endereco novo entra na lista (se houver vaga).
+    // Registra sinal de vida de um endereco.
+    //
+    // Com sessionKey (vem de um HELLO valido), um endereco novo
+    // entra na lista se houver vaga, e um ja conhecido tem a
+    // chave atualizada (o receiver pode ter sido reaberto na
+    // mesma porta, com chaves novas).
+    //
+    // Sem sessionKey (KEEP), so renova quem ja esta na lista.
     TouchResult Touch(
         const sockaddr_in& address,
-        bool allowAdd,
-        ULONGLONG now)
+        ULONGLONG now,
+        const uint8_t* sessionKey = nullptr)
     {
         std::lock_guard<std::mutex> lock(m_mutex);
 
-        for (Viewer& viewer : m_viewers)
+        for (Entry& viewer : m_viewers)
         {
-            if (Same(viewer.address, address))
+            if (Same(viewer.viewer.address, address))
             {
                 viewer.lastSeen = now;
+
+                if (sessionKey)
+                {
+                    std::memcpy(
+                        viewer.viewer.sessionKey,
+                        sessionKey,
+                        32);
+                }
 
                 return TouchResult::Refreshed;
             }
         }
 
-        if (!allowAdd)
+        if (!sessionKey)
             return TouchResult::Unknown;
 
         if (m_viewers.size() >= MAX_VIEWERS)
             return TouchResult::Full;
 
-        m_viewers.push_back({ address, now });
+        Entry entry{};
+
+        entry.viewer.address = address;
+
+        std::memcpy(
+            entry.viewer.sessionKey,
+            sessionKey,
+            32);
+
+        entry.lastSeen = now;
+
+        m_viewers.push_back(entry);
 
         return TouchResult::Added;
     }
@@ -87,7 +124,7 @@ public:
                 VIEWER_TIMEOUT_MS)
             {
                 outRemoved.push_back(
-                    m_viewers[i].address);
+                    m_viewers[i].viewer.address);
 
                 m_viewers.erase(
                     m_viewers.begin() +
@@ -101,11 +138,11 @@ public:
     }
 
 
-    // Copia os enderecos atuais pra um array fixo (sem alocar
-    // memoria - e chamado a cada frame/pacote enviado).
+    // Copia os espectadores atuais pra um array fixo (sem
+    // alocar memoria - e chamado a cada frame/pacote enviado).
     // Devolve quantos copiou.
     size_t Snapshot(
-        sockaddr_in outAddresses[MAX_VIEWERS])
+        UdpViewer outViewers[MAX_VIEWERS])
     {
         std::lock_guard<std::mutex> lock(m_mutex);
 
@@ -113,7 +150,7 @@ public:
 
         for (size_t i = 0; i < count; ++i)
         {
-            outAddresses[i] = m_viewers[i].address;
+            outViewers[i] = m_viewers[i].viewer;
         }
 
         return count;
@@ -137,9 +174,9 @@ public:
 
 private:
 
-    struct Viewer
+    struct Entry
     {
-        sockaddr_in address;
+        UdpViewer viewer;
 
         ULONGLONG lastSeen;
     };
@@ -157,5 +194,5 @@ private:
 
     std::mutex m_mutex;
 
-    std::vector<Viewer> m_viewers;
+    std::vector<Entry> m_viewers;
 };
