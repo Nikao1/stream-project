@@ -241,10 +241,19 @@ bool UdpServer::Service()
     std::vector<sockaddr_in> left;
 
 
+    if (!m_hostKeys)
+    {
+        return false;
+    }
+
+
     bool ok =
         UdpServiceViewers(
             m_socket,
             m_viewers,
+            *m_hostKeys,
+            CRYPTO_CHANNEL_VIDEO,
+            m_allowAnonymous,
             m_stun.ok,
             m_lastStunKeepAlive,
             joined,
@@ -355,7 +364,7 @@ bool UdpServer::SendVideoFrame(
     // Foto da lista de espectadores neste instante: o frame
     // inteiro vai pros mesmos destinos, mesmo que alguem entre
     // ou saia no meio do envio.
-    sockaddr_in viewers[MAX_VIEWERS];
+    UdpViewer viewers[MAX_VIEWERS];
 
     size_t viewerCount =
         m_viewers.Snapshot(viewers);
@@ -392,6 +401,13 @@ bool UdpServer::SendVideoFrame(
 
     std::vector<unsigned char> packet(
         VIDEO_UDP_PACKET_SIZE
+    );
+
+    // Versao cifrada do pacote (uma por espectador, cada um
+    // com a sua chave).
+    std::vector<unsigned char> sealed(
+        VIDEO_UDP_PACKET_SIZE +
+        CRYPTO_OVERHEAD
     );
 
 
@@ -490,26 +506,36 @@ bool UdpServer::SendVideoFrame(
         // vida e sai da lista pelo prazo (ver Service).
         for (size_t v = 0; v < viewerCount; ++v)
         {
+            size_t sealedSize =
+                CryptoSeal(
+                    viewers[v].sessionKey,
+                    CRYPTO_CHANNEL_VIDEO,
+                    m_packetCounter++,
+                    packet.data(),
+                    static_cast<size_t>(packetSize),
+                    sealed.data()
+                );
+
             sendto(
                 m_socket,
 
                 reinterpret_cast<
                     const char*
                 >(
-                    packet.data()
+                    sealed.data()
                 ),
 
-                packetSize,
+                static_cast<int>(sealedSize),
 
                 0,
 
                 reinterpret_cast<
                     sockaddr*
                 >(
-                    &viewers[v]
+                    &viewers[v].address
                 ),
 
-                sizeof(viewers[v])
+                sizeof(viewers[v].address)
             );
         }
 
