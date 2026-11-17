@@ -7,6 +7,7 @@
 #include "signaling_client.h"
 #include "ffmpeg_check.h"
 #include "stream_crypto.h"
+#include "invite_code.h"
 
 #include <winsock2.h>
 #include <ws2tcpip.h>
@@ -75,6 +76,10 @@ SignalingHost g_signalingHost;
 // Par de chaves desta execucao (criptografia do canal). Criado
 // na abertura do programa; nunca vai pra disco.
 CryptoKeyPair g_hostKeys{};
+
+// true = sem sessao por codigo: a conexao e por convite manual
+// (ver invite_code.h) e o console aceita a RESPOSTA colada.
+std::atomic<bool> g_inviteMode{ false };
 
 AudioCapture g_audioCapture;
 
@@ -528,13 +533,82 @@ void SelectQualityInteractively()
     }
     else
     {
+        if (SignalingIsDisabled())
+        {
+            std::cout
+                << "Servidor de sinalizacao desativado "
+                << "(STREAM_SIGNALING_URL=none).\n";
+        }
+        else
+        {
+            std::cout
+                << "Sem codigo de sessao (servidor de "
+                << "sinalizacao indisponivel em "
+                << GetSignalingUrl()
+                << ").\n";
+        }
+
+
+        // ----------------------------------------------------
+        // CONVITE MANUAL
+        //
+        // Sem servidor pra apresentar as pontas, a mesma
+        // informacao vai num texto que o usuario envia por
+        // qualquer mensageiro (ver invite_code.h).
+        // ----------------------------------------------------
+
+        HostInvite invite;
+
+        if (videoStun.ok &&
+            ParseIpv4(
+                videoStun.publicIp,
+                invite.publicIp))
+        {
+            invite.publicVideoPort =
+                videoStun.publicPort;
+
+            invite.publicAudioPort =
+                audioStun.ok
+                ? audioStun.publicPort
+                : AUDIO_SERVER_UDP_PORT;
+        }
+
+        ParseIpv4(
+            GetPrimaryLocalIp(),
+            invite.localIp
+        );
+
+        invite.localVideoPort =
+            5001;
+
+        invite.localAudioPort =
+            AUDIO_SERVER_UDP_PORT;
+
+        std::memcpy(
+            invite.hostKey,
+            g_hostKeys.publicKey,
+            CRYPTO_KEY_SIZE
+        );
+
         std::cout
-            << "Sem codigo de sessao (servidor de sinalizacao "
-            << "indisponivel em "
-            << GetSignalingUrl()
-            << ").\n"
-            << "O receiver ainda pode conectar digitando o IP "
-            << "deste computador: "
+            << "\n========================================\n"
+            << "CONVITE - copie e envie pra quem vai assistir:\n\n"
+            << EncodeHostInvite(invite)
+            << "\n\n"
+            << "A pessoa cola o convite no stream-receiver.\n"
+            << "Se voces estiverem em redes diferentes, ela\n"
+            << "vai te mandar uma RESPOSTA (comeca com SPV1.):\n"
+            << "cole aqui neste console e pressione Enter\n"
+            << "(depois de escolher o dispositivo de audio).\n"
+            << "========================================\n\n";
+
+        g_inviteMode =
+            true;
+
+
+        std::cout
+            << "Na mesma rede, o receiver tambem pode conectar "
+            << "digitando o IP deste computador: "
             << GetPrimaryLocalIp()
             << "\n"
             << "(nesse modo, qualquer pessoa que alcance este "
@@ -1661,6 +1735,81 @@ void UdpAudioServerThread()
 
 
 // ============================================================
+// InviteReplyLoop
+// ============================================================
+//
+// Modo de convite manual: le do console as RESPOSTAS que os
+// espectadores mandam de volta e abre o roteador na direcao de
+// cada um (hole punching) - o papel que o servidor de
+// sinalizacao faria.
+// ============================================================
+
+void InviteReplyLoop()
+{
+    std::string line;
+
+    while (std::getline(std::cin, line))
+    {
+        if (!LooksLikeViewerReply(line))
+        {
+            if (!line.empty())
+            {
+                std::cout
+                    << "Isso nao parece uma RESPOSTA (ela "
+                    << "comeca com SPV1.).\n";
+            }
+
+            continue;
+        }
+
+        ViewerReply reply;
+
+        if (!DecodeViewerReply(line, reply))
+        {
+            std::cout
+                << "Resposta incompleta ou alterada - peca "
+                << "pra pessoa copiar de novo.\n";
+
+            continue;
+        }
+
+        std::string ip =
+            FormatIpv4(reply.publicIp);
+
+        std::cout
+            << "Resposta aceita: abrindo caminho para "
+            << ip
+            << "...\n";
+
+        // Repete por alguns segundos, em thread propria, pra
+        // este laco ja poder receber a resposta de outro
+        // espectador.
+        std::thread(
+            [ip, reply]
+            {
+                for (int i = 0; i < 8; ++i)
+                {
+                    g_udpServer.PunchTo(
+                        ip,
+                        reply.publicVideoPort
+                    );
+
+                    g_udpAudioServer.PunchTo(
+                        ip,
+                        reply.publicAudioPort
+                    );
+
+                    std::this_thread::sleep_for(
+                        std::chrono::seconds(2)
+                    );
+                }
+            }
+        ).detach();
+    }
+}
+
+
+// ============================================================
 // AUDIO SEND THREAD
 // ============================================================
 //
@@ -1695,6 +1844,16 @@ void AudioSendThread()
 
 
     g_audioCapture.SelectDeviceInteractively();
+
+
+    // O console ficou livre: no modo de convite manual, passa
+    // a aceitar as RESPOSTAS dos espectadores.
+    if (g_inviteMode)
+    {
+        std::thread(
+            InviteReplyLoop
+        ).detach();
+    }
 
 
     if (!g_audioCapture.Start())

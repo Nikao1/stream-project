@@ -9,6 +9,13 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+# Os fontes estao em UTF-8 e a interface mostra textos com
+# acento: sem isso o MSVC le os arquivos na pagina de codigo do
+# Windows e os acentos saem trocados na tela.
+if (MSVC)
+    add_compile_options(/utf-8)
+endif()
+
 
 # ================================================================
 # libopus (via FetchContent - baixa e compila junto com o projeto)
@@ -54,6 +61,41 @@ target_include_directories(monocypher PUBLIC
 )
 
 
+# ================================================================
+# Dear ImGui (interface grafica, desenhada por cima do Direct3D 11)
+#
+# Tambem nao traz CMakeLists proprio: a biblioteca e montada aqui
+# com o nucleo + os backends de Win32 e DirectX 11.
+# ================================================================
+
+FetchContent_Declare(
+    imgui
+    GIT_REPOSITORY https://github.com/ocornut/imgui.git
+    GIT_TAG        v1.91.5
+)
+
+FetchContent_MakeAvailable(imgui)
+
+add_library(imgui STATIC
+    ${imgui_SOURCE_DIR}/imgui.cpp
+    ${imgui_SOURCE_DIR}/imgui_draw.cpp
+    ${imgui_SOURCE_DIR}/imgui_tables.cpp
+    ${imgui_SOURCE_DIR}/imgui_widgets.cpp
+    ${imgui_SOURCE_DIR}/backends/imgui_impl_win32.cpp
+    ${imgui_SOURCE_DIR}/backends/imgui_impl_dx11.cpp
+)
+
+target_include_directories(imgui PUBLIC
+    ${imgui_SOURCE_DIR}
+    ${imgui_SOURCE_DIR}/backends
+)
+
+# Sem suporte a controle de videogame (evita depender do XInput).
+target_compile_definitions(imgui PRIVATE
+    IMGUI_IMPL_WIN32_DISABLE_GAMEPAD
+)
+
+
 add_executable(stream-client WIN32
     src/main.cpp
 
@@ -86,13 +128,24 @@ add_executable(stream-client WIN32
     src/stream_crypto.cpp
     src/stream_crypto.h
 
+    src/invite_code.cpp
+    src/invite_code.h
+
     src/ffmpeg_check.cpp
     src/ffmpeg_check.h
 )
 
 
-add_executable(stream-receiver
+# WIN32 = programa de janela: o Windows nao abre console junto.
+add_executable(stream-receiver WIN32
     src/receiver.cpp
+
+    src/ui_common.cpp
+    src/ui_common.h
+    src/ui_widgets.cpp
+    src/ui_widgets.h
+    src/receiver_screens.cpp
+    src/receiver_screens.h
 
     src/h264_decoder.cpp
     src/h264_decoder.h
@@ -113,6 +166,9 @@ add_executable(stream-receiver
 
     src/stream_crypto.cpp
     src/stream_crypto.h
+
+    src/invite_code.cpp
+    src/invite_code.h
 
     src/ffmpeg_check.cpp
     src/ffmpeg_check.h
@@ -159,4 +215,7 @@ target_link_libraries(stream-receiver PRIVATE
     winhttp
     monocypher
     bcrypt
+    imgui
+    dwmapi
+    shell32
 )

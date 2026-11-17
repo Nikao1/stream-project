@@ -35,6 +35,12 @@
 std::string GetSignalingUrl();
 
 
+// true quando STREAM_SIGNALING_URL=none: o usuario escolheu nao
+// usar servidor de sinalizacao (a conexao e feita por convite
+// manual - ver invite_code.h).
+bool SignalingIsDisabled();
+
+
 // IP local "principal" desta maquina (o da interface que sai
 // pra internet). Precisa do Winsock ja inicializado.
 std::string GetPrimaryLocalIp();

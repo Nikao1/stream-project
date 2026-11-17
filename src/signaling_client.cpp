@@ -330,7 +330,10 @@ bool HttpPostWaking(
 {
     std::string url = GetSignalingUrl();
 
+    // "none" = sinalizacao desligada de proposito (ver
+    // SignalingIsDisabled): tambem nao ha o que esperar.
     bool isLocal =
+        url == "none" ||
         url.find("127.0.0.1") != std::string::npos ||
         url.find("localhost") != std::string::npos;
 
@@ -422,6 +425,16 @@ std::string GetSignalingUrl()
     }
 
     return DEFAULT_SIGNALING_URL;
+}
+
+
+// ============================================================
+// SignalingIsDisabled
+// ============================================================
+
+bool SignalingIsDisabled()
+{
+    return GetSignalingUrl() == "none";
 }
 
 
@@ -748,6 +761,9 @@ bool SignalingHost::Start(
 {
     if (m_running)
         return true;
+
+    if (SignalingIsDisabled())
+        return false;
 
     m_hostKeyHex = hostKeyHex;
 

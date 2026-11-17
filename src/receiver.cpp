@@ -1,6 +1,7 @@
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <windows.h>
+#include <shellapi.h>
 #include <fstream>
 #include <iterator>
 
@@ -13,6 +14,8 @@
 #include <cstdint>
 #include <vector>
 #include <thread>
+#include <chrono>
+#include <cstdio>
 #include <mutex>
 #include <atomic>
 #include <cstring>
@@ -26,6 +29,9 @@
 #include "nat_traversal.h"
 #include "ffmpeg_check.h"
 #include "stream_crypto.h"
+#include "invite_code.h"
+#include "ui_common.h"
+#include "receiver_screens.h"
 
 #pragma comment(lib, "ws2_32.lib")
 
@@ -316,12 +322,32 @@ std::string g_sessionCode;
 // socket. Nao faz nada em conexao direta por IP.
 // ============================================================
 
+// Modo de convite manual (ver invite_code.h): entramos colando
+// o CONVITE de quem transmite, sem servidor de sinalizacao.
+bool g_inviteMode =
+    false;
+
+std::mutex g_replyMutex;
+
+StunResult g_myStun[2];
+
+bool g_replyPrinted =
+    false;
+
+// Texto da RESPOSTA (convite manual), pra interface mostrar com
+// um botao de copiar. Protegido por g_replyMutex.
+std::string g_replyText;
+
+
 void AnnounceToSession(
     SOCKET socket,
     bool isAudio)
 {
-    if (g_sessionCode.empty())
+    if (g_sessionCode.empty() &&
+        !g_inviteMode)
+    {
         return;
+    }
 
 
     const char* channel =
@@ -362,23 +388,79 @@ void AnnounceToSession(
     }
 
 
-    std::string error;
+    // --------------------------------------------------------
+    // Sessao por codigo: o servidor de sinalizacao repassa o
+    // nosso endereco pra quem transmite.
+    // --------------------------------------------------------
 
-
-    if (!SignalingAnnounceViewer(
-            g_sessionCode,
-            isAudio,
-            stun.publicIp,
-            stun.publicPort,
-            error))
+    if (!g_sessionCode.empty())
     {
-        std::cout
-            << "Sinalizacao ("
-            << channel
-            << "): "
-            << error
-            << "\n";
+        std::string error;
+
+        if (!SignalingAnnounceViewer(
+                g_sessionCode,
+                isAudio,
+                stun.publicIp,
+                stun.publicPort,
+                error))
+        {
+            std::cout
+                << "Sinalizacao ("
+                << channel
+                << "): "
+                << error
+                << "\n";
+        }
+
+        return;
     }
+
+
+    // --------------------------------------------------------
+    // Convite manual: quem repassa e o proprio usuario. Quando
+    // os dois canais (video e audio) tiverem endereco, mostra
+    // a RESPOSTA pra ele enviar de volta.
+    // --------------------------------------------------------
+
+    std::lock_guard<std::mutex> lock(
+        g_replyMutex
+    );
+
+    g_myStun[isAudio ? 1 : 0] =
+        stun;
+
+    ViewerReply reply;
+
+    if (g_replyPrinted ||
+        !g_myStun[0].ok ||
+        !g_myStun[1].ok ||
+        !ParseIpv4(
+            g_myStun[0].publicIp,
+            reply.publicIp))
+    {
+        return;
+    }
+
+    reply.publicVideoPort =
+        g_myStun[0].publicPort;
+
+    reply.publicAudioPort =
+        g_myStun[1].publicPort;
+
+    g_replyPrinted =
+        true;
+
+    g_replyText =
+        EncodeViewerReply(reply);
+
+    std::cout
+        << "\n========================================\n"
+        << "RESPOSTA - copie e envie pra quem transmite:\n\n"
+        << EncodeViewerReply(reply)
+        << "\n\n"
+        << "(necessaria quando voces estao em redes\n"
+        << "diferentes; na mesma rede conecta sem ela)\n"
+        << "========================================\n\n";
 }
 
 
@@ -955,11 +1037,8 @@ void TryPresentPendingFrames()
         );
 
 
-        InvalidateRect(
-            g_hwnd,
-            nullptr,
-            FALSE
-        );
+        // Nao precisa pedir repintura: o laco principal
+        // redesenha a janela a cada vsync (ver main).
     }
 }
 
@@ -3140,6 +3219,714 @@ void ResizeRenderer(
 
 
 // ============================================================
+// INTERFACE + CONEXAO
+// ============================================================
+//
+// O programa abre direto numa janela com a tela de conexao (o
+// console de antes virou arquivo de log). O fluxo:
+//
+//   Connect     -> usuario digita codigo / cola convite / IP
+//   Connecting  -> uma thread resolve o destino e abre a rede
+//                  (a interface continua respondendo)
+//   Connected   -> threads de video e audio rodando; ate o
+//                  primeiro frame chegar, mostra "aguardando"
+//
+// FfmpegProblem aparece no lugar de tudo se o ffmpeg.exe faltar
+// ou estiver quebrado.
+// ============================================================
+
+enum class UiState
+{
+    FfmpegProblem,
+    Connect,
+    Connecting,
+    Connected
+};
+
+std::atomic<UiState> g_uiState{ UiState::Connect };
+
+// Protege os textos abaixo (escritos pela thread de conexao,
+// lidos pela interface).
+std::mutex g_uiMutex;
+
+std::string g_uiError;
+
+std::string g_uiStatus;
+
+std::string g_ffmpegProblem;
+
+// Campo de texto da tela de conexao (so a thread da interface
+// mexe nele).
+char g_uiInput[256]{};
+
+std::atomic<bool> g_connectBusy{ false };
+
+std::thread g_connectThread;
+
+std::thread g_receiverThread;
+
+std::thread g_audioReceiverThread;
+
+
+void SetUiStatus(
+    const std::string& text)
+{
+    std::lock_guard<std::mutex> lock(
+        g_uiMutex
+    );
+
+    g_uiStatus =
+        text;
+}
+
+
+// Volta tudo que uma tentativa de conexao anterior possa ter
+// deixado preenchido, pra uma nova tentativa comecar limpa.
+void ResetConnectionState()
+{
+    g_sessionCode.clear();
+
+    g_inviteMode =
+        false;
+
+    g_authenticatedMode =
+        false;
+
+    {
+        std::lock_guard<std::mutex> lock(
+            g_cryptoMutex
+        );
+
+        g_haveSessionKey =
+            false;
+    }
+
+    g_serverIp =
+        "127.0.0.1";
+
+    g_serverVideoPort =
+        SERVER_UDP_PORT;
+
+    g_serverAudioPort =
+        AUDIO_SERVER_UDP_PORT;
+
+    g_serverAltIp.clear();
+
+    g_serverAltVideoPort =
+        0;
+
+    g_serverAltAudioPort =
+        0;
+
+    g_haveAltAddress =
+        false;
+
+    {
+        std::lock_guard<std::mutex> lock(
+            g_replyMutex
+        );
+
+        g_replyPrinted =
+            false;
+
+        g_replyText.clear();
+
+        g_myStun[0] =
+            StunResult{};
+
+        g_myStun[1] =
+            StunResult{};
+    }
+}
+
+
+// ============================================================
+// ResolveTarget
+// ============================================================
+//
+// Interpreta o que o usuario digitou e descobre pra onde
+// conectar:
+//
+//   - em branco            -> este mesmo computador
+//   - convite ("SPH1...")  -> conexao sem servidor
+//   - codigo de sessao     -> pergunta ao servidor de sinalizacao
+//   - endereco IP          -> conexao direta
+// ============================================================
+
+bool ResolveTarget(
+    std::string input,
+    std::string& outError)
+{
+    size_t first =
+        input.find_first_not_of(" \t\r\n");
+
+    size_t last =
+        input.find_last_not_of(" \t\r\n");
+
+    input =
+        first == std::string::npos
+        ? ""
+        : input.substr(first, last - first + 1);
+
+
+    if (input.empty())
+    {
+        g_serverIp =
+            "127.0.0.1";
+
+        return true;
+    }
+
+
+    // --------------------------------------------------------
+    // Convite manual
+    // --------------------------------------------------------
+
+    if (LooksLikeHostInvite(input))
+    {
+        HostInvite invite;
+
+        if (!DecodeHostInvite(input, invite) ||
+            !EstablishSessionKey(invite.hostKey))
+        {
+            outError =
+                "Convite incompleto ou alterado. Copie o texto "
+                "inteiro de novo.";
+
+            return false;
+        }
+
+        g_authenticatedMode =
+            true;
+
+        g_inviteMode =
+            true;
+
+        std::string localIp =
+            FormatIpv4(invite.localIp);
+
+        if (!IsZeroIpv4(invite.publicIp))
+        {
+            // Caminho principal pela internet, com a rede local
+            // como alternativa (o HELLO vai pros dois; segue o
+            // que responder).
+            g_serverIp =
+                FormatIpv4(invite.publicIp);
+
+            g_serverVideoPort =
+                invite.publicVideoPort;
+
+            g_serverAudioPort =
+                invite.publicAudioPort;
+
+            g_serverAltIp =
+                localIp;
+
+            g_serverAltVideoPort =
+                invite.localVideoPort;
+
+            g_serverAltAudioPort =
+                invite.localAudioPort;
+        }
+        else
+        {
+            g_serverIp =
+                localIp;
+
+            g_serverVideoPort =
+                invite.localVideoPort;
+
+            g_serverAudioPort =
+                invite.localAudioPort;
+        }
+
+        std::cout
+            << "Convite aceito.\n";
+
+        return true;
+    }
+
+
+    // --------------------------------------------------------
+    // Codigo de sessao
+    // --------------------------------------------------------
+
+    if (LooksLikeSessionCode(input))
+    {
+        SetUiStatus(
+            "Procurando a sessão"
+        );
+
+        std::cout
+            << "Procurando a sessao "
+            << input
+            << "...\n";
+
+        SignalingHostInfo host;
+
+        std::string error;
+
+        if (!SignalingJoinSession(
+                input,
+                host,
+                error))
+        {
+            std::cout
+                << "Nao foi possivel entrar na sessao: "
+                << error
+                << "\n";
+
+            // O detalhe tecnico fica no log; na tela vai uma
+            // frase que a pessoa consiga agir em cima.
+            if (error.find("sessao nao encontrada") !=
+                std::string::npos)
+            {
+                outError =
+                    "Sessão não encontrada. Confira o código - "
+                    "ou a transmissão já foi encerrada.";
+            }
+            else
+            {
+                outError =
+                    "Não foi possível falar com o servidor de "
+                    "sessões. Verifique sua internet e tente de "
+                    "novo.";
+            }
+
+            return false;
+        }
+
+        // Chave publica de quem transmite: sem ela nao ha como
+        // montar o canal cifrado.
+        uint8_t hostPublicKey[CRYPTO_KEY_SIZE];
+
+        if (!CryptoFromHex(
+                host.hostKey,
+                hostPublicKey,
+                CRYPTO_KEY_SIZE) ||
+            !EstablishSessionKey(hostPublicKey))
+        {
+            outError =
+                "Quem está transmitindo usa uma versão antiga "
+                "do programa, sem criptografia. Peça para "
+                "atualizar e tente de novo.";
+
+            return false;
+        }
+
+        g_authenticatedMode =
+            true;
+
+        g_sessionCode =
+            input;
+
+        // Mesma rede: IP e portas locais do host. Redes
+        // diferentes: IP e portas publicas. O outro caminho
+        // fica como alternativa.
+        g_serverIp =
+            host.sameNetwork
+            ? host.localIp
+            : host.publicIp;
+
+        g_serverVideoPort =
+            host.sameNetwork
+            ? host.videoPort
+            : host.publicVideoPort;
+
+        g_serverAudioPort =
+            host.sameNetwork
+            ? host.audioPort
+            : host.publicAudioPort;
+
+        g_serverAltIp =
+            host.sameNetwork
+            ? host.publicIp
+            : host.localIp;
+
+        g_serverAltVideoPort =
+            host.sameNetwork
+            ? host.publicVideoPort
+            : host.videoPort;
+
+        g_serverAltAudioPort =
+            host.sameNetwork
+            ? host.publicAudioPort
+            : host.audioPort;
+
+        std::cout
+            << "Sessao encontrada ("
+            << (host.sameNetwork
+                ? "mesma rede"
+                : "redes diferentes")
+            << ").\n";
+
+        return true;
+    }
+
+
+    // --------------------------------------------------------
+    // Endereco IP
+    // --------------------------------------------------------
+
+    uint8_t ip[4];
+
+    if (!ParseIpv4(input, ip))
+    {
+        outError =
+            "Isso não parece um código de sessão (6 letras e "
+            "números), um convite nem um endereço IP.";
+
+        return false;
+    }
+
+    g_serverIp =
+        input;
+
+    return true;
+}
+
+
+// ============================================================
+// SetupVideoSocket
+// ============================================================
+//
+// Cria o socket UDP de video, descobre o endereco publico dele
+// (STUN) e avisa quem transmite, conforme o modo de conexao.
+// ============================================================
+
+bool SetupVideoSocket(
+    std::string& outError)
+{
+    g_udpSocket =
+        socket(
+            AF_INET,
+            SOCK_DGRAM,
+            IPPROTO_UDP
+        );
+
+    if (g_udpSocket == INVALID_SOCKET)
+    {
+        outError =
+            "Falha ao criar o socket de rede (erro " +
+            std::to_string(WSAGetLastError()) +
+            ").";
+
+        return false;
+    }
+
+
+    int receiveBufferSize =
+        UDP_RECEIVE_BUFFER_SIZE;
+
+    setsockopt(
+        g_udpSocket,
+        SOL_SOCKET,
+        SO_RCVBUF,
+        reinterpret_cast<const char*>(
+            &receiveBufferSize),
+        sizeof(receiveBufferSize)
+    );
+
+
+    g_localVideoPort =
+        BindUdpWithFallback(
+            g_udpSocket,
+            UDP_PORT
+        );
+
+    if (g_localVideoPort == 0)
+    {
+        outError =
+            "Falha ao abrir a porta de rede (erro " +
+            std::to_string(WSAGetLastError()) +
+            ").";
+
+        closesocket(g_udpSocket);
+
+        g_udpSocket =
+            INVALID_SOCKET;
+
+        return false;
+    }
+
+    std::cout
+        << "UDP receiver na porta "
+        << g_localVideoPort
+        << "\n";
+
+
+    if (!MakeEndpoint(
+            g_serverIp,
+            g_serverVideoPort,
+            g_serverAddress))
+    {
+        outError =
+            "Endereço de quem transmite inválido: " +
+            g_serverIp +
+            ".";
+
+        closesocket(g_udpSocket);
+
+        g_udpSocket =
+            INVALID_SOCKET;
+
+        return false;
+    }
+
+    g_haveAltAddress =
+        !g_serverAltIp.empty() &&
+        MakeEndpoint(
+            g_serverAltIp,
+            g_serverAltVideoPort,
+            g_serverAltAddress) &&
+        !SameEndpoint(
+            g_serverAltAddress,
+            g_serverAddress);
+
+
+    // Hole punching (sessao por codigo ou convite manual).
+    AnnounceToSession(
+        g_udpSocket,
+        false
+    );
+
+    std::cout
+        << "Servidor configurado: "
+        << g_serverIp
+        << ":"
+        << g_serverVideoPort
+        << "\n";
+
+    return true;
+}
+
+
+// ============================================================
+// ConnectWorker / StartConnect
+// ============================================================
+//
+// A conexao roda numa thread propria porque pode demorar (o
+// servidor de sinalizacao gratuito leva ate ~1 minuto pra
+// "acordar"; o STUN, alguns segundos). A interface segue viva
+// e mostra o andamento.
+// ============================================================
+
+void ConnectWorker(
+    std::string input)
+{
+    ResetConnectionState();
+
+    std::string error;
+
+    bool ok =
+        ResolveTarget(input, error);
+
+    if (ok)
+    {
+        SetUiStatus(
+            "Preparando a conexão"
+        );
+
+        ok =
+            SetupVideoSocket(error);
+    }
+
+    if (!ok)
+    {
+        {
+            std::lock_guard<std::mutex> lock(
+                g_uiMutex
+            );
+
+            g_uiError =
+                error;
+        }
+
+        g_uiState =
+            UiState::Connect;
+
+        g_connectBusy =
+            false;
+
+        return;
+    }
+
+    g_receiverThread =
+        std::thread(ReceiverThread);
+
+    g_audioReceiverThread =
+        std::thread(AudioReceiverThread);
+
+    g_uiState =
+        UiState::Connected;
+
+    g_connectBusy =
+        false;
+}
+
+
+void StartConnect()
+{
+    if (g_connectBusy.exchange(true))
+        return;
+
+    // A tentativa anterior (se houve) ja terminou - so falta
+    // recolher a thread.
+    if (g_connectThread.joinable())
+    {
+        g_connectThread.join();
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(
+            g_uiMutex
+        );
+
+        g_uiError.clear();
+
+        g_uiStatus =
+            "Conectando";
+    }
+
+    g_uiState =
+        UiState::Connecting;
+
+    g_connectThread =
+        std::thread(
+            ConnectWorker,
+            std::string(g_uiInput)
+        );
+}
+
+
+// ============================================================
+// DrawReceiverUi
+// ============================================================
+//
+// Chamada uma vez por frame, de dentro do RenderFrame, com o
+// render target ja ativo. Durante o stream nao desenha nada -
+// o video ocupa a janela inteira.
+// ============================================================
+
+void DrawReceiverUi()
+{
+    UiBeginFrame();
+
+    UiState state =
+        g_uiState.load();
+
+    ReceiverScreenActions actions;
+
+
+    if (state == UiState::FfmpegProblem)
+    {
+        std::string problem;
+
+        {
+            std::lock_guard<std::mutex> lock(
+                g_uiMutex
+            );
+
+            problem =
+                g_ffmpegProblem;
+        }
+
+        DrawFfmpegProblemScreen(
+            problem,
+            actions
+        );
+    }
+    else if (state == UiState::Connect ||
+             state == UiState::Connecting)
+    {
+        std::string error;
+        std::string status;
+
+        {
+            std::lock_guard<std::mutex> lock(
+                g_uiMutex
+            );
+
+            error =
+                g_uiError;
+
+            status =
+                g_uiStatus;
+        }
+
+        DrawConnectScreen(
+            g_uiInput,
+            sizeof(g_uiInput),
+            state == UiState::Connecting,
+            status,
+            error,
+            actions
+        );
+    }
+    else if (!g_streamReceived)
+    {
+        std::string reply;
+
+        {
+            std::lock_guard<std::mutex> lock(
+                g_replyMutex
+            );
+
+            reply =
+                g_replyText;
+        }
+
+        DrawWaitingScreen(reply);
+    }
+
+
+    UiEndFrame();
+
+
+    // --------------------------------------------------------
+    // O que o usuario pediu nesta tela
+    // --------------------------------------------------------
+
+    if (actions.connect)
+    {
+        StartConnect();
+    }
+
+    if (actions.openDownloadPage)
+    {
+        ShellExecuteW(
+            nullptr,
+            L"open",
+            L"https://www.gyan.dev/ffmpeg/builds/",
+            nullptr,
+            nullptr,
+            SW_SHOWNORMAL
+        );
+    }
+
+    if (actions.recheckFfmpeg)
+    {
+        std::string again;
+
+        if (CheckFfmpegAvailable(again))
+        {
+            g_uiState =
+                UiState::Connect;
+        }
+        else
+        {
+            std::lock_guard<std::mutex> lock(
+                g_uiMutex
+            );
+
+            g_ffmpegProblem =
+                again;
+        }
+    }
+}
+
+
+// ============================================================
 // RenderFrame
 // ============================================================
 //
@@ -3226,11 +4013,33 @@ void RenderFrame()
                     width,
                     height))
             {
+                // A janela agora e redesenhada a cada vsync
+                // (por causa da interface). Copiar o frame pra
+                // textura so quando ele MUDOU evita mover
+                // megabytes por segundo a toa.
+                static uint64_t uploadedFrameNumber = ~0ull;
+                static uint32_t uploadedWidth = 0;
+                static uint32_t uploadedHeight = 0;
+
+                bool alreadyUploaded =
+                    g_frameNumber == uploadedFrameNumber &&
+                    width == uploadedWidth &&
+                    height == uploadedHeight;
+
+                if (alreadyUploaded)
+                {
+                    haveFrame =
+                        true;
+                }
+
+
                 D3D11_MAPPED_SUBRESOURCE mapped{};
 
 
                 HRESULT hr =
-                    g_rendererContext->Map(
+                    alreadyUploaded
+                    ? E_ABORT
+                    : g_rendererContext->Map(
                         g_videoTexture.Get(),
                         0,
                         D3D11_MAP_WRITE_DISCARD,
@@ -3273,6 +4082,15 @@ void RenderFrame()
 
                     haveFrame =
                         true;
+
+                    uploadedFrameNumber =
+                        g_frameNumber;
+
+                    uploadedWidth =
+                        width;
+
+                    uploadedHeight =
+                        height;
                 }
             }
         }
@@ -3419,6 +4237,10 @@ void RenderFrame()
     }
 
 
+    // Interface (telas de conexao, avisos) por cima do video.
+    DrawReceiverUi();
+
+
     // Present com vsync (1) - sincroniza com o monitor, evita
     // tearing e limita naturalmente a taxa de apresentação.
     g_swapChain->Present(
@@ -3440,6 +4262,18 @@ LRESULT CALLBACK WindowProc(
     WPARAM wParam,
     LPARAM lParam)
 {
+    // A interface ve as mensagens primeiro (mouse, teclado,
+    // texto digitado).
+    if (UiHandleWindowMessage(
+            hwnd,
+            uMsg,
+            wParam,
+            lParam))
+    {
+        return 1;
+    }
+
+
     switch (uMsg)
     {
     case WM_ERASEBKGND:
@@ -3501,7 +4335,11 @@ LRESULT CALLBACK WindowProc(
         // real que o receiver está desenhando.
         // ====================================================
 
-        if (wParam == 'S')
+        // (so durante o stream e fora de campos de texto - pra
+        // nao disparar ao digitar um codigo com a letra S)
+        if (wParam == 'S' &&
+            g_streamReceived &&
+            !UiWantsKeyboard())
         {
             SaveCurrentFrameAsBmp();
         }
@@ -3565,6 +4403,18 @@ LRESULT CALLBACK WindowProc(
 // MAIN
 // ============================================================
 
+void ShowFatalError(
+    const wchar_t* message)
+{
+    MessageBoxW(
+        nullptr,
+        message,
+        L"Stream Receiver",
+        MB_OK | MB_ICONERROR
+    );
+}
+
+
 int main()
 {
     // ========================================================
@@ -3580,8 +4430,41 @@ int main()
     );
 
 
+    // ========================================================
+    // LOG EM ARQUIVO
+    //
+    // O programa nao tem mais console: tudo que antes aparecia
+    // nele (std::cout / std::cerr) vai pra stream-receiver.log,
+    // na pasta do programa. E o arquivo a enviar quando algo
+    // der errado.
+    // ========================================================
+
+    {
+        FILE* logFile = nullptr;
+
+        if (freopen_s(
+                &logFile,
+                "stream-receiver.log",
+                "w",
+                stdout) == 0)
+        {
+            // Sem buffer: se o programa fechar de repente, o
+            // log ja esta no disco.
+            setvbuf(
+                stdout,
+                nullptr,
+                _IONBF,
+                0
+            );
+        }
+
+        std::cerr.rdbuf(
+            std::cout.rdbuf()
+        );
+    }
+
     std::cout
-        << "========== RECEIVER H264 UDP ==========\n";
+        << "========== STREAM RECEIVER ==========\n";
 
 
     // Comecar com o log do decoder vazio a cada execucao.
@@ -3594,434 +4477,26 @@ int main()
     // Par de chaves desta execucao (criptografia do canal).
     if (!CryptoGenerateKeyPair(g_myKeys))
     {
-        std::cout
-            << "Falha ao gerar as chaves de criptografia.\n"
-            << "Pressione Enter para sair.\n";
-
-        std::cin.get();
+        ShowFatalError(
+            L"Falha ao gerar as chaves de criptografia."
+        );
 
         return 1;
     }
 
-
-    // Sem ffmpeg funcionando nao ha video - melhor avisar ja
-    // do que deixar a pessoa olhando pra uma tela preta.
-    {
-        std::string ffmpegProblem;
-
-        if (!CheckFfmpegAvailable(ffmpegProblem))
-        {
-            PrintFfmpegHelp(ffmpegProblem);
-
-            std::cout
-                << "Pressione Enter para sair.\n";
-
-            std::cin.get();
-
-            return 1;
-        }
-    }
-
-
-    std::cout
-        << "Stream Project - H264/NVENC\n\n";
-
-
-    // ========================================================
-    // CODIGO DA SESSAO ou IP
-    //
-    // - Codigo de sessao (6 letras/numeros, mostrado no
-    //   stream-client): o endereco de quem transmite vem do
-    //   servidor de sinalizacao.
-    // - IP digitado direto: conexao manual, como antes.
-    // - Em branco: 127.0.0.1 (tudo na mesma maquina).
-    // ========================================================
-
-    for (;;)
-    {
-        std::cout
-            << "Digite o CODIGO DA SESSAO mostrado no "
-            << "stream-client\n"
-            << "(ou o IP de quem transmite; em branco = este "
-            << "mesmo computador)\n"
-            << "Codigo ou IP: ";
-
-
-        std::string input;
-
-        if (!std::getline(
-                std::cin,
-                input))
-        {
-            return 1;
-        }
-
-
-        // tirar espacos nas pontas
-        size_t first =
-            input.find_first_not_of(" \t\r");
-
-        size_t last =
-            input.find_last_not_of(" \t\r");
-
-        input =
-            first == std::string::npos
-            ? ""
-            : input.substr(first, last - first + 1);
-
-
-        if (input.empty())
-        {
-            g_serverIp =
-                "127.0.0.1";
-
-            break;
-        }
-
-
-        if (!LooksLikeSessionCode(input))
-        {
-            g_serverIp =
-                input;
-
-            break;
-        }
-
-
-        std::cout
-            << "Procurando a sessao "
-            << input
-            << "...\n";
-
-
-        SignalingHostInfo host;
-
-        std::string error;
-
-
-        if (!SignalingJoinSession(
-                input,
-                host,
-                error))
-        {
-            std::cout
-                << "Nao foi possivel entrar na sessao: "
-                << error
-                << "\n\n";
-
-            continue;
-        }
-
-
-        // Chave publica de quem transmite: sem ela nao ha como
-        // montar o canal cifrado.
-        uint8_t hostPublicKey[CRYPTO_KEY_SIZE];
-
-        if (!CryptoFromHex(
-                host.hostKey,
-                hostPublicKey,
-                CRYPTO_KEY_SIZE) ||
-            !EstablishSessionKey(hostPublicKey))
-        {
-            std::cout
-                << "Quem esta transmitindo usa uma versao "
-                << "antiga do programa, sem criptografia.\n"
-                << "Peca pra atualizar o stream-client e "
-                << "tente de novo.\n\n";
-
-            continue;
-        }
-
-        g_authenticatedMode =
-            true;
-
-
-        g_serverIp =
-            host.sameNetwork
-            ? host.localIp
-            : host.publicIp;
-
-        // Mesma rede: IP e portas locais do host. Redes
-        // diferentes: IP e portas publicas (as que o roteador
-        // dele expoe, descobertas por STUN).
-        g_serverVideoPort =
-            host.sameNetwork
-            ? host.videoPort
-            : host.publicVideoPort;
-
-        g_serverAudioPort =
-            host.sameNetwork
-            ? host.audioPort
-            : host.publicAudioPort;
-
-        g_sessionCode =
-            input;
-
-        // O outro caminho (o que o servidor NAO escolheu).
-        g_serverAltIp =
-            host.sameNetwork
-            ? host.publicIp
-            : host.localIp;
-
-        g_serverAltVideoPort =
-            host.sameNetwork
-            ? host.publicVideoPort
-            : host.videoPort;
-
-        g_serverAltAudioPort =
-            host.sameNetwork
-            ? host.publicAudioPort
-            : host.audioPort;
-
-
-        std::cout
-            << "Sessao encontrada ("
-            << (host.sameNetwork
-                ? "mesma rede"
-                : "redes diferentes")
-            << ").\n";
-
-
-        if (!host.sameNetwork)
-        {
-            std::cout
-                << "Conectando direto pela internet (hole "
-                << "punching) - pode levar alguns segundos.\n";
-        }
-
-        break;
-    }
-
-
-    std::cout
-        << "\nServidor: "
-        << g_serverIp
-        << "\n\n";
-
-
-    // ========================================================
-    // Winsock
-    // ========================================================
 
     WSADATA wsaData{};
 
-
-    if (
-        WSAStartup(
+    if (WSAStartup(
             MAKEWORD(2, 2),
-            &wsaData
-        ) != 0)
+            &wsaData) != 0)
     {
-        std::cout
-            << "Falha ao iniciar Winsock.\n";
-
+        ShowFatalError(
+            L"Falha ao iniciar a rede do Windows (Winsock)."
+        );
 
         return 1;
     }
-
-
-    // ========================================================
-    // Socket UDP
-    // ========================================================
-
-    g_udpSocket =
-        socket(
-            AF_INET,
-            SOCK_DGRAM,
-            IPPROTO_UDP
-        );
-
-
-    if (
-        g_udpSocket ==
-        INVALID_SOCKET)
-    {
-        std::cout
-            << "Falha ao criar socket UDP.\n";
-
-
-        WSACleanup();
-
-
-        return 1;
-    }
-
-
-    // ========================================================
-    // Buffer UDP
-    // ========================================================
-
-    int receiveBufferSize =
-        UDP_RECEIVE_BUFFER_SIZE;
-
-
-    if (
-        setsockopt(
-            g_udpSocket,
-            SOL_SOCKET,
-            SO_RCVBUF,
-            reinterpret_cast<
-                const char*
-            >(
-                &receiveBufferSize
-            ),
-            sizeof(receiveBufferSize)
-        ) == SOCKET_ERROR)
-    {
-        std::cout
-            << "Aviso: SO_RCVBUF falhou. Erro: "
-            << WSAGetLastError()
-            << "\n";
-    }
-    else
-    {
-        std::cout
-            << "Buffer UDP solicitado: "
-            << UDP_RECEIVE_BUFFER_SIZE /
-                (1024 * 1024)
-            << " MB\n";
-    }
-
-
-    // ========================================================
-    // Bind
-    // ========================================================
-
-    sockaddr_in localAddress{};
-
-
-    localAddress.sin_family =
-        AF_INET;
-
-
-    localAddress.sin_addr.s_addr =
-        htonl(
-            INADDR_ANY
-        );
-
-
-    localAddress.sin_port =
-        htons(
-            UDP_PORT
-        );
-
-
-    g_localVideoPort =
-        BindUdpWithFallback(
-            g_udpSocket,
-            UDP_PORT
-        );
-
-    if (g_localVideoPort == 0)
-    {
-        std::cout
-            << "Falha no bind UDP.\n"
-            << "Erro: "
-            << WSAGetLastError()
-            << "\n";
-
-        closesocket(
-            g_udpSocket
-        );
-
-        WSACleanup();
-
-        return 1;
-    }
-
-
-    if (g_localVideoPort != UDP_PORT)
-    {
-        std::cout
-            << "Porta "
-            << UDP_PORT
-            << " ocupada (outro receiver aberto?) - usando "
-            << "outra.\n";
-    }
-
-
-    std::cout
-        << "UDP receiver na porta "
-        << g_localVideoPort
-        << "\n";
-
-
-    // ========================================================
-    // Endereço do servidor
-    // ========================================================
-
-    sockaddr_in serverAddress{};
-
-
-    serverAddress.sin_family =
-        AF_INET;
-
-
-    serverAddress.sin_port =
-        htons(
-            g_serverVideoPort
-        );
-
-
-    if (
-        inet_pton(
-            AF_INET,
-            g_serverIp.c_str(),
-            &serverAddress.sin_addr
-        ) != 1)
-    {
-        std::cout
-            << "Falha ao configurar endereco do servidor.\n";
-
-
-        closesocket(
-            g_udpSocket
-        );
-
-
-        WSACleanup();
-
-
-        return 1;
-    }
-
-
-    // ========================================================
-    // Salvar endereço do servidor globalmente
-    // ========================================================
-
-    g_serverAddress =
-        serverAddress;
-
-    g_haveAltAddress =
-        !g_serverAltIp.empty() &&
-        MakeEndpoint(
-            g_serverAltIp,
-            g_serverAltVideoPort,
-            g_serverAltAddress) &&
-        !SameEndpoint(
-            g_serverAltAddress,
-            g_serverAddress);
-
-
-    // Hole punching (so quando entramos por codigo de sessao).
-    AnnounceToSession(
-        g_udpSocket,
-        false
-    );
-
-
-    std::cout
-        << "Servidor configurado: "
-        << g_serverIp
-        << ":"
-        << g_serverVideoPort
-        << "\n";
-
-
-    std::cout
-        << "HELLO sera enviado automaticamente "
-        << "a cada 1 segundo ate o stream iniciar.\n\n";
 
 
     // ========================================================
@@ -4031,27 +4506,19 @@ int main()
     const wchar_t CLASS_NAME[] =
         L"StreamReceiverWindow";
 
-
     HINSTANCE hInstance =
-        GetModuleHandleW(
-            nullptr
-        );
-
+        GetModuleHandleW(nullptr);
 
     WNDCLASSW wc{};
-
 
     wc.lpfnWndProc =
         WindowProc;
 
-
     wc.hInstance =
         hInstance;
 
-
     wc.lpszClassName =
         CLASS_NAME;
-
 
     wc.hCursor =
         LoadCursor(
@@ -4059,99 +4526,93 @@ int main()
             IDC_ARROW
         );
 
-
     wc.hbrBackground =
         static_cast<HBRUSH>(
-            GetStockObject(
-                BLACK_BRUSH
-            )
-        );
+            GetStockObject(BLACK_BRUSH));
 
-
-    if (
-        !RegisterClassW(
-            &wc
-        ))
+    if (!RegisterClassW(&wc))
     {
-        std::cout
-            << "Falha ao registrar janela.\n";
-
-
-        closesocket(
-            g_udpSocket
+        ShowFatalError(
+            L"Falha ao registrar a janela."
         );
-
 
         WSACleanup();
 
-
         return 1;
     }
-
-
-    // ========================================================
-    // Criar janela
-    // ========================================================
 
     g_hwnd =
         CreateWindowExW(
             0,
-
             CLASS_NAME,
-
-            L"Stream Receiver H264",
-
+            L"Stream Receiver",
             WS_OVERLAPPEDWINDOW,
-
             CW_USEDEFAULT,
             CW_USEDEFAULT,
-
             1000,
             700,
-
             nullptr,
             nullptr,
-
             hInstance,
             nullptr
         );
 
-
     if (!g_hwnd)
     {
-        std::cout
-            << "Falha ao criar janela.\n";
-
-
-        closesocket(
-            g_udpSocket
+        ShowFatalError(
+            L"Falha ao criar a janela."
         );
-
 
         WSACleanup();
 
+        return 1;
+    }
+
+    if (!InitializeD3D11Renderer(g_hwnd))
+    {
+        ShowFatalError(
+            L"Falha ao inicializar o Direct3D 11. Atualize o "
+            L"driver da placa de vídeo e tente de novo."
+        );
+
+        WSACleanup();
+
+        return 1;
+    }
+
+    if (!UiInit(
+            g_hwnd,
+            g_rendererDevice.Get(),
+            g_rendererContext.Get()))
+    {
+        ShowFatalError(
+            L"Falha ao inicializar a interface."
+        );
+
+        WSACleanup();
 
         return 1;
     }
 
 
-    if (!InitializeD3D11Renderer(
-            g_hwnd))
+    // Sem ffmpeg funcionando nao ha video - a interface abre
+    // direto na tela que explica como resolver.
     {
-        std::cout
-            << "Falha ao inicializar o renderizador "
-            << "Direct3D 11.\n";
+        std::string ffmpegProblem;
 
+        if (!CheckFfmpegAvailable(ffmpegProblem))
+        {
+            std::cout
+                << "Problema com o ffmpeg: "
+                << ffmpegProblem
+                << "\n";
 
-        closesocket(
-            g_udpSocket
-        );
+            g_ffmpegProblem =
+                ffmpegProblem;
 
-
-        WSACleanup();
-
-
-        return 1;
+            g_uiState =
+                UiState::FfmpegProblem;
+        }
     }
 
 
@@ -4160,49 +4621,72 @@ int main()
         SW_SHOW
     );
 
-
     UpdateWindow(
         g_hwnd
     );
 
 
     // ========================================================
-    // Thread UDP
+    // Laco principal
+    //
+    // Processa as mensagens da janela e redesenha (video +
+    // interface) a cada vsync - o Present(1) do RenderFrame e
+    // quem dita o ritmo.
     // ========================================================
 
-    std::thread receiverThread(
-        ReceiverThread
-    );
+    bool quit =
+        false;
 
-
-    std::thread audioReceiverThread(
-        AudioReceiverThread
-    );
-
-
-    // ========================================================
-    // Message loop
-    // ========================================================
-
-    MSG msg{};
-
-
-    while (
-        GetMessageW(
-            &msg,
-            nullptr,
-            0,
-            0
-        ) > 0)
+    while (!quit)
     {
-        TranslateMessage(
-            &msg
-        );
+        MSG msg{};
+
+        while (PeekMessageW(
+                &msg,
+                nullptr,
+                0,
+                0,
+                PM_REMOVE))
+        {
+            if (msg.message == WM_QUIT)
+            {
+                quit =
+                    true;
+
+                break;
+            }
+
+            TranslateMessage(&msg);
+
+            DispatchMessageW(&msg);
+        }
+
+        if (quit)
+            break;
 
 
-        DispatchMessageW(
-            &msg
-        );
+        // Minimizada: nada pra desenhar.
+        if (IsIconic(g_hwnd))
+        {
+            Sleep(50);
+
+            continue;
+        }
+
+
+        auto frameStart =
+            std::chrono::steady_clock::now();
+
+        RenderFrame();
+
+        // Se o RenderFrame voltou sem esperar o vsync (janela
+        // encoberta, por exemplo), cede a CPU em vez de girar
+        // em falso.
+        if (std::chrono::steady_clock::now() - frameStart <
+            std::chrono::milliseconds(3))
+        {
+            Sleep(4);
+        }
     }
 
 
@@ -4213,14 +4697,7 @@ int main()
     g_running =
         false;
 
-
-    // ========================================================
-    // Desbloquear recvfrom()/select()
-    // ========================================================
-
-    if (
-        g_udpSocket !=
-        INVALID_SOCKET)
+    if (g_udpSocket != INVALID_SOCKET)
     {
         shutdown(
             g_udpSocket,
@@ -4229,59 +4706,71 @@ int main()
     }
 
 
-    // ========================================================
-    // Esperar thread UDP
-    // ========================================================
-
-    if (
-        receiverThread.joinable())
+    // Fechou no meio de uma tentativa de conexao (a espera pelo
+    // servidor pode durar ate 90s): nao ha nada a preservar,
+    // encerra o processo direto em vez de ficar aguardando.
+    if (g_connectBusy)
     {
-        receiverThread.join();
+        std::cout
+            << "\nReceiver encerrado durante a conexao.\n";
+
+        ExitProcess(0);
+    }
+
+    if (g_connectThread.joinable())
+    {
+        g_connectThread.join();
+    }
+
+    if (g_receiverThread.joinable())
+    {
+        g_receiverThread.join();
+    }
+
+    if (g_audioReceiverThread.joinable())
+    {
+        g_audioReceiverThread.join();
     }
 
 
-    if (
-        audioReceiverThread.joinable())
-    {
-        audioReceiverThread.join();
-    }
-
-
-    // ========================================================
-    // Agora o decoder pode ser encerrado com segurança
-    // ========================================================
-
+    // Agora o decoder pode ser encerrado com segurança.
     g_decoder.Stop();
 
 
-    // ========================================================
-    // Fechar socket
-    // ========================================================
-
-    if (
-        g_udpSocket !=
-        INVALID_SOCKET)
+    if (g_udpSocket != INVALID_SOCKET)
     {
-        closesocket(
-            g_udpSocket
-        );
-
+        closesocket(g_udpSocket);
 
         g_udpSocket =
             INVALID_SOCKET;
     }
 
 
-    // ========================================================
-    // Winsock
-    // ========================================================
+    UiShutdown();
 
     WSACleanup();
-
 
     std::cout
         << "\nReceiver encerrado.\n";
 
-
     return 0;
+}
+
+
+// ============================================================
+// Ponto de entrada sem console
+// ============================================================
+//
+// O executavel e do tipo "janela" (WIN32 no CMake), entao o
+// Windows nao abre console junto. O ponto de entrada desse
+// tipo de programa e o wWinMain, que so repassa pro main().
+// ============================================================
+
+int WINAPI wWinMain(
+    HINSTANCE,
+    HINSTANCE,
+    PWSTR,
+    int)
+{
+    return main();
 }
