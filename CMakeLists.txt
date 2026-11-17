@@ -1,8 +1,40 @@
 cmake_minimum_required(VERSION 3.20)
 
 project(stream-client
-    VERSION 0.1.0
+    VERSION 0.2.0
     LANGUAGES C CXX
+)
+
+# Recursos do Windows (icone e versao dos .exe - ver resources/).
+enable_language(RC)
+
+
+# ================================================================
+# Runtime do C++ embutido no .exe
+#
+# Por padrao o MSVC liga o programa a DLLs do "Microsoft Visual
+# C++ Redistributable" - quem nao o tem instalado ve o erro de
+# VCRUNTIME140.dll. Com o runtime estatico (/MT), tudo vai dentro
+# do executavel. Precisa vir antes de qualquer biblioteca (opus,
+# imgui...) ser criada, pra todas usarem o mesmo runtime.
+# ================================================================
+
+set(CMAKE_MSVC_RUNTIME_LIBRARY
+    "MultiThreaded$<$<CONFIG:Debug>:Debug>"
+)
+
+
+# ================================================================
+# Versao (gera version.h a partir do "VERSION" acima)
+# ================================================================
+
+configure_file(
+    ${CMAKE_SOURCE_DIR}/src/version.h.in
+    ${CMAKE_BINARY_DIR}/generated/version.h
+)
+
+include_directories(
+    ${CMAKE_BINARY_DIR}/generated
 )
 
 set(CMAKE_CXX_STANDARD 20)
@@ -14,6 +46,14 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 # Windows e os acentos saem trocados na tela.
 if (MSVC)
     add_compile_options(/utf-8)
+
+    # Informacao de depuracao (.pdb) tambem no Release. Nao muda
+    # a velocidade do programa; e o que permite abrir um .dmp de
+    # crash (ver crash_report.h) e ver a linha exata do erro. O
+    # .pdb fica na pasta do build - nao precisa ir junto pra
+    # quem usa o programa.
+    add_compile_options($<$<CONFIG:Release>:/Zi>)
+    add_link_options($<$<CONFIG:Release>:/DEBUG> $<$<CONFIG:Release>:/OPT:REF> $<$<CONFIG:Release>:/OPT:ICF>)
 endif()
 
 
@@ -125,6 +165,8 @@ add_executable(stream-client WIN32
     src/client_screens.h
     src/capture_targets.cpp
     src/capture_targets.h
+    src/crash_report.cpp
+    src/crash_report.h
     src/ui_common.cpp
     src/ui_common.h
     src/ui_widgets.cpp
@@ -146,6 +188,9 @@ add_executable(stream-client WIN32
 
     src/ffmpeg_check.cpp
     src/ffmpeg_check.h
+
+    src/version.h.in
+    resources/stream-client.rc
 )
 
 
@@ -159,6 +204,8 @@ add_executable(stream-receiver WIN32
     src/ui_widgets.h
     src/receiver_screens.cpp
     src/receiver_screens.h
+    src/crash_report.cpp
+    src/crash_report.h
 
     src/h264_decoder.cpp
     src/h264_decoder.h
@@ -185,6 +232,9 @@ add_executable(stream-receiver WIN32
 
     src/ffmpeg_check.cpp
     src/ffmpeg_check.h
+
+    src/version.h.in
+    resources/stream-receiver.rc
 )
 
 

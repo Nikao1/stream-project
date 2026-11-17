@@ -1,4 +1,5 @@
 #include "signaling_client.h"
+#include "version.h"
 
 #include <winsock2.h>
 #include <ws2tcpip.h>
@@ -584,6 +585,7 @@ bool SignalingJoinSession(
     outInfo.audioPort = ParsePort(fields["audio_port"]);
     outInfo.sameNetwork = fields["same_network"] == "1";
     outInfo.hostKey = fields["host_key"];
+    outInfo.hostVersion = fields["host_version"];
 
     outInfo.publicVideoPort =
         ParsePort(fields["public_video_port"]);
@@ -698,6 +700,8 @@ bool SignalingHost::CreateSession(
     {
         body += "&host_key=" + m_hostKeyHex;
     }
+
+    body += "&app_version=" STREAM_APP_VERSION;
 
     DWORD status = 0;
 

@@ -1,0 +1,56 @@
+STREAM PROJECT {VERSAO}
+=======================
+
+Compartilhe a tela (ou uma janela) com som, direto de um
+computador para outro, com até 4 pessoas assistindo.
+
+Os três arquivos precisam ficar juntos na mesma pasta:
+
+  stream-client.exe    para TRANSMITIR
+  stream-receiver.exe  para ASSISTIR
+  ffmpeg.exe           usado pelos dois (não apague)
+
+
+PARA ASSISTIR
+-------------
+1. Abra o stream-receiver.exe.
+2. Digite o código de 6 letras que a pessoa que transmite te
+   passou e clique em Conectar.
+
+Durante o vídeo, mexa o mouse para ver as opções (volume,
+preencher a janela, tela cheia). Atalhos: M liga e desliga o
+som, setas mudam o volume, F11 ou duplo clique é tela cheia.
+
+
+PARA TRANSMITIR
+---------------
+1. Abra o stream-client.exe.
+2. Escolha a qualidade, o FPS e o som, e clique em
+   "Escolher o que transmitir".
+3. Escolha uma tela inteira ou uma janela.
+4. Passe o código que aparece para quem vai assistir.
+
+
+SE O WINDOWS AVISAR
+-------------------
+"O Windows protegeu o computador": o programa ainda não é
+assinado digitalmente, então o Windows não o reconhece. Clique
+em "Mais informações" e depois em "Executar assim mesmo".
+
+Se o antivírus bloquear ou apagar um dos arquivos, restaure-o
+pela quarentena do antivírus e adicione a pasta às exceções.
+Baixe o programa só de quem você conhece.
+
+Se o Firewall do Windows perguntar, clique em Permitir: o vídeo
+e o som vão direto de um computador para o outro.
+
+
+SE ALGO DER ERRADO
+------------------
+Os programas gravam o que aconteceu em arquivos nesta pasta:
+stream-receiver.log, stream-client.log e ffmpeg-decoder.log.
+Se um deles fechar sozinho, aparece também um arquivo .dmp.
+Mande esses arquivos para quem te passou o programa.
+
+Quem transmite e quem assiste devem usar a mesma versão
+(o número aparece no título das janelas).

@@ -1,0 +1,22 @@
+#pragma once
+
+// ============================================================
+// VERSAO DO PROGRAMA
+// ============================================================
+//
+// Gerado pelo CMake a partir de "project(... VERSION x.y.z)" no
+// CMakeLists.txt - pra mudar a versao, mude la (nunca aqui; o
+// arquivo gerado fica na pasta do build).
+//
+// Aparece no titulo das janelas, no log, nas propriedades do
+// .exe (botao direito > Propriedades > Detalhes) e e enviada ao
+// servidor de sessoes, pra quem assiste ser avisado quando as
+// versoes forem diferentes.
+// ============================================================
+
+#define STREAM_APP_VERSION "@PROJECT_VERSION@"
+#define STREAM_APP_VERSION_W L"@PROJECT_VERSION@"
+
+#define STREAM_APP_VERSION_MAJOR @PROJECT_VERSION_MAJOR@
+#define STREAM_APP_VERSION_MINOR @PROJECT_VERSION_MINOR@
+#define STREAM_APP_VERSION_PATCH @PROJECT_VERSION_PATCH@

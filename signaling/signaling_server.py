@@ -19,7 +19,8 @@ respostas em texto "chave=valor", uma por linha):
     GET  /health
     POST /sessions                    local_ip, video_port, audio_port
                                       [stun_ip, public_video_port,
-                                       public_audio_port, host_key]
+                                       public_audio_port, host_key,
+                                       app_version]
                                       -> code, token, ttl
     POST /sessions/<code>/keepalive   token
                                       -> ok, viewers
@@ -253,6 +254,15 @@ class Handler(BaseHTTPRequestHandler):
                              all(c in "0123456789abcdef" for c in host_key)):
             return self._error(400, "invalid_fields")
 
+        # Versao do programa de quem transmite (ex.: "0.2.0"),
+        # repassada a quem entra pra avisar de versoes
+        # diferentes. Opcional (versoes antigas nao mandam).
+        app_version = form.get("app_version", "")
+        if app_version and not (
+                len(app_version) <= 20 and
+                all(c.isalnum() or c in ".-" for c in app_version)):
+            return self._error(400, "invalid_fields")
+
         with _lock:
             if len(_sessions) >= MAX_SESSIONS:
                 return self._error(503, "server_full")
@@ -274,6 +284,7 @@ class Handler(BaseHTTPRequestHandler):
                 "public_video_port": int(public_video_port),
                 "public_audio_port": int(public_audio_port),
                 "host_key": host_key,
+                "app_version": app_version,
                 "viewers": 0,
                 # anuncios: [canal, "ip:porta", momento]
                 "announces": [],
@@ -305,6 +316,7 @@ class Handler(BaseHTTPRequestHandler):
             "public_audio_port": info["public_audio_port"],
             "same_network": same_network,
             "host_key": info["host_key"],
+            "host_version": info["app_version"],
         })
 
     def _announce(self, code, form):

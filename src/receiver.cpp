@@ -32,6 +32,8 @@
 #include "invite_code.h"
 #include "ui_common.h"
 #include "receiver_screens.h"
+#include "crash_report.h"
+#include "version.h"
 
 #pragma comment(lib, "ws2_32.lib")
 
@@ -828,6 +830,19 @@ std::atomic<uint64_t> g_statSkippedForKeyframe{ 0 };
 std::atomic<uint64_t> g_statLate{ 0 };
 
 
+// frameId do primeiro pacote da resolucao atual. Pela internet
+// os pacotes podem chegar fora de ordem: logo depois de uma
+// troca de resolucao (ex.: quem transmite maximizou a janela),
+// ainda chegam pacotes atrasados do tamanho antigo. Sem esta
+// marca, cada um deles parecia "outra troca" e o decoder era
+// reiniciado de novo e de novo.
+uint32_t g_resolutionFrameId =
+    0;
+
+bool g_haveResolutionFrameId =
+    false;
+
+
 uint64_t g_framesDropped =
     0;
 
@@ -1102,7 +1117,8 @@ void TryPresentPendingFrames()
 
         swprintf_s(
             title,
-            L"Stream Receiver - %ux%u - %d FPS",
+            L"Stream Receiver " STREAM_APP_VERSION_W
+            L" - %ux%u - %d FPS",
             g_frameWidth,
             g_frameHeight,
             g_fps.load()
@@ -1375,13 +1391,28 @@ void ProcessUdpPacket(
     // Detectar mudança de resolução
     // ========================================================
 
+    // Pacote atrasado de antes da ultima troca de resolucao:
+    // descarta. (Um salto MUITO pra tras significa que quem
+    // transmite reiniciou a contagem - ai vale normalmente.)
+    if (g_haveResolutionFrameId &&
+        header.frameId < g_resolutionFrameId &&
+        g_resolutionFrameId - header.frameId < 600)
+    {
+        return;
+    }
+
+
     if (
         header.width != g_frameWidth ||
         header.height != g_frameHeight)
     {
         std::cout
             << "\n========================================\n"
-            << "Nova resolucao recebida: "
+            << "Resolucao: "
+            << g_frameWidth
+            << "x"
+            << g_frameHeight
+            << " -> "
             << header.width
             << "x"
             << header.height
@@ -1413,6 +1444,12 @@ void ProcessUdpPacket(
 
         g_frameHeight =
             header.height;
+
+        g_resolutionFrameId =
+            header.frameId;
+
+        g_haveResolutionFrameId =
+            true;
 
 
         // Qualquer reassembly em andamento não serve mais.
@@ -3342,6 +3379,10 @@ std::string g_uiStatus;
 
 std::string g_ffmpegProblem;
 
+// Aviso de versoes diferentes entre quem transmite e este
+// receiver (vazio = sem aviso). Protegido por g_uiMutex.
+std::string g_versionWarning;
+
 // Campo de texto da tela de conexao (so a thread da interface
 // mexe nele).
 char g_uiInput[256]{};
@@ -3361,6 +3402,10 @@ bool g_overlayCollapsed = false;
 bool g_fullscreen = false;
 
 WINDOWPLACEMENT g_windowedPlacement{};
+
+// Pedido de tela cheia vindo da interface (botao do painel). Ver
+// o comentario em DrawReceiverUi.
+constexpr UINT WM_APP_TOGGLE_FULLSCREEN = WM_APP + 10;
 
 
 // ============================================================
@@ -3713,6 +3758,29 @@ bool ResolveTarget(
         g_sessionCode =
             input;
 
+        // Versoes diferentes costumam funcionar, mas sao a
+        // primeira suspeita quando algo da errado.
+        if (!host.hostVersion.empty() &&
+            host.hostVersion != STREAM_APP_VERSION)
+        {
+            std::cout
+                << "AVISO: quem transmite usa a versao "
+                << host.hostVersion
+                << " (esta e a "
+                << STREAM_APP_VERSION
+                << ").\n";
+
+            std::lock_guard<std::mutex> lock(
+                g_uiMutex
+            );
+
+            g_versionWarning =
+                "Quem transmite usa a versão " +
+                host.hostVersion +
+                " e você a " STREAM_APP_VERSION
+                ". Se algo der errado, usem a mesma versão.";
+        }
+
         // Mesma rede: IP e portas locais do host. Redes
         // diferentes: IP e portas publicas. O outro caminho
         // fica como alternativa.
@@ -3908,6 +3976,14 @@ void ConnectWorker(
     std::string input)
 {
     ResetConnectionState();
+
+    {
+        std::lock_guard<std::mutex> lock(
+            g_uiMutex
+        );
+
+        g_versionWarning.clear();
+    }
 
     std::string error;
 
@@ -4158,7 +4234,21 @@ void DrawReceiverUi()
                 g_replyText;
         }
 
-        DrawWaitingScreen(reply);
+        std::string versionWarning;
+
+        {
+            std::lock_guard<std::mutex> lock(
+                g_uiMutex
+            );
+
+            versionWarning =
+                g_versionWarning;
+        }
+
+        DrawWaitingScreen(
+            reply,
+            versionWarning
+        );
     }
 
 
@@ -4213,7 +4303,18 @@ void DrawReceiverUi()
 
     if (actions.toggleFullscreen)
     {
-        ToggleFullscreen();
+        // Nao chamar ToggleFullscreen() aqui: esta funcao roda
+        // dentro do RenderFrame, com g_rendererMutex travado. A
+        // troca muda o tamanho da janela, o Windows manda WM_SIZE
+        // na hora (mesma thread) e o ResizeRenderer tentaria
+        // travar o mesmo mutex de novo -> excecao e crash. A
+        // mensagem e tratada depois que o frame termina.
+        PostMessageW(
+            g_hwnd,
+            WM_APP_TOGGLE_FULLSCREEN,
+            0,
+            0
+        );
     }
 
     if (actions.openDownloadPage)
@@ -4664,6 +4765,14 @@ LRESULT CALLBACK WindowProc(
     }
 
 
+    case WM_APP_TOGGLE_FULLSCREEN:
+    {
+        ToggleFullscreen();
+
+        return 0;
+    }
+
+
     case WM_LBUTTONDBLCLK:
     {
         // Duplo clique no video: tela cheia (como nos players).
@@ -4881,10 +4990,26 @@ int main()
         std::cerr.rdbuf(
             std::cout.rdbuf()
         );
+
+
+        // Se o programa fechar por erro, deixa o motivo no log
+        // e um .dmp pra diagnostico (ver crash_report.h).
+        std::wstring dumpName =
+            instance == 1
+            ? L"stream-receiver-crash.dmp"
+            : L"stream-receiver-" +
+              std::to_wstring(instance) +
+              L"-crash.dmp";
+
+        InstallCrashReporter(
+            dumpName.c_str()
+        );
     }
 
     std::cout
-        << "========== STREAM RECEIVER ==========\n";
+        << "========== STREAM RECEIVER "
+        << STREAM_APP_VERSION
+        << " ==========\n";
 
 
     // Comecar com o log do decoder vazio a cada execucao.
@@ -4969,7 +5094,7 @@ int main()
         CreateWindowExW(
             0,
             CLASS_NAME,
-            L"Stream Receiver",
+            L"Stream Receiver " STREAM_APP_VERSION_W,
             WS_OVERLAPPEDWINDOW,
             CW_USEDEFAULT,
             CW_USEDEFAULT,

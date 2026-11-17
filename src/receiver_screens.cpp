@@ -145,7 +145,8 @@ void DrawConnectScreen(
 // ============================================================
 
 void DrawWaitingScreen(
-    const std::string& reply)
+    const std::string& reply,
+    const std::string& versionWarning)
 {
     UiBeginCenteredPanel("##aguardando", 440.0f);
 
@@ -160,6 +161,14 @@ void DrawWaitingScreen(
         "Se demorar, confira se quem transmite já escolheu "
         "a tela que vai compartilhar."
     );
+
+    if (!versionWarning.empty())
+    {
+        UiWrappedColored(
+            UiColorError(),
+            versionWarning.c_str()
+        );
+    }
 
     // Convite manual: a resposta que precisa voltar pra
     // quem transmite (so entre redes diferentes).

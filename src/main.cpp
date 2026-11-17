@@ -9,6 +9,8 @@
 #include "stream_crypto.h"
 #include "invite_code.h"
 #include "client_ui.h"
+#include "crash_report.h"
+#include "version.h"
 
 #include <winsock2.h>
 #include <ws2tcpip.h>
@@ -906,6 +908,21 @@ bool CopyTextureToPixels(
          contentHeight <= desc.Height)
         ? contentHeight
         : desc.Height;
+
+
+    // --------------------------------------------------------
+    // Largura e altura PARES
+    //
+    // O H.264 (no formato de cor que usamos) trabalha com
+    // blocos de 2x2 pixels: com tamanho impar, o encoder recusa
+    // o video. Janelas podem ter qualquer tamanho - inclusive
+    // impar no meio da animacao de maximizar - entao a ultima
+    // coluna/linha impar e simplesmente deixada de fora.
+    // --------------------------------------------------------
+
+    width &= ~1u;
+
+    height &= ~1u;
 
 
     if (width == 0 ||
@@ -2343,6 +2360,12 @@ int WINAPI wWinMain(
 
     ClientUiSetupLog();
 
+    // Se o programa fechar por erro, deixa o motivo no log e um
+    // .dmp pra diagnostico (ver crash_report.h).
+    InstallCrashReporter(
+        L"stream-client-crash.dmp"
+    );
+
 
     // =========================================================
     // RELOGIO COMPARTILHADO (video + audio)
@@ -2354,7 +2377,7 @@ int WINAPI wWinMain(
 
     std::cout
         << "=============================================\n"
-        << "       STREAM PROJECT - SERVER\n"
+        << "       STREAM CLIENT " STREAM_APP_VERSION "\n"
         << "=============================================\n"
         << "H264 (NVENC/AMF/QSV/x264) + UDP\n"
         << "=============================================\n\n";
@@ -2456,7 +2479,7 @@ int WINAPI wWinMain(
         CreateWindowExW(
             0,
             CLASS_NAME,
-            L"Stream Client",
+            L"Stream Client " STREAM_APP_VERSION_W,
             WS_OVERLAPPEDWINDOW,
             CW_USEDEFAULT,
             CW_USEDEFAULT,

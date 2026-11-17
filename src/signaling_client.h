@@ -75,6 +75,10 @@ struct SignalingHostInfo
     // do canal). Vazia = client antigo, sem criptografia.
     std::string hostKey;
 
+    // Versao do programa de quem transmite. Vazia = versao
+    // antiga (ou servidor antigo), que nao informava.
+    std::string hostVersion;
+
     // true = as duas pontas estao atras do mesmo roteador (ou
     // na mesma maquina) -> usar localIp em vez de publicIp.
     bool sameNetwork = false;

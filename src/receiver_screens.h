@@ -49,8 +49,10 @@ void DrawConnectScreen(
 
 // Conectado, esperando o primeiro frame. reply = texto da
 // RESPOSTA do convite manual (vazio = nao mostrar).
+// versionWarning = aviso de versoes diferentes (vazio = nada).
 void DrawWaitingScreen(
-    const std::string& reply
+    const std::string& reply,
+    const std::string& versionWarning
 );
 
 
