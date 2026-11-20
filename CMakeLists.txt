@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.20)
 
 project(stream-client
-    VERSION 0.2.0
+    VERSION 0.3.0
     LANGUAGES C CXX
 )
 
@@ -197,6 +197,9 @@ add_executable(stream-client WIN32
 # WIN32 = programa de janela: o Windows nao abre console junto.
 add_executable(stream-receiver WIN32
     src/receiver.cpp
+
+    src/video_reassembly.cpp
+    src/video_reassembly.h
 
     src/ui_common.cpp
     src/ui_common.h

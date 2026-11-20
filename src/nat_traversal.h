@@ -3,6 +3,7 @@
 #include <winsock2.h>
 
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -96,6 +97,14 @@ void UdpSendPunch(
 //
 // outJoined/outLeft recebem quem entrou e quem saiu nesta
 // chamada. Retorna false quando o socket e fechado.
+// Pacote que nao e HELLO/KEEP (ex.: pedido de reenvio do
+// video). Recebe o endereco de origem e o pacote como chegou.
+using UdpOtherPacketHandler =
+    std::function<void(
+        const sockaddr_in&,
+        const uint8_t*,
+        size_t)>;
+
 bool UdpServiceViewers(
     SOCKET socket,
     UdpViewerList& viewers,
@@ -105,7 +114,8 @@ bool UdpServiceViewers(
     bool stunKeepAlive,
     ULONGLONG& lastStunKeepAlive,
     std::vector<sockaddr_in>& outJoined,
-    std::vector<sockaddr_in>& outLeft
+    std::vector<sockaddr_in>& outLeft,
+    const UdpOtherPacketHandler& onOtherPacket = {}
 );
 
 

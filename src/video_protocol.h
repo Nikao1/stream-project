@@ -78,3 +78,59 @@ constexpr uint32_t VIDEO_UDP_PAYLOAD_SIZE =
 
 constexpr uint32_t VIDEO_FLAG_KEYFRAME =
     0x1;
+
+// ============================================================
+// PEDIDO DE REENVIO (NACK) - receiver -> quem transmite
+// ============================================================
+//
+// Quando falta um pedaco de um frame, o receiver pede de volta
+// SO os fragmentos que faltaram, em vez de esperar o proximo
+// keyframe (ate 1 s de imagem parada). Quem transmite guarda
+// os frames do ultimo ~1 s pra poder reenviar.
+//
+// Vai cifrado com a chave de sessao do espectador, no canal
+// CRYPTO_CHANNEL_VIDEO_FEEDBACK (ver stream_crypto.h).
+//
+// Conteudo (antes de cifrar):
+//
+//   magic       4 bytes  "NAK1"
+//   frameId     4 bytes
+//   rangeCount  2 bytes  quantos intervalos vem a seguir
+//   reserved    2 bytes  (zero)
+//   intervalos  rangeCount x { first 2 bytes, count 2 bytes }
+//
+// Intervalo { 0, 0 } = "o frame inteiro" (nenhum pedaco dele
+// chegou, entao o receiver nem sabe quantos fragmentos tem).
+// Versoes antigas do client simplesmente ignoram o pedido.
+// ============================================================
+
+#pragma pack(push, 1)
+
+struct VideoNackHeader
+{
+    uint32_t magic;
+    uint32_t frameId;
+    uint16_t rangeCount;
+    uint16_t reserved;
+};
+
+struct VideoNackRange
+{
+    uint16_t first;
+    uint16_t count;
+};
+
+#pragma pack(pop)
+
+
+constexpr uint32_t VIDEO_NACK_MAGIC =
+    0x4E414B31; // "NAK1"
+
+
+constexpr uint32_t VIDEO_NACK_MAX_RANGES =
+    64;
+
+
+constexpr uint32_t VIDEO_NACK_MAX_SIZE =
+    sizeof(VideoNackHeader) +
+    VIDEO_NACK_MAX_RANGES * sizeof(VideoNackRange);

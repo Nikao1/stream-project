@@ -364,7 +364,8 @@ bool UdpServiceViewers(
     bool stunKeepAlive,
     ULONGLONG& lastStunKeepAlive,
     std::vector<sockaddr_in>& outJoined,
-    std::vector<sockaddr_in>& outLeft)
+    std::vector<sockaddr_in>& outLeft,
+    const UdpOtherPacketHandler& onOtherPacket)
 {
     if (socket == INVALID_SOCKET)
         return false;
@@ -514,6 +515,10 @@ bool UdpServiceViewers(
                  std::memcmp(buffer, "KEEP", 4) == 0)
         {
             viewers.Touch(from, now);
+        }
+        else if (onOtherPacket)
+        {
+            onOtherPacket(from, bytes, size);
         }
     }
 

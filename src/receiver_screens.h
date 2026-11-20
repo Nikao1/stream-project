@@ -88,6 +88,9 @@ struct StreamOverlayModel
     unsigned long long lostNetwork = 0;
     unsigned long long late = 0;
 
+    // Frames que perderam pedacos e foram salvos pelo reenvio.
+    unsigned long long recovered = 0;
+
     // 0 = invisivel, 1 = totalmente visivel (o painel some
     // aos poucos quando o mouse fica parado).
     float alpha = 1.0f;

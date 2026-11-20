@@ -1313,6 +1313,35 @@ void UdpServerThread()
         // gasta GPU codificando).
         g_udpReceiverConnected =
             g_udpServer.GetViewerCount() > 0;
+
+
+        // Log: quantos pacotes os espectadores pediram de novo
+        // (rede perdendo pacotes) - a cada 10 s, se mudou.
+        static ULONGLONG lastRetransmitLog = 0;
+
+        static uint64_t lastRetransmitted = 0;
+
+        ULONGLONG nowMs =
+            GetTickCount64();
+
+        if (nowMs - lastRetransmitLog >= 10000)
+        {
+            uint64_t retransmitted =
+                g_udpServer.GetRetransmittedPackets();
+
+            if (retransmitted != lastRetransmitted)
+            {
+                std::cout
+                    << "[rede] pacotes reenviados a pedido dos "
+                    << "espectadores: "
+                    << retransmitted - lastRetransmitted
+                    << " nos ultimos 10 s\n";
+
+                lastRetransmitted = retransmitted;
+            }
+
+            lastRetransmitLog = nowMs;
+        }
     }
 
 

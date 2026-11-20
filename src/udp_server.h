@@ -4,7 +4,11 @@
 
 #include <atomic>
 #include <cstdint>
+#include <deque>
+#include <memory>
+#include <mutex>
 #include <string>
+#include <vector>
 
 #include "nat_traversal.h"
 
@@ -78,7 +82,85 @@ public:
         uint16_t port
     );
 
+    // Pacotes reenviados a pedido dos espectadores (NACK) desde
+    // o inicio - pro log.
+    uint64_t GetRetransmittedPackets() const
+    {
+        return m_retransmittedPackets.load();
+    }
+
 private:
+
+    // --------------------------------------------------------
+    // Historico pra reenvio (NACK)
+    // --------------------------------------------------------
+    //
+    // Os frames do ultimo ~1 s ficam guardados. Quando um
+    // espectador avisa que faltou um pedaco, reenviamos so
+    // aquele pedaco, so pra ele.
+    // --------------------------------------------------------
+
+    struct SentFrame
+    {
+        uint32_t frameId = 0;
+        uint32_t width = 0;
+        uint32_t height = 0;
+        uint32_t flags = 0;
+        uint32_t timestampMs = 0;
+        ULONGLONG sentAtMs = 0;
+
+        // Compartilhado: o reenvio usa uma copia do ponteiro e
+        // solta a trava do historico antes de mandar.
+        std::shared_ptr<const std::vector<unsigned char>> data;
+    };
+
+    void RememberFrame(
+        SentFrame frame
+    );
+
+    // Trata um pacote do espectador que nao e HELLO/KEEP.
+    void HandleViewerPacket(
+        const sockaddr_in& from,
+        const uint8_t* packet,
+        size_t size
+    );
+
+    // Monta o pacote (header + pedaco) de um fragmento. Devolve
+    // o tamanho.
+    static int BuildFragment(
+        const SentFrame& frame,
+        uint32_t fragIndex,
+        uint32_t fragCount,
+        unsigned char* outPacket
+    );
+
+    // Cifra e envia um pacote pra um espectador.
+    void SendTo(
+        const UdpViewer& viewer,
+        const unsigned char* packet,
+        int packetSize,
+        unsigned char* sealedBuffer
+    );
+
+    std::mutex m_historyMutex;
+
+    std::deque<SentFrame> m_history;
+
+    size_t m_historyBytes = 0;
+
+    // Limite de reenvio por espectador (contra pedidos em
+    // excesso - ex.: rede muito ruim - nao virarem uma
+    // enxurrada que piora tudo).
+    struct RetransmitBudget
+    {
+        sockaddr_in address{};
+        ULONGLONG windowStartMs = 0;
+        uint32_t packetsInWindow = 0;
+    };
+
+    std::vector<RetransmitBudget> m_budgets;
+
+    std::atomic<uint64_t> m_retransmittedPackets{ 0 };
 
     StunResult m_stun;
 
@@ -92,7 +174,9 @@ private:
 
     // Contador dos pacotes cifrados: nunca repete enquanto o
     // programa roda (e as chaves mudam a cada execucao).
-    uint64_t m_packetCounter = 0;
+    // (atomico: o envio normal e o reenvio rodam em threads
+    // diferentes)
+    std::atomic<uint64_t> m_packetCounter{ 0 };
 
     ULONGLONG m_lastStunKeepAlive;
 

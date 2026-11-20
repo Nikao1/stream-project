@@ -482,6 +482,13 @@ bool DrawStreamOverlay(
         " FPS  ·  perdidos: " +
         std::to_string(model.lostNetwork);
 
+    if (model.recovered > 0)
+    {
+        stats +=
+            "  ·  recuperados: " +
+            std::to_string(model.recovered);
+    }
+
     if (model.late > 0)
     {
         stats +=

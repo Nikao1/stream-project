@@ -157,6 +157,28 @@ public:
     }
 
 
+    // Procura um espectador pelo endereco. Devolve false se
+    // ele nao esta (mais) na lista.
+    bool Find(
+        const sockaddr_in& address,
+        UdpViewer& outViewer)
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+
+        for (const Entry& entry : m_viewers)
+        {
+            if (Same(entry.viewer.address, address))
+            {
+                outViewer = entry.viewer;
+
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+
     size_t Count()
     {
         std::lock_guard<std::mutex> lock(m_mutex);

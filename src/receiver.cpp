@@ -25,6 +25,7 @@
 #include "audio_decoder.h"
 #include "audio_playback.h"
 #include "video_protocol.h"
+#include "video_reassembly.h"
 #include "signaling_client.h"
 #include "nat_traversal.h"
 #include "ffmpeg_check.h"
@@ -687,31 +688,34 @@ ULONGLONG g_fpsStartTime =
 
 
 // ============================================================
-// Reassembly de frame
-//
-// Mantemos apenas o frame "atual" sendo montado. Se chegar um
-// fragmento de um frameId mais novo antes do atual completar,
-// o atual é descartado (favorece latência baixa: preferimos
-// pular um frame a acumular atraso).
+// Montagem dos frames (com pedido de reenvio - ver
+// video_reassembly.h). So a thread de video mexe nela.
 // ============================================================
 
-struct PendingFrame
+VideoReassembler g_reassembler;
+
+
+// Relogio em ms com fracao (GetTickCount64 so anda de ~15 em
+// ~15 ms - grosso demais pra medir a ida e volta da rede).
+double NowMs()
 {
-    uint32_t frameId = 0;
-    uint32_t frameSize = 0;
-    uint32_t fragCount = 0;
-    uint32_t width = 0;
-    uint32_t height = 0;
-    uint32_t timestampMs = 0;
-    bool isKeyframe = false;
-    bool active = false;
+    static LARGE_INTEGER frequency = []
+    {
+        LARGE_INTEGER value;
 
-    std::vector<unsigned char> data;
-    std::vector<bool> fragReceived;
-    uint32_t fragReceivedCount = 0;
-};
+        QueryPerformanceFrequency(&value);
 
-PendingFrame g_pendingFrame;
+        return value;
+    }();
+
+    LARGE_INTEGER counter;
+
+    QueryPerformanceCounter(&counter);
+
+    return
+        static_cast<double>(counter.QuadPart) * 1000.0 /
+        static_cast<double>(frequency.QuadPart);
+}
 
 
 // ============================================================
@@ -787,23 +791,6 @@ std::deque<PendingVideoFrame> g_pendingVideoFrames;
 // Estatísticas
 // ============================================================
 
-uint32_t g_lastCompletedFrameId =
-    0;
-
-bool g_haveCompletedFrame =
-    false;
-
-uint64_t g_framesCompleted =
-    0;
-
-// true = o decoder nao pode receber frames ate chegar um
-// keyframe. Um frame comum (P) depende do anterior; se algum
-// se perdeu no caminho, os seguintes sairiam corrompidos (ou
-// derrubariam o ffmpeg). Entao, depois de qualquer perda,
-// esperamos o proximo keyframe (o client manda um por segundo).
-bool g_waitingKeyframe =
-    true;
-
 ULONGLONG g_lastDecoderRestart =
     0;
 
@@ -818,8 +805,15 @@ int g_decoderDeaths =
 // computador nao deu conta" quando a imagem trava.
 // ------------------------------------------------------------
 
-// Frames que nao chegaram inteiros (pacote perdido na rede).
+// Frames que nao chegaram inteiros (pacote perdido na rede e o
+// reenvio nao chegou a tempo).
 std::atomic<uint64_t> g_statLostNetwork{ 0 };
+
+// Frames que perderam pedacos, mas foram salvos pelo reenvio.
+std::atomic<uint64_t> g_statRecovered{ 0 };
+
+// Ida e volta ate quem transmite (ms), medida pelos reenvios.
+std::atomic<int> g_statRoundTripMs{ 0 };
 
 // Frames que chegaram, mas foram descartados esperando o
 // proximo keyframe (consequencia de uma perda anterior).
@@ -1184,72 +1178,164 @@ void PrintDecoderLogTail()
 
 
 // ============================================================
-// StartNewPendingFrame
+// SendVideoNack
 // ============================================================
 //
-// Descarta o que estiver em montagem (se houver) e inicia a
-// montagem de um novo frame a partir do header recebido.
+// Pedido de reenvio montado pelo g_reassembler: cifra com a
+// chave de sessao (canal proprio) e manda pra quem transmite,
+// pelo mesmo caminho do stream.
 // ============================================================
 
-void StartNewPendingFrame(
-    const VideoFrameFragmentHeader& header)
+uint64_t g_feedbackCounter =
+    0;
+
+void SendVideoNack(
+    const uint8_t* nack,
+    size_t size)
 {
-    if (g_pendingFrame.active &&
-        g_pendingFrame.fragReceivedCount <
-            g_pendingFrame.fragCount)
+    uint8_t key[CRYPTO_KEY_SIZE];
+
+    if (!GetSessionKey(key) ||
+        size > VIDEO_NACK_MAX_SIZE)
     {
-        // Havia um frame incompleto em montagem: foi
-        // "atropelado" por um frame mais novo. Conta como
-        // descartado.
+        return;
+    }
 
-        g_framesDropped++;
+    uint8_t sealed[VIDEO_NACK_MAX_SIZE + CRYPTO_OVERHEAD];
 
-        g_statLostNetwork++;
+    size_t sealedSize =
+        CryptoSeal(
+            key,
+            CRYPTO_CHANNEL_VIDEO_FEEDBACK,
+            g_feedbackCounter++,
+            nack,
+            size,
+            sealed
+        );
 
-        g_waitingKeyframe =
-            true;
+    sendto(
+        g_udpSocket,
+        reinterpret_cast<const char*>(sealed),
+        static_cast<int>(sealedSize),
+        0,
+        reinterpret_cast<sockaddr*>(&g_serverAddress),
+        sizeof(g_serverAddress)
+    );
+}
+
+
+// Copia os contadores do g_reassembler pras estatisticas que a
+// tela e o log leem.
+void SyncReassemblyStats()
+{
+    g_statLostNetwork =
+        g_reassembler.LostFrames();
+
+    g_statSkippedForKeyframe =
+        g_reassembler.SkippedForKeyframe();
+
+    g_statRecovered =
+        g_reassembler.RecoveredFrames();
+
+    g_statRoundTripMs =
+        static_cast<int>(g_reassembler.RoundTripMs() + 0.5);
+}
+
+
+// ============================================================
+// DeliverAssembledFrame
+// ============================================================
+//
+// Frame completo (e na ordem) vindo do g_reassembler: vai pro
+// decoder. O g_reassembler ja garante que, depois de uma perda,
+// o primeiro frame entregue e um keyframe.
+// ============================================================
+
+void DeliverAssembledFrame(
+    AssembledFrame& frame)
+{
+    EstablishSyncBaseline(
+        frame.timestampMs
+    );
+
+
+    {
+        std::lock_guard<std::mutex> lock(
+            g_frameMutex
+        );
+
+
+        g_videoTimestampQueue.push_back(
+            frame.timestampMs
+        );
     }
 
 
-    g_pendingFrame.frameId =
-        header.frameId;
+    if (!g_decoder.WriteData(
+            reinterpret_cast<const char*>(
+                frame.data.data()
+            ),
+            static_cast<uint32_t>(
+                frame.data.size()
+            )))
+    {
+        // O ffmpeg do decoder morreu. Reinicia (no maximo uma
+        // vez por segundo) e espera o proximo keyframe.
+        ULONGLONG nowMs =
+            GetTickCount64();
 
-    g_pendingFrame.frameSize =
-        header.frameSize;
+        if (nowMs - g_lastDecoderRestart >= 1000)
+        {
+            g_lastDecoderRestart =
+                nowMs;
 
-    g_pendingFrame.fragCount =
-        header.fragCount;
+            std::cout
+                << "\nDecoder parou - reiniciando...\n";
 
-    g_pendingFrame.width =
-        header.width;
+            PrintDecoderLogTail();
 
-    g_pendingFrame.height =
-        header.height;
+            g_decoderDeaths++;
 
-    g_pendingFrame.timestampMs =
-        header.timestampMs;
+            if (g_decoderDeaths == 2)
+            {
+                std::cout
+                    << "Trocando para decodificacao por "
+                    << "software (CPU).\n";
 
-    g_pendingFrame.isKeyframe =
-        (header.flags &
-         VIDEO_FLAG_KEYFRAME) != 0;
+                g_decoder.SetHardwareDecode(false);
+            }
 
-    g_pendingFrame.active =
-        true;
+            g_decoder.Stop();
 
-    g_pendingFrame.fragReceivedCount =
-        0;
+            if (!g_decoder.Start(
+                    g_frameWidth,
+                    g_frameHeight))
+            {
+                std::cout
+                    << "Falha ao reiniciar decoder H264.\n";
+            }
+        }
+
+        {
+            std::lock_guard<std::mutex> lock(
+                g_frameMutex
+            );
+
+            g_videoTimestampQueue.clear();
+            g_pendingVideoFrames.clear();
+        }
+
+        g_reassembler.RequireKeyframe();
+
+        return;
+    }
 
 
-    g_pendingFrame.data.assign(
-        header.frameSize,
-        0
-    );
+    // ========================================================
+    // Verificar se o decoder já produziu frame
+    // ========================================================
 
-
-    g_pendingFrame.fragReceived.assign(
-        header.fragCount,
-        false
-    );
+    ProcessDecodedFrame();
 }
 
 
@@ -1452,16 +1538,9 @@ void ProcessUdpPacket(
             true;
 
 
-        // Qualquer reassembly em andamento não serve mais.
+        // Qualquer montagem em andamento não serve mais.
 
-        g_pendingFrame =
-            PendingFrame{};
-
-        g_haveCompletedFrame =
-            false;
-
-        g_waitingKeyframe =
-            true;
+        g_reassembler.Reset();
 
 
         {
@@ -1482,239 +1561,18 @@ void ProcessUdpPacket(
 
 
     // ========================================================
-    // Descartar fragmentos de frames antigos (já concluídos
-    // ou já abandonados).
+    // Montagem (pede reenvio do que faltar; entrega os frames
+    // completos, na ordem, via DeliverAssembledFrame)
     // ========================================================
 
-    if (g_haveCompletedFrame &&
-        header.frameId <=
-            g_lastCompletedFrameId)
-    {
-        return;
-    }
-
-
-    // ========================================================
-    // Novo frame começando?
-    // ========================================================
-
-    if (g_pendingFrame.active &&
-        header.frameId <
-            g_pendingFrame.frameId)
-    {
-        // Fragmento atrasado de um frame mais antigo que já
-        // foi substituído pela montagem atual - ignora, não
-        // reinicia a montagem em andamento.
-
-        return;
-    }
-
-
-    if (!g_pendingFrame.active ||
-        header.frameId !=
-            g_pendingFrame.frameId)
-    {
-        StartNewPendingFrame(
-            header
-        );
-    }
-
-
-    // ========================================================
-    // Fragmento duplicado?
-    // ========================================================
-
-    if (g_pendingFrame.fragReceived[
-            header.fragIndex])
-    {
-        return;
-    }
-
-
-    // ========================================================
-    // Copiar o payload deste fragmento na posição certa
-    // ========================================================
-
-    const uint32_t fragOffset =
-        header.fragIndex *
-        VIDEO_UDP_PAYLOAD_SIZE;
-
-
-    if (fragOffset +
-            header.fragSize >
-        g_pendingFrame.frameSize)
-    {
-        // Header inconsistente - ignora o pacote.
-        return;
-    }
-
-
-    std::memcpy(
-        g_pendingFrame.data.data() +
-            fragOffset,
-
-        buffer +
-            VIDEO_HEADER_SIZE,
-
-        header.fragSize
+    g_reassembler.AddFragment(
+        header,
+        reinterpret_cast<const unsigned char*>(
+            buffer + VIDEO_HEADER_SIZE),
+        NowMs()
     );
 
-
-    g_pendingFrame.fragReceived[
-        header.fragIndex] = true;
-
-    g_pendingFrame.fragReceivedCount++;
-
-
-    // ========================================================
-    // Frame ainda incompleto: aguarda mais fragmentos.
-    // ========================================================
-
-    if (g_pendingFrame.fragReceivedCount <
-        g_pendingFrame.fragCount)
-    {
-        return;
-    }
-
-
-    // ========================================================
-    // FRAME COMPLETO - entregar ao decoder.
-    //
-    // Só chegamos aqui quando 100% dos fragmentos foram
-    // recebidos, então o decoder nunca vê um frame parcial
-    // ou corrompido por perda de pacote.
-    // ========================================================
-
-    // Pulou algum frameId? Entao um frame se perdeu inteiro.
-    if (g_haveCompletedFrame &&
-        g_pendingFrame.frameId !=
-            g_lastCompletedFrameId + 1)
-    {
-        g_framesDropped++;
-
-        g_statLostNetwork +=
-            g_pendingFrame.frameId -
-            g_lastCompletedFrameId - 1;
-
-        g_waitingKeyframe =
-            true;
-    }
-
-
-    g_lastCompletedFrameId =
-        g_pendingFrame.frameId;
-
-    g_haveCompletedFrame =
-        true;
-
-    g_framesCompleted++;
-
-    g_pendingFrame.active =
-        false;
-
-
-    // ========================================================
-    // Depois de uma perda, so um keyframe "reinicia" a imagem.
-    // Frames comuns que chegarem antes dele sao ignorados.
-    // ========================================================
-
-    if (g_pendingFrame.isKeyframe)
-    {
-        g_waitingKeyframe =
-            false;
-    }
-
-    if (g_waitingKeyframe)
-    {
-        g_statSkippedForKeyframe++;
-
-        return;
-    }
-
-
-    EstablishSyncBaseline(
-        g_pendingFrame.timestampMs
-    );
-
-
-    {
-        std::lock_guard<std::mutex> lock(
-            g_frameMutex
-        );
-
-
-        g_videoTimestampQueue.push_back(
-            g_pendingFrame.timestampMs
-        );
-    }
-
-
-    if (!g_decoder.WriteData(
-            reinterpret_cast<const char*>(
-                g_pendingFrame.data.data()
-            ),
-            static_cast<uint32_t>(
-                g_pendingFrame.data.size()
-            )))
-    {
-        // O ffmpeg do decoder morreu. Reinicia (no maximo uma
-        // vez por segundo) e espera o proximo keyframe.
-        ULONGLONG nowMs =
-            GetTickCount64();
-
-        if (nowMs - g_lastDecoderRestart >= 1000)
-        {
-            g_lastDecoderRestart =
-                nowMs;
-
-            std::cout
-                << "\nDecoder parou - reiniciando...\n";
-
-            PrintDecoderLogTail();
-
-            g_decoderDeaths++;
-
-            if (g_decoderDeaths == 2)
-            {
-                std::cout
-                    << "Trocando para decodificacao por "
-                    << "software (CPU).\n";
-
-                g_decoder.SetHardwareDecode(false);
-            }
-
-            g_decoder.Stop();
-
-            if (!g_decoder.Start(
-                    g_frameWidth,
-                    g_frameHeight))
-            {
-                std::cout
-                    << "Falha ao reiniciar decoder H264.\n";
-            }
-        }
-
-        {
-            std::lock_guard<std::mutex> lock(
-                g_frameMutex
-            );
-
-            g_videoTimestampQueue.clear();
-            g_pendingVideoFrames.clear();
-        }
-
-        g_waitingKeyframe =
-            true;
-
-        return;
-    }
-
-
-    // ========================================================
-    // Verificar se o decoder já produziu frame
-    // ========================================================
-
-    ProcessDecodedFrame();
+    SyncReassemblyStats();
 }
 
 
@@ -1819,8 +1677,24 @@ void ReceiverThread()
         0;
 
 
+    g_reassembler.SetCallbacks(
+        DeliverAssembledFrame,
+        SendVideoNack
+    );
+
+
     while (g_running)
     {
+        // ====================================================
+        // Perdas: pede reenvio do que faltou / desiste do que
+        // demorou demais (tambem quando nao chega pacote).
+        // ====================================================
+
+        g_reassembler.Service(
+            NowMs());
+
+        SyncReassemblyStats();
+
         // ====================================================
         // Reenviar HELLO periodicamente
         //
@@ -1913,8 +1787,12 @@ void ReceiverThread()
             0;
 
 
+        // Com frame em montagem, acorda a cada 5 ms pra
+        // perceber perdas rapido; sem nada pendente, 200 ms.
         timeout.tv_usec =
-            200000;
+            g_reassembler.HasPending()
+            ? 5000
+            : 200000;
 
 
         int result =
@@ -4206,6 +4084,7 @@ void DrawReceiverUi()
         overlay.width = g_frameWidth;
         overlay.height = g_frameHeight;
         overlay.lostNetwork = g_statLostNetwork.load();
+        overlay.recovered = g_statRecovered.load();
         overlay.late = g_statLate.load();
         overlay.alpha = alpha;
 
@@ -4288,7 +4167,11 @@ void DrawReceiverUi()
             << g_statSkippedForKeyframe.load()
             << " | atrasados: "
             << g_statLate.load()
-            << "\n";
+            << " | salvos por reenvio: "
+            << g_statRecovered.load()
+            << " | ida e volta: "
+            << g_statRoundTripMs.load()
+            << " ms\n";
     }
 
 

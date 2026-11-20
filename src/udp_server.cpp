@@ -34,6 +34,31 @@ constexpr uint32_t PACING_BURST_PACKETS =
 
 
 // ============================================================
+// Reenvio (NACK)
+// ============================================================
+
+// Quanto tempo um frame enviado fica guardado pra reenvio.
+// Passado isso, o receiver ja desistiu dele (espera no maximo
+// ~400 ms).
+constexpr ULONGLONG HISTORY_MS =
+    1000;
+
+// Teto de memoria do historico (keyframes em 4K sao grandes).
+constexpr size_t HISTORY_MAX_BYTES =
+    32 * 1024 * 1024;
+
+// Reenvio por espectador: no maximo isto por segundo (~1,7 MB/s,
+// cerca de 14 Mbps - o bastante pra refazer um keyframe grande,
+// mas nao pra afogar uma rede que ja esta perdendo pacotes)...
+constexpr uint32_t RETRANSMIT_MAX_PACKETS_PER_SECOND =
+    1500;
+
+// ...e no maximo isto por pedido.
+constexpr uint32_t RETRANSMIT_MAX_PACKETS_PER_NACK =
+    600;
+
+
+// ============================================================
 // UDP
 // ============================================================
 //
@@ -257,7 +282,14 @@ bool UdpServer::Service()
             m_stun.ok,
             m_lastStunKeepAlive,
             joined,
-            left
+            left,
+            [this](
+                const sockaddr_in& from,
+                const uint8_t* packet,
+                size_t size)
+            {
+                HandleViewerPacket(from, packet, size);
+            }
         );
 
 
@@ -293,12 +325,106 @@ bool UdpServer::Service()
 
 
 // ============================================================
+// BuildFragment
+// ============================================================
+//
+// Header (video_protocol.h) + o pedaco fragIndex do frame.
+// ============================================================
+
+int UdpServer::BuildFragment(
+    const SentFrame& frame,
+    uint32_t fragIndex,
+    uint32_t fragCount,
+    unsigned char* outPacket)
+{
+    const std::vector<unsigned char>& bytes =
+        *frame.data;
+
+    uint32_t frameSize =
+        static_cast<uint32_t>(bytes.size());
+
+    uint32_t offset =
+        fragIndex * VIDEO_UDP_PAYLOAD_SIZE;
+
+    uint32_t remaining =
+        frameSize - offset;
+
+    uint32_t fragSize =
+        remaining < VIDEO_UDP_PAYLOAD_SIZE
+        ? remaining
+        : VIDEO_UDP_PAYLOAD_SIZE;
+
+    VideoFrameFragmentHeader header{};
+
+    header.magic = htonl(VIDEO_PROTOCOL_MAGIC);
+    header.frameId = htonl(frame.frameId);
+    header.fragIndex = htonl(fragIndex);
+    header.fragCount = htonl(fragCount);
+    header.frameSize = htonl(frameSize);
+    header.fragSize = htonl(fragSize);
+    header.width = htonl(frame.width);
+    header.height = htonl(frame.height);
+    header.flags = htonl(frame.flags);
+    header.timestampMs = htonl(frame.timestampMs);
+
+    std::memcpy(
+        outPacket,
+        &header,
+        VIDEO_HEADER_SIZE
+    );
+
+    std::memcpy(
+        outPacket + VIDEO_HEADER_SIZE,
+        bytes.data() + offset,
+        fragSize
+    );
+
+    return static_cast<int>(
+        VIDEO_HEADER_SIZE + fragSize);
+}
+
+
+// ============================================================
+// SendTo
+// ============================================================
+
+void UdpServer::SendTo(
+    const UdpViewer& viewer,
+    const unsigned char* packet,
+    int packetSize,
+    unsigned char* sealedBuffer)
+{
+    size_t sealedSize =
+        CryptoSeal(
+            viewer.sessionKey,
+            CRYPTO_CHANNEL_VIDEO,
+            m_packetCounter.fetch_add(1),
+            packet,
+            static_cast<size_t>(packetSize),
+            sealedBuffer
+        );
+
+    // Um erro de envio pra UM espectador nao derruba os
+    // outros: quem sumiu de verdade para de dar sinal de vida
+    // e sai da lista pelo prazo (ver Service).
+    sendto(
+        m_socket,
+        reinterpret_cast<const char*>(sealedBuffer),
+        static_cast<int>(sealedSize),
+        0,
+        reinterpret_cast<const sockaddr*>(&viewer.address),
+        sizeof(viewer.address)
+    );
+}
+
+
+// ============================================================
 // SendVideoFrame
 // ============================================================
 //
 // Recebe um frame H264 (Annex B) completo e o fragmenta em
-// pacotes UDP de no máximo 1400 bytes, todos marcados com o
-// mesmo frameId.
+// pacotes UDP de no máximo VIDEO_UDP_PACKET_SIZE bytes, todos
+// marcados com o mesmo frameId.
 //
 // H264Encoder::GetFrame()
 //      |
@@ -313,9 +439,8 @@ bool UdpServer::Service()
 //      +--> ...
 //      +--> UDP fragmento N-1/N (frameId = X)
 //
-// O receiver só entrega o frame ao decoder quando os N
-// fragmentos chegarem; caso contrário, descarta o frame
-// inteiro (nunca escreve dado parcial/corrompido).
+// O frame tambem fica guardado no historico: se um pedaco se
+// perder, o receiver pede de novo (HandleViewerPacket).
 // ============================================================
 
 bool UdpServer::SendVideoFrame(
@@ -338,29 +463,6 @@ bool UdpServer::SendVideoFrame(
     }
 
 
-    const unsigned char* bytes =
-        static_cast<
-            const unsigned char*
-        >(frameData);
-
-
-    // --------------------------------------------------------
-    // Quantos fragmentos esse frame vai precisar.
-    // --------------------------------------------------------
-
-    uint32_t fragCount =
-        (frameSize +
-         VIDEO_UDP_PAYLOAD_SIZE -
-         1) /
-        VIDEO_UDP_PAYLOAD_SIZE;
-
-
-    if (fragCount == 0)
-    {
-        fragCount = 1;
-    }
-
-
     // Foto da lista de espectadores neste instante: o frame
     // inteiro vai pros mesmos destinos, mesmo que alguem entre
     // ou saia no meio do envio.
@@ -375,10 +477,6 @@ bool UdpServer::SendVideoFrame(
     }
 
 
-    uint32_t frameId =
-        m_frameId++;
-
-
     // Sleep(1) so dura ~1 ms de verdade com o timer do Windows
     // em resolucao de 1 ms (o padrao e ~15 ms).
     static std::once_flag timerResolutionOnce;
@@ -389,159 +487,56 @@ bool UdpServer::SendVideoFrame(
     );
 
 
-    uint32_t flags =
-        isKeyframe
-        ? VIDEO_FLAG_KEYFRAME
-        : 0;
+    const unsigned char* bytes =
+        static_cast<const unsigned char*>(frameData);
+
+    SentFrame frame;
+
+    frame.frameId = m_frameId++;
+    frame.width = width;
+    frame.height = height;
+    frame.flags = isKeyframe ? VIDEO_FLAG_KEYFRAME : 0;
+    frame.timestampMs = timestampMs;
+    frame.sentAtMs = GetTickCount64();
+    frame.data =
+        std::make_shared<const std::vector<unsigned char>>(
+            bytes,
+            bytes + frameSize);
 
 
-    // --------------------------------------------------------
-    // Reutilizar o mesmo buffer de pacote entre fragmentos.
-    // --------------------------------------------------------
+    uint32_t fragCount =
+        (frameSize +
+         VIDEO_UDP_PAYLOAD_SIZE -
+         1) /
+        VIDEO_UDP_PAYLOAD_SIZE;
 
-    std::vector<unsigned char> packet(
-        VIDEO_UDP_PACKET_SIZE
-    );
+
+    unsigned char packet[VIDEO_UDP_PACKET_SIZE];
 
     // Versao cifrada do pacote (uma por espectador, cada um
     // com a sua chave).
-    std::vector<unsigned char> sealed(
-        VIDEO_UDP_PACKET_SIZE +
-        CRYPTO_OVERHEAD
-    );
-
-
-    uint32_t offset =
-        0;
+    unsigned char sealed[VIDEO_UDP_PACKET_SIZE + CRYPTO_OVERHEAD];
 
 
     for (uint32_t fragIndex = 0;
          fragIndex < fragCount;
          ++fragIndex)
     {
-        uint32_t remaining =
-            frameSize -
-            offset;
-
-
-        uint32_t fragSize =
-            remaining <
-                VIDEO_UDP_PAYLOAD_SIZE
-            ? remaining
-            : VIDEO_UDP_PAYLOAD_SIZE;
-
-
-        // ====================================================
-        // HEADER
-        // ====================================================
-
-        VideoFrameFragmentHeader header{};
-
-        header.magic =
-            htonl(VIDEO_PROTOCOL_MAGIC);
-
-        header.frameId =
-            htonl(frameId);
-
-        header.fragIndex =
-            htonl(fragIndex);
-
-        header.fragCount =
-            htonl(fragCount);
-
-        header.frameSize =
-            htonl(frameSize);
-
-        header.fragSize =
-            htonl(fragSize);
-
-        header.width =
-            htonl(width);
-
-        header.height =
-            htonl(height);
-
-        header.flags =
-            htonl(flags);
-
-        header.timestampMs =
-            htonl(timestampMs);
-
-
-        std::memcpy(
-            packet.data(),
-            &header,
-            VIDEO_HEADER_SIZE
-        );
-
-
-        // ====================================================
-        // PAYLOAD
-        // ====================================================
-
-        std::memcpy(
-            packet.data() +
-                VIDEO_HEADER_SIZE,
-
-            bytes +
-                offset,
-
-            fragSize
-        );
-
-
-        // ====================================================
-        // SEND UDP
-        // ====================================================
-
         int packetSize =
-            static_cast<int>(
-                VIDEO_HEADER_SIZE +
-                fragSize
-            );
+            BuildFragment(
+                frame,
+                fragIndex,
+                fragCount,
+                packet);
 
-
-        // Um erro de envio pra UM espectador nao derruba os
-        // outros: quem sumiu de verdade para de dar sinal de
-        // vida e sai da lista pelo prazo (ver Service).
         for (size_t v = 0; v < viewerCount; ++v)
         {
-            size_t sealedSize =
-                CryptoSeal(
-                    viewers[v].sessionKey,
-                    CRYPTO_CHANNEL_VIDEO,
-                    m_packetCounter++,
-                    packet.data(),
-                    static_cast<size_t>(packetSize),
-                    sealed.data()
-                );
-
-            sendto(
-                m_socket,
-
-                reinterpret_cast<
-                    const char*
-                >(
-                    sealed.data()
-                ),
-
-                static_cast<int>(sealedSize),
-
-                0,
-
-                reinterpret_cast<
-                    sockaddr*
-                >(
-                    &viewers[v].address
-                ),
-
-                sizeof(viewers[v].address)
-            );
+            SendTo(
+                viewers[v],
+                packet,
+                packetSize,
+                sealed);
         }
-
-
-        offset +=
-            fragSize;
 
 
         // Pacing: pausa curta entre rajadas (menos no fim).
@@ -555,7 +550,261 @@ bool UdpServer::SendVideoFrame(
     }
 
 
+    RememberFrame(
+        std::move(frame));
+
+
     return true;
+}
+
+
+// ============================================================
+// RememberFrame
+// ============================================================
+
+void UdpServer::RememberFrame(
+    SentFrame frame)
+{
+    std::lock_guard<std::mutex> lock(
+        m_historyMutex);
+
+    m_historyBytes +=
+        frame.data->size();
+
+    m_history.push_back(
+        std::move(frame));
+
+    ULONGLONG now =
+        GetTickCount64();
+
+    // Sai o que passou do prazo ou do teto de memoria (mas o
+    // frame mais novo sempre fica).
+    while (m_history.size() > 1 &&
+           (now - m_history.front().sentAtMs > HISTORY_MS ||
+            m_historyBytes > HISTORY_MAX_BYTES))
+    {
+        m_historyBytes -=
+            m_history.front().data->size();
+
+        m_history.pop_front();
+    }
+}
+
+
+// ============================================================
+// HandleViewerPacket
+// ============================================================
+//
+// Pedido de reenvio (NACK) de um espectador: decifra com a
+// chave DELE (assim ninguem de fora consegue pedir reenvios),
+// acha o frame no historico e reenvia so os fragmentos
+// pedidos, so pra ele.
+// ============================================================
+
+void UdpServer::HandleViewerPacket(
+    const sockaddr_in& from,
+    const uint8_t* packet,
+    size_t size)
+{
+    if (size < CRYPTO_OVERHEAD + sizeof(VideoNackHeader) ||
+        size > CRYPTO_OVERHEAD + VIDEO_NACK_MAX_SIZE)
+    {
+        return;
+    }
+
+    UdpViewer viewer;
+
+    if (!m_viewers.Find(from, viewer))
+        return;
+
+    uint8_t plain[VIDEO_NACK_MAX_SIZE];
+
+    size_t plainSize = 0;
+
+    if (!CryptoOpen(
+            viewer.sessionKey,
+            CRYPTO_CHANNEL_VIDEO_FEEDBACK,
+            packet,
+            size,
+            plain,
+            plainSize) ||
+        plainSize < sizeof(VideoNackHeader))
+    {
+        return;
+    }
+
+    VideoNackHeader header;
+
+    std::memcpy(&header, plain, sizeof(header));
+
+    uint32_t rangeCount =
+        ntohs(header.rangeCount);
+
+    if (ntohl(header.magic) != VIDEO_NACK_MAGIC ||
+        rangeCount == 0 ||
+        rangeCount > VIDEO_NACK_MAX_RANGES ||
+        plainSize !=
+            sizeof(VideoNackHeader) +
+            rangeCount * sizeof(VideoNackRange))
+    {
+        return;
+    }
+
+    uint32_t frameId =
+        ntohl(header.frameId);
+
+
+    // --------------------------------------------------------
+    // Acha o frame (copia o ponteiro e solta a trava)
+    // --------------------------------------------------------
+
+    SentFrame frame;
+
+    bool found = false;
+
+    {
+        std::lock_guard<std::mutex> lock(
+            m_historyMutex);
+
+        for (const SentFrame& candidate : m_history)
+        {
+            if (candidate.frameId == frameId)
+            {
+                frame = candidate;
+
+                found = true;
+
+                break;
+            }
+        }
+    }
+
+    // Velho demais (ja saiu do historico): o receiver vai
+    // desistir dele e esperar o proximo keyframe.
+    if (!found)
+        return;
+
+    uint32_t fragCount =
+        static_cast<uint32_t>(
+            (frame.data->size() +
+             VIDEO_UDP_PAYLOAD_SIZE -
+             1) /
+            VIDEO_UDP_PAYLOAD_SIZE);
+
+
+    // --------------------------------------------------------
+    // Limite por espectador
+    // --------------------------------------------------------
+
+    ULONGLONG now =
+        GetTickCount64();
+
+    RetransmitBudget* budget = nullptr;
+
+    for (RetransmitBudget& candidate : m_budgets)
+    {
+        if (candidate.address.sin_addr.s_addr ==
+                from.sin_addr.s_addr &&
+            candidate.address.sin_port == from.sin_port)
+        {
+            budget = &candidate;
+
+            break;
+        }
+    }
+
+    if (!budget)
+    {
+        // Lista pequena: espectadores que ja sairam vao sendo
+        // trocados pelos novos.
+        if (m_budgets.size() >= MAX_VIEWERS * 2)
+        {
+            m_budgets.erase(m_budgets.begin());
+        }
+
+        m_budgets.push_back(RetransmitBudget{});
+
+        budget = &m_budgets.back();
+
+        budget->address = from;
+
+        budget->windowStartMs = now;
+    }
+
+    if (now - budget->windowStartMs >= 1000)
+    {
+        budget->windowStartMs = now;
+
+        budget->packetsInWindow = 0;
+    }
+
+
+    // --------------------------------------------------------
+    // Reenvia
+    // --------------------------------------------------------
+
+    unsigned char out[VIDEO_UDP_PACKET_SIZE];
+
+    unsigned char sealed[VIDEO_UDP_PACKET_SIZE + CRYPTO_OVERHEAD];
+
+    uint32_t sentNow = 0;
+
+    for (uint32_t r = 0; r < rangeCount; ++r)
+    {
+        VideoNackRange range;
+
+        std::memcpy(
+            &range,
+            plain + sizeof(VideoNackHeader) +
+                r * sizeof(VideoNackRange),
+            sizeof(range));
+
+        uint32_t first = ntohs(range.first);
+
+        uint32_t count = ntohs(range.count);
+
+        // { 0, 0 } = o frame inteiro.
+        if (first == 0 && count == 0)
+        {
+            count = fragCount;
+        }
+
+        for (uint32_t i = first;
+             i < first + count && i < fragCount;
+             ++i)
+        {
+            if (sentNow >= RETRANSMIT_MAX_PACKETS_PER_NACK ||
+                budget->packetsInWindow >=
+                    RETRANSMIT_MAX_PACKETS_PER_SECOND)
+            {
+                return;
+            }
+
+            int packetSize =
+                BuildFragment(
+                    frame,
+                    i,
+                    fragCount,
+                    out);
+
+            SendTo(
+                viewer,
+                out,
+                packetSize,
+                sealed);
+
+            sentNow++;
+
+            budget->packetsInWindow++;
+
+            m_retransmittedPackets++;
+
+            if (sentNow % PACING_BURST_PACKETS == 0)
+            {
+                Sleep(1);
+            }
+        }
+    }
 }
 
 
@@ -582,6 +831,15 @@ void UdpServer::PunchTo(
 void UdpServer::Stop()
 {
     m_viewers.Clear();
+
+    {
+        std::lock_guard<std::mutex> lock(
+            m_historyMutex);
+
+        m_history.clear();
+
+        m_historyBytes = 0;
+    }
 
 
     if (m_socket !=

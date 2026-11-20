@@ -48,6 +48,12 @@ constexpr size_t CRYPTO_OVERHEAD = 28;
 constexpr uint8_t CRYPTO_CHANNEL_VIDEO = 1;
 constexpr uint8_t CRYPTO_CHANNEL_AUDIO = 2;
 
+// Pedidos de reenvio do receiver pra quem transmite (NACK - ver
+// video_protocol.h). Canal proprio: os dois lados usam a mesma
+// chave, e cada um conta os proprios pacotes - sem canal
+// separado, os nonces poderiam se repetir.
+constexpr uint8_t CRYPTO_CHANNEL_VIDEO_FEEDBACK = 3;
+
 
 struct CryptoKeyPair
 {
