@@ -55,6 +55,26 @@ using namespace winrt::Windows::Graphics::DirectX::Direct3D11;
 
 
 // ============================================================
+// MODULO "TRANSMITIR"
+// ============================================================
+//
+// Este arquivo era o programa stream-client inteiro. No
+// programa unico (StreamProject.exe) ele virou o motor do modo
+// Transmitir: captura, encoder, rede e audio - sem janela
+// propria. A janela, o Direct3D da tela e a interface sao do
+// programa (ver receiver.cpp); client_ui.cpp liga as duas
+// partes.
+//
+// Tudo fica no namespace "sender" pra nao se misturar com os
+// nomes do modo Assistir (receiver.cpp tambem tem g_hwnd,
+// g_running...).
+// ============================================================
+
+namespace sender
+{
+
+
+// ============================================================
 // GLOBALS
 // ============================================================
 
@@ -1834,47 +1854,9 @@ void OnFrameArrived(
     }
 
 
-    // ----------------------------------------------------------
-    // Atualizar título da janela
-    // ----------------------------------------------------------
-
-    if (g_hwnd)
-    {
-        wchar_t title[256]{};
-
-
-        swprintf_s(
-            title,
-            L"STREAM PROJECT - "
-            L"Capturando: %s | "
-            L"Resolucao: %ux%u | "
-            L"Frames: %llu | "
-            L"FPS: %.1f | "
-            L"UDP: %s | "
-            L"H264: %s",
-            g_captureRunning
-                ? L"SIM"
-                : L"NAO",
-            g_captureWidth,
-            g_captureHeight,
-            g_frameCount.load(),
-            g_captureFps,
-            g_udpReceiverConnected
-                ? L"Conectado"
-                : L"Aguardando",
-            g_h264Encoder.IsRunning()
-                ? L"ON"
-                : L"OFF"
-        );
-
-
-        SetWindowTextW(
-            g_hwnd,
-            title
-        );
-
-
-    }
+    // (O titulo da janela agora e do programa: SetWindowText
+    // daqui, da thread de captura, faria ela esperar pela
+    // thread da janela.)
 }
 // ============================================================
 // StopCapture
@@ -2183,504 +2165,46 @@ bool StartCaptureForTarget(
 
 
 // ============================================================
-// WINDOW PROC
+// EngineStart / EngineStop
+// ============================================================
+//
+// O motor do modo Transmitir. Liga na primeira vez que a
+// pessoa entra em "Transmitir" (abre as portas UDP 5001/5003,
+// consulta o STUN, sobe as threads) e desliga quando o
+// programa fecha. Winsock, apartment WinRT e DPI ja foram
+// preparados pelo programa.
 // ============================================================
 
-LRESULT CALLBACK WindowProc(
-    HWND hwnd,
-    UINT uMsg,
-    WPARAM wParam,
-    LPARAM lParam)
+bool EngineStart()
 {
-    // A interface ve as mensagens primeiro (mouse, teclado,
-    // texto digitado).
-    if (ClientUiHandleMessage(
-            hwnd,
-            uMsg,
-            wParam,
-            lParam))
-    {
-        return 1;
-    }
-
-
-    switch (uMsg)
-    {
-    case WM_SIZE:
-    {
-        ClientUiResize(
-            LOWORD(lParam),
-            HIWORD(lParam)
-        );
-
-        return 0;
-    }
-
-    // ========================================================
-    // PAINT
-    // ========================================================
-
-    case WM_ERASEBKGND:
-    {
-        // Evita o "flash" de fundo antes do WM_PAINT (que já
-        // cuida de tudo com double buffer).
-        return 1;
-    }
-
-
-    case WM_PAINT:
-    {
-        // A previa e a interface sao desenhadas com Direct3D
-        // (ver client_view / client_ui). O laco principal ja
-        // redesenha a cada vsync; isto aqui cobre os momentos
-        // em que o Windows prende o laco (arrastar ou
-        // redimensionar a janela).
-        PAINTSTRUCT ps{};
-
-        BeginPaint(
-            hwnd,
-            &ps
-        );
-
-        ClientUiRenderFrame();
-
-        EndPaint(
-            hwnd,
-            &ps
-        );
-
-        return 0;
-    }
-
-
-
-    // ========================================================
-    // DESTROY
-    // ========================================================
-
-    case WM_DESTROY:
-    {
-        std::cout
-            << "\nEncerrando Stream Project...\n";
-
-        ClientUiSaveWindowPlacement(
-            hwnd);
-
-
-        // ----------------------------------------------------
-        // Parar captura
-        // ----------------------------------------------------
-
-        StopCapture();
-
-
-        // ----------------------------------------------------
-        // Limpar preview
-        // ----------------------------------------------------
-
-        {
-            std::lock_guard<std::mutex> lock(
-                g_displayMutex
-            );
-
-
-            g_displayPixels.clear();
-
-            g_displayWidth = 0;
-            g_displayHeight = 0;
-        }
-
-
-        // ----------------------------------------------------
-        // Parar encoder
-        // ----------------------------------------------------
-
-        g_encoderRunning =
-            false;
-
-
-        g_encodeCv.notify_all();
-
-
-        if (g_encoderThread.joinable())
-        {
-            g_encoderThread.join();
-        }
-
-
-        g_h264Encoder.Stop();
-
-
-        // ----------------------------------------------------
-        // Parar UDP
-        // ----------------------------------------------------
-
-        g_udpReceiverConnected =
-            false;
-
-
-        g_udpServerStarted =
-            false;
-
-
-        g_signalingHost.Stop();
-
-
-        g_udpServer.Stop();
-
-
-        // ----------------------------------------------------
-        // Esperar thread UDP
-        // ----------------------------------------------------
-
-        if (g_udpThread.joinable())
-        {
-            g_udpThread.join();
-        }
-
-
-        // ----------------------------------------------------
-        // Parar audio
-        // ----------------------------------------------------
-
-        g_audioReceiverConnected =
-            false;
-
-
-        g_audioServerStarted =
-            false;
-
-
-        g_audioSendRunning =
-            false;
-
-
-        g_udpAudioServer.Stop();
-
-
-        if (g_audioServerThread.joinable())
-        {
-            g_audioServerThread.join();
-        }
-
-
-        if (g_audioSendThread.joinable())
-        {
-            g_audioSendThread.join();
-        }
-
-
-        // ----------------------------------------------------
-        // Limpar D3D
-        // ----------------------------------------------------
-
-        g_lastCapturedTexture =
-            nullptr;
-
-
-        g_swapChain =
-            nullptr;
-
-
-        g_renderTargetView =
-            nullptr;
-
-
-        g_d3dContext =
-            nullptr;
-
-
-        g_d3dDevice =
-            nullptr;
-
-
-        PostQuitMessage(0);
-
-
-        return 0;
-    }
-    }
-
-
-    return DefWindowProcW(
-        hwnd,
-        uMsg,
-        wParam,
-        lParam
-    );
-}
-
-
-// ============================================================
-// WINMAIN
-// ============================================================
-
-int WINAPI wWinMain(
-    HINSTANCE hInstance,
-    HINSTANCE,
-    PWSTR commandLine,
-    int nCmdShow)
-{
-    // =========================================================
-    // REABERTO COMO ADMINISTRADOR
-    // =========================================================
-    //
-    // "--esperar <pid>": esta copia foi aberta pelo botao "Abrir
-    // como administrador". Espera a copia antiga fechar, senao
-    // as portas UDP (5001/5003) e o arquivo de log ainda estao
-    // com ela.
-    // =========================================================
-
-    if (commandLine)
-    {
-        const wchar_t* flag =
-            wcsstr(commandLine, L"--esperar ");
-
-        if (flag)
-        {
-            DWORD oldPid =
-                wcstoul(flag + 10, nullptr, 10);
-
-            HANDLE old =
-                oldPid != 0
-                ? OpenProcess(SYNCHRONIZE, FALSE, oldPid)
-                : nullptr;
-
-            if (old)
-            {
-                WaitForSingleObject(old, 10000);
-
-                CloseHandle(old);
-            }
-        }
-    }
-
-    // =========================================================
-    // WINRT APARTMENT
-    // =========================================================
-    //
-    // Toda API WinRT usada nesse programa (Graphics Capture
-    // Picker, etc) depende disso ter sido chamado antes. Tem
-    // que ser a primeira coisa, antes de qualquer outra
-    // inicialização.
-    // =========================================================
-
-    winrt::init_apartment();
-
-
-    // =========================================================
-    // CONSOLE DE DEBUG
-    // =========================================================
-
-    // =========================================================
-    // DPI AWARENESS
-    // =========================================================
-    //
-    // CRÍTICO pra captura de tela em monitores com escala
-    // (125%, 150%, etc - comum em notebooks e monitores 4K).
-    //
-    // Sem isso, o Windows "virtualiza" o processo pra pensar
-    // que está rodando a 100% de escala, fazendo APIs de
-    // tamanho de tela/janela (incluindo o Graphics Capture
-    // Picker) reportarem dimensões diferentes das que a GPU
-    // realmente captura em pixels físicos - causando a
-    // distorção/esticamento na imagem recebida.
-    //
-    // Precisa ser chamado ANTES de qualquer janela ser criada
-    // ou qualquer API de DPI ser consultada.
-    // =========================================================
-
-    SetProcessDpiAwarenessContext(
-        DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2
-    );
-
-
-    ClientUiSetupLog();
-
-    // Se o programa fechar por erro, deixa o motivo no log e um
-    // .dmp pra diagnostico (ver crash_report.h).
-    InstallCrashReporter(
-        L"stream-client-crash.dmp"
-    );
-
-
-    // =========================================================
-    // RELOGIO COMPARTILHADO (video + audio)
-    // =========================================================
-
+    // Relogio compartilhado (video + audio): timestamps
+    // relativos a este instante.
     g_streamClockStart =
         GetTickCount64();
 
-
     std::cout
-        << "=============================================\n"
-        << "       STREAM CLIENT " STREAM_APP_VERSION "\n"
-        << "=============================================\n"
-        << "H264 (NVENC/AMF/QSV/x264) + UDP\n"
+        << "\n=============================================\n"
+        << "  MODO TRANSMITIR\n"
+        << "  H264 (NVENC/AMF/QSV/x264) + UDP\n"
         << "=============================================\n\n";
 
 
-    // =========================================================
-    // WINSOCK
-    // =========================================================
-
-    WSADATA wsaData{};
-
-
-    int wsaResult =
-        WSAStartup(
-            MAKEWORD(2, 2),
-            &wsaData
-        );
-
-
-    if (wsaResult != 0)
-    {
-        std::cout
-            << "WSAStartup falhou. Erro: "
-            << wsaResult
-            << "\n";
-
-
-        return 1;
-    }
-
-
-    // =========================================================
-    // D3D11
-    // =========================================================
-
+    // Direct3D da captura (dispositivo proprio, separado do
+    // da tela: a captura e o encoder nao disputam a fila de
+    // desenho da interface).
     if (!CreateD3DDevice())
     {
-        WSACleanup();
-
-        return 1;
+        return false;
     }
 
 
-    // =========================================================
-    // WINDOW CLASS
-    // =========================================================
-
-    const wchar_t CLASS_NAME[] =
-        L"StreamProjectWindow";
-
-
-    WNDCLASSW wc{};
-
-
-    wc.lpfnWndProc =
-        WindowProc;
-
-
-    wc.hInstance =
-        hInstance;
-
-
-    wc.lpszClassName =
-        CLASS_NAME;
-
-
-    wc.hCursor =
-        LoadCursor(
-            nullptr,
-            IDC_ARROW
-        );
-
-
-    wc.hbrBackground =
-        static_cast<HBRUSH>(
-            GetStockObject(
-                BLACK_BRUSH
-            )
-        );
-
-
-    if (!RegisterClassW(&wc))
-    {
-        std::cout
-            << "RegisterClassW falhou.\n";
-
-
-        WSACleanup();
-
-        return 1;
-    }
-
-
-    // =========================================================
-    // WINDOW
-    // =========================================================
-
-    g_hwnd =
-        CreateWindowExW(
-            0,
-            CLASS_NAME,
-            L"Stream Client " STREAM_APP_VERSION_W,
-            WS_OVERLAPPEDWINDOW,
-            CW_USEDEFAULT,
-            CW_USEDEFAULT,
-            1000,
-            700,
-            nullptr,
-            nullptr,
-            hInstance,
-            nullptr
-        );
-
-
-    if (!g_hwnd)
-    {
-        std::cout
-            << "CreateWindowExW falhou.\n";
-
-
-        WSACleanup();
-
-        return 1;
-    }
-
-
-    // Direct3D da janela + interface (precisa da janela criada).
-    if (!ClientUiInit(g_hwnd))
-    {
-        MessageBoxW(
-            nullptr,
-            L"Falha ao inicializar a interface (Direct3D 11). "
-            L"Atualize o driver da placa de vídeo e tente de novo.",
-            L"Stream Client",
-            MB_OK | MB_ICONERROR
-        );
-
-        WSACleanup();
-
-        return 1;
-    }
-
-
-    ShowWindow(
-        g_hwnd,
-        ClientUiRestoreWindowPlacement(
-            g_hwnd,
-            nCmdShow)
-    );
-
-
-    UpdateWindow(
-        g_hwnd
-    );
-
-
-    // =========================================================
-    // CRIPTOGRAFIA: par de chaves desta execucao
-    // =========================================================
-
+    // Par de chaves desta execucao (criptografia do canal).
     if (!CryptoGenerateKeyPair(g_hostKeys))
     {
         std::cout
             << "Falha ao gerar as chaves de criptografia.\n";
 
-        return 1;
+        return false;
     }
 
     g_udpServer.SetHostKeys(&g_hostKeys);
@@ -2688,152 +2212,85 @@ int WINAPI wWinMain(
     g_udpAudioServer.SetHostKeys(&g_hostKeys);
 
 
-    // =========================================================
-    // UDP SERVER THREAD
-    // =========================================================
-
     g_udpThread =
         std::thread(
             UdpServerThread
         );
-
-
-    // =========================================================
-    // AUDIO SERVER + SEND THREADS
-    // =========================================================
 
     g_audioServerThread =
         std::thread(
             UdpAudioServerThread
         );
 
-
     g_audioSendRunning =
         true;
-
 
     g_audioSendThread =
         std::thread(
             AudioSendThread
         );
 
-
-    // =========================================================
-    // H264 ENCODER THREAD
-    // =========================================================
-
     g_encoderRunning =
         true;
-
 
     g_encoderThread =
         std::thread(
             EncoderThread
         );
 
-
-    // (a qualidade, o FPS, o dispositivo de som e o que vai ser
-    // compartilhado sao escolhidos na interface - ver
+    // (a qualidade, o FPS, o dispositivo de som e o que vai
+    // ser compartilhado sao escolhidos na interface - ver
     // client_ui.cpp.)
 
+    return true;
+}
 
-    // =========================================================
-    // MESSAGE LOOP
-    // =========================================================
 
-    // Processa as mensagens da janela e redesenha (previa +
-    // interface) a cada vsync - o Present(1) do
-    // ClientUiRenderFrame e quem dita o ritmo.
-    bool quit =
-        false;
+void EngineStop()
+{
+    std::cout
+        << "\nEncerrando o modo Transmitir...\n";
 
-    while (!quit)
+
+    // Captura
+    StopCapture();
+
     {
-        MSG msg{};
+        std::lock_guard<std::mutex> lock(
+            g_displayMutex
+        );
 
-        while (PeekMessageW(
-                &msg,
-                nullptr,
-                0,
-                0,
-                PM_REMOVE))
-        {
-            if (msg.message == WM_QUIT)
-            {
-                quit =
-                    true;
+        g_displayPixels.clear();
 
-                break;
-            }
-
-            TranslateMessage(&msg);
-
-            DispatchMessageW(&msg);
-        }
-
-        if (quit)
-            break;
-
-
-        // Minimizada: nada pra desenhar.
-        if (IsIconic(g_hwnd))
-        {
-            Sleep(50);
-
-            continue;
-        }
-
-
-        auto frameStart =
-            std::chrono::steady_clock::now();
-
-        ClientUiRenderFrame();
-
-        // Se voltou sem esperar o vsync (janela encoberta, por
-        // exemplo), cede a CPU em vez de girar em falso.
-        if (std::chrono::steady_clock::now() - frameStart <
-            std::chrono::milliseconds(3))
-        {
-            Sleep(4);
-        }
+        g_displayWidth = 0;
+        g_displayHeight = 0;
     }
 
 
-
-
-    // =========================================================
-    // CLEANUP
-    // =========================================================
-
+    // Encoder
     g_encoderRunning =
         false;
 
-
     g_encodeCv.notify_all();
-
 
     if (g_encoderThread.joinable())
     {
         g_encoderThread.join();
     }
 
-
     g_h264Encoder.Stop();
 
+
+    // Rede (video)
+    g_udpReceiverConnected =
+        false;
 
     g_udpServerStarted =
         false;
 
-
-    g_udpReceiverConnected =
-        false;
-
-
     g_signalingHost.Stop();
 
-
     g_udpServer.Stop();
-
 
     if (g_udpThread.joinable())
     {
@@ -2841,26 +2298,22 @@ int WINAPI wWinMain(
     }
 
 
-    g_audioServerStarted =
-        false;
-
-
+    // Audio
     g_audioReceiverConnected =
         false;
 
+    g_audioServerStarted =
+        false;
 
     g_audioSendRunning =
         false;
 
-
     g_udpAudioServer.Stop();
-
 
     if (g_audioServerThread.joinable())
     {
         g_audioServerThread.join();
     }
-
 
     if (g_audioSendThread.joinable())
     {
@@ -2868,15 +2321,24 @@ int WINAPI wWinMain(
     }
 
 
-    WSACleanup();
+    // Direct3D da captura
+    g_lastCapturedTexture =
+        nullptr;
 
+    g_swapChain =
+        nullptr;
+
+    g_renderTargetView =
+        nullptr;
+
+    g_d3dContext =
+        nullptr;
+
+    g_d3dDevice =
+        nullptr;
 
     std::cout
-        << "Stream Project encerrado.\n";
-
-
-    ClientUiShutdown();
-
-
-    return 0;
+        << "Modo Transmitir encerrado.\n";
 }
+
+} // namespace sender

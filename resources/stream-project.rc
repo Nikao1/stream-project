@@ -1,4 +1,4 @@
-// Recursos do stream-receiver.exe: icone e informacoes de versao
+// Recursos do StreamProject.exe: icone e informacoes de versao
 // (as que aparecem em botao direito > Propriedades > Detalhes).
 //
 // Executaveis com essas informacoes preenchidas parecem menos
@@ -7,7 +7,7 @@
 #include <winver.h>
 #include "version.h"
 
-1 ICON "stream-receiver.ico"
+1 ICON "stream-project.ico"
 
 VS_VERSION_INFO VERSIONINFO
  FILEVERSION     STREAM_APP_VERSION_MAJOR, STREAM_APP_VERSION_MINOR, STREAM_APP_VERSION_PATCH, 0
@@ -23,10 +23,10 @@ BEGIN
         BLOCK "041604B0"
         BEGIN
             VALUE "CompanyName",      "Stream Project"
-            VALUE "FileDescription",  "Stream Project - Assistir"
+            VALUE "FileDescription",  "Stream Project - Assistir e transmitir a tela"
             VALUE "FileVersion",      STREAM_APP_VERSION
-            VALUE "InternalName",     "stream-receiver"
-            VALUE "OriginalFilename", "stream-receiver.exe"
+            VALUE "InternalName",     "StreamProject"
+            VALUE "OriginalFilename", "StreamProject.exe"
             VALUE "ProductName",      "Stream Project"
             VALUE "ProductVersion",   STREAM_APP_VERSION
             VALUE "Comments",         "https://github.com/Nikao1/stream-project"

@@ -2,6 +2,7 @@
 #include <ws2tcpip.h>
 #include <windows.h>
 #include <shellapi.h>
+#include <objbase.h>
 #include <fstream>
 #include <iterator>
 
@@ -36,6 +37,7 @@
 #include "crash_report.h"
 #include "app_settings.h"
 #include "power_mode.h"
+#include "sender.h"
 #include "version.h"
 
 #pragma comment(lib, "ws2_32.lib")
@@ -1113,8 +1115,8 @@ void TryPresentPendingFrames()
 
         swprintf_s(
             title,
-            L"Stream Receiver " STREAM_APP_VERSION_W
-            L" - %ux%u - %d FPS",
+            L"Stream Project " STREAM_APP_VERSION_W
+            L" - assistindo %ux%u - %d FPS",
             g_frameWidth,
             g_frameHeight,
             g_fps.load()
@@ -3249,6 +3251,36 @@ enum class UiState
 
 std::atomic<UiState> g_uiState{ UiState::Connect };
 
+
+// ============================================================
+// Modo do programa
+// ============================================================
+//
+// Um programa so (StreamProject.exe) com dois modos:
+//
+//   Home   tela inicial: "Assistir" ou "Transmitir"
+//   Watch  assistir - o fluxo do antigo stream-receiver (este
+//          arquivo)
+//   Share  transmitir - o antigo stream-client, que virou o
+//          modulo "sender" (sender.h)
+//
+// A janela, o Direct3D e a interface sao sempre deste arquivo;
+// no modo Share, quem desenha as telas e o sender.
+// ============================================================
+
+enum class AppMode
+{
+    Home,
+    Watch,
+    Share
+};
+
+std::atomic<AppMode> g_appMode{ AppMode::Home };
+
+// Aviso na tela inicial (ex.: o modo Transmitir nao conseguiu
+// iniciar). So a thread da interface mexe.
+std::string g_homeError;
+
 // Protege os textos abaixo (escritos pela thread de conexao,
 // lidos pela interface).
 std::mutex g_uiMutex;
@@ -4087,6 +4119,38 @@ void StartConnect()
 // ============================================================
 // DrawReceiverUi
 // ============================================================
+// OpenShareMode
+// ============================================================
+//
+// "Transmitir" na tela inicial. Na primeira vez liga o motor do
+// modo (portas UDP, threads - ver sender.h); depois so volta pra
+// tela dele.
+// ============================================================
+
+void OpenShareMode()
+{
+    std::string error;
+
+    if (!sender::Open(
+            g_hwnd,
+            g_rendererDevice.Get(),
+            g_rendererContext.Get(),
+            error))
+    {
+        g_homeError = error;
+
+        g_appMode = AppMode::Home;
+
+        return;
+    }
+
+    g_homeError.clear();
+
+    g_appMode = AppMode::Share;
+}
+
+
+// ============================================================
 //
 // Chamada uma vez por frame, de dentro do RenderFrame, com o
 // render target ja ativo. Durante o stream nao desenha nada -
@@ -4102,7 +4166,16 @@ void DrawReceiverUi()
 
     ReceiverScreenActions actions;
 
+    AppMode mode =
+        g_appMode.load();
 
+    HomeScreenActions homeActions;
+
+    bool shareGoHome = false;
+
+
+    // ffmpeg com problema vale pros dois modos (os dois usam):
+    // a explicacao aparece antes de tudo.
     if (state == UiState::FfmpegProblem)
     {
         std::string problem;
@@ -4119,6 +4192,19 @@ void DrawReceiverUi()
         DrawFfmpegProblemScreen(
             problem,
             actions
+        );
+    }
+    else if (mode == AppMode::Home)
+    {
+        DrawHomeScreen(
+            g_homeError,
+            homeActions
+        );
+    }
+    else if (mode == AppMode::Share)
+    {
+        sender::Draw(
+            shareGoHome
         );
     }
     else if (state == UiState::Connect ||
@@ -4284,7 +4370,31 @@ void DrawReceiverUi()
     // Windows nao sabe que tem video rolando, porque ninguem
     // mexe no mouse).
     PowerSetActive(
-        g_uiState == UiState::Connected);
+        g_uiState == UiState::Connected ||
+        sender::IsLive());
+
+
+    // --------------------------------------------------------
+    // Navegacao entre os modos
+    // --------------------------------------------------------
+
+    if (homeActions.watch)
+    {
+        g_homeError.clear();
+
+        g_appMode = AppMode::Watch;
+    }
+
+    if (homeActions.share)
+    {
+        OpenShareMode();
+    }
+
+    if (shareGoHome ||
+        actions.goHome)
+    {
+        g_appMode = AppMode::Home;
+    }
 
 
     // --------------------------------------------------------
@@ -4919,14 +5029,68 @@ void ShowFatalError(
     MessageBoxW(
         nullptr,
         message,
-        L"Stream Receiver",
+        L"Stream Project",
         MB_OK | MB_ICONERROR
     );
 }
 
 
-int main()
+int AppMain(
+    const wchar_t* commandLine)
 {
+    // ========================================================
+    // LINHA DE COMANDO
+    //
+    // --esperar <pid>  esta copia foi aberta pelo botao "Abrir
+    //                  como administrador": espera a copia
+    //                  antiga fechar (senao as portas UDP e o
+    //                  log ainda estao com ela).
+    // --transmitir     abrir direto no modo Transmitir.
+    // ========================================================
+
+    bool startSharing = false;
+
+    if (commandLine)
+    {
+        const wchar_t* waitFlag =
+            wcsstr(commandLine, L"--esperar ");
+
+        if (waitFlag)
+        {
+            DWORD oldPid =
+                wcstoul(waitFlag + 10, nullptr, 10);
+
+            HANDLE old =
+                oldPid != 0
+                ? OpenProcess(SYNCHRONIZE, FALSE, oldPid)
+                : nullptr;
+
+            if (old)
+            {
+                WaitForSingleObject(old, 10000);
+
+                CloseHandle(old);
+            }
+        }
+
+        startSharing =
+            wcsstr(commandLine, L"--transmitir") != nullptr;
+    }
+
+
+    // ========================================================
+    // COM / WinRT (multi-threaded)
+    //
+    // A captura de tela do modo Transmitir usa APIs WinRT, que
+    // precisam disso antes de qualquer uso.
+    // ========================================================
+
+    CoInitializeEx(
+        nullptr,
+        COINIT_MULTITHREADED
+    );
+
+
     // ========================================================
     // DPI AWARENESS
     //
@@ -4944,12 +5108,12 @@ int main()
     // LOG EM ARQUIVO
     //
     // O programa nao tem mais console: tudo que antes aparecia
-    // nele (std::cout / std::cerr) vai pra stream-receiver.log,
+    // nele (std::cout / std::cerr) vai pra stream-project.log,
     // na pasta do programa. E o arquivo a enviar quando algo
     // der errado.
     //
     // Cada receiver aberto ao mesmo tempo escreve no SEU
-    // arquivo (stream-receiver.log, stream-receiver-2.log...).
+    // arquivo (stream-project.log, stream-project-2.log...).
     // Dois programas nao podem gravar no mesmo arquivo: sem
     // isso, o segundo receiver falhava ao abrir o log e
     // encerrava logo na abertura.
@@ -4964,7 +5128,7 @@ int main()
         for (; instance <= 8; ++instance)
         {
             std::wstring name =
-                L"StreamReceiverInstance" +
+                L"StreamProjectInstance" +
                 std::to_wstring(instance);
 
             HANDLE marker =
@@ -4989,8 +5153,8 @@ int main()
 
         std::string logName =
             instance == 1
-            ? "stream-receiver.log"
-            : "stream-receiver-" +
+            ? "stream-project.log"
+            : "stream-project-" +
               std::to_string(instance) +
               ".log";
 
@@ -5031,8 +5195,8 @@ int main()
         // e um .dmp pra diagnostico (ver crash_report.h).
         std::wstring dumpName =
             instance == 1
-            ? L"stream-receiver-crash.dmp"
-            : L"stream-receiver-" +
+            ? L"stream-project-crash.dmp"
+            : L"stream-project-" +
               std::to_wstring(instance) +
               L"-crash.dmp";
 
@@ -5042,7 +5206,7 @@ int main()
     }
 
     std::cout
-        << "========== STREAM RECEIVER "
+        << "========== STREAM PROJECT "
         << STREAM_APP_VERSION
         << " ==========\n";
 
@@ -5088,7 +5252,7 @@ int main()
     // ========================================================
 
     const wchar_t CLASS_NAME[] =
-        L"StreamReceiverWindow";
+        L"StreamProjectWindow";
 
     HINSTANCE hInstance =
         GetModuleHandleW(nullptr);
@@ -5133,7 +5297,7 @@ int main()
         CreateWindowExW(
             0,
             CLASS_NAME,
-            L"Stream Receiver " STREAM_APP_VERSION_W,
+            L"Stream Project " STREAM_APP_VERSION_W,
             WS_OVERLAPPEDWINDOW,
             CW_USEDEFAULT,
             CW_USEDEFAULT,
@@ -5221,6 +5385,15 @@ int main()
     );
 
 
+    // Reaberto como administrador pelo modo Transmitir: volta
+    // direto pra ele.
+    if (startSharing &&
+        g_uiState != UiState::FfmpegProblem)
+    {
+        OpenShareMode();
+    }
+
+
     // ========================================================
     // Laco principal
     //
@@ -5301,6 +5474,11 @@ int main()
     }
 
 
+    // Modo Transmitir: encerra a sessao, a captura e as threads
+    // dele (se chegou a ser aberto).
+    sender::Shutdown();
+
+
     // Fechou no meio de uma tentativa de conexao (a espera pelo
     // servidor pode durar ate 90s): nao ha nada a preservar,
     // encerra o processo direto em vez de ficar aguardando.
@@ -5358,14 +5536,14 @@ int main()
 //
 // O executavel e do tipo "janela" (WIN32 no CMake), entao o
 // Windows nao abre console junto. O ponto de entrada desse
-// tipo de programa e o wWinMain, que so repassa pro main().
+// tipo de programa e o wWinMain, que so repassa pro AppMain().
 // ============================================================
 
 int WINAPI wWinMain(
     HINSTANCE,
     HINSTANCE,
-    PWSTR,
+    PWSTR commandLine,
     int)
 {
-    return main();
+    return AppMain(commandLine);
 }

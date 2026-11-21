@@ -16,25 +16,30 @@
 #include "stream_crypto.h"
 #include "capture_targets.h"
 
+#include <d3d11.h>
+
 // ============================================================
-// INTERFACE DO CLIENT - ligacao com o resto do programa
+// MODO TRANSMITIR - ligacao entre o motor e a interface
 // ============================================================
 //
-// O main.cpp continua dono da captura, do encoder e da rede. A
-// interface (telas, botoes, fluxo de "comecar a transmitir")
-// fica em client_ui.cpp, e conversa com o main.cpp de duas
-// formas:
+// O main.cpp e o motor (captura, encoder, rede). A interface do
+// modo Transmitir (telas, botoes, fluxo de "comecar a
+// transmitir") fica em client_ui.cpp e conversa com o motor
+// lendo/escrevendo algumas variaveis do main.cpp, declaradas
+// abaixo com "extern".
 //
-//   - le/escreve algumas variaveis globais do main.cpp,
-//     declaradas abaixo com "extern";
-//   - o main.cpp chama as funcoes ClientUi... nos pontos certos
-//     (abertura, mensagens da janela, cada frame, encerramento).
+// O programa (receiver.cpp) so usa o que esta em sender.h.
 // ============================================================
+
+namespace sender
+{
 
 // ------------------------------------------------------------
 // Definidas no main.cpp
 // ------------------------------------------------------------
 
+// Janela do programa (pra deixar ela fora da lista de janelas
+// e pra fechar o programa ao reabrir como administrador).
 extern HWND g_hwnd;
 
 extern bool g_captureAccessDenied;
@@ -93,51 +98,9 @@ bool StartCaptureForTarget(
 );
 
 
-// ------------------------------------------------------------
-// Definidas em client_ui.cpp
-// ------------------------------------------------------------
+// Liga/desliga o motor (portas UDP, threads). Ver main.cpp.
+bool EngineStart();
 
-// Manda tudo que vai pro std::cout/std::cerr pra
-// stream-client.log (o programa nao tem mais console). Chamar
-// logo no inicio do wWinMain.
-void ClientUiSetupLog();
+void EngineStop();
 
-// Cria o Direct3D da janela e a interface. Chamar depois de
-// criar a janela (e de iniciar o Winsock).
-bool ClientUiInit(
-    HWND hwnd
-);
-
-void ClientUiShutdown();
-
-// Posicao/tamanho da janela da ultima vez. Chamar depois de
-// criar a janela e antes do ShowWindow; devolve o comando pro
-// ShowWindow (defaultShowCommand se nao havia nada salvo).
-int ClientUiRestoreWindowPlacement(
-    HWND hwnd,
-    int defaultShowCommand
-);
-
-// Chamar no WM_DESTROY (guarda a janela e devolve a energia ao
-// normal).
-void ClientUiSaveWindowPlacement(
-    HWND hwnd
-);
-
-// Chamar no inicio do WindowProc. true = a interface tratou.
-bool ClientUiHandleMessage(
-    HWND hwnd,
-    UINT message,
-    WPARAM wParam,
-    LPARAM lParam
-);
-
-// Chamar no WM_SIZE.
-void ClientUiResize(
-    uint32_t width,
-    uint32_t height
-);
-
-// Desenha a janela (previa + interface) e apresenta, esperando
-// o vsync. Chamar em laco, pela thread da janela.
-void ClientUiRenderFrame();
+} // namespace sender

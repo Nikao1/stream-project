@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.20)
 
-project(stream-client
-    VERSION 0.3.2
+project(stream-project
+    VERSION 0.4.0
     LANGUAGES C CXX
 )
 
@@ -136,32 +136,32 @@ target_compile_definitions(imgui PRIVATE
 )
 
 
-add_executable(stream-client WIN32
+# ============================================================
+# StreamProject.exe - programa unico (Assistir + Transmitir)
+# ============================================================
+#
+# WIN32 = programa de janela: o Windows nao abre console junto.
+# receiver.cpp e o programa (janela, Direct3D, interface, modo
+# Assistir); main.cpp + client_ui.cpp sao o modo Transmitir
+# (namespace sender - ver sender.h).
+
+add_executable(stream-project WIN32
+    # Programa + modo Assistir
+    src/receiver.cpp
+    src/receiver_screens.cpp
+    src/receiver_screens.h
+    src/video_reassembly.cpp
+    src/video_reassembly.h
+    src/h264_decoder.cpp
+    src/h264_decoder.h
+    src/audio_decoder.cpp
+    src/audio_decoder.h
+    src/audio_playback.cpp
+    src/audio_playback.h
+
+    # Modo Transmitir
+    src/sender.h
     src/main.cpp
-
-    src/app_settings.cpp
-    src/app_settings.h
-    src/power_mode.cpp
-    src/power_mode.h
-
-    src/server.cpp
-    src/server.h
-
-    src/udp_server.cpp
-    src/udp_server.h
-
-    src/h264_encoder.cpp
-    src/h264_encoder.h
-
-    src/audio_capture.cpp
-    src/audio_capture.h
-
-    src/audio_encoder.cpp
-    src/audio_encoder.h
-
-    src/udp_audio_server.cpp
-    src/udp_audio_server.h
-
     src/client_ui.cpp
     src/client_ui.h
     src/client_view.cpp
@@ -170,88 +170,54 @@ add_executable(stream-client WIN32
     src/client_screens.h
     src/capture_targets.cpp
     src/capture_targets.h
-    src/crash_report.cpp
-    src/crash_report.h
-    src/ui_common.cpp
-    src/ui_common.h
-    src/ui_widgets.cpp
-    src/ui_widgets.h
+    src/h264_encoder.cpp
+    src/h264_encoder.h
+    src/audio_capture.cpp
+    src/audio_capture.h
+    src/audio_encoder.cpp
+    src/audio_encoder.h
+    src/udp_server.cpp
+    src/udp_server.h
+    src/udp_audio_server.cpp
+    src/udp_audio_server.h
 
-    src/signaling_client.cpp
-    src/signaling_client.h
-
-    src/nat_traversal.cpp
-    src/nat_traversal.h
-    src/stun_message.h
-    src/udp_viewers.h
-
-    src/stream_crypto.cpp
-    src/stream_crypto.h
-
-    src/invite_code.cpp
-    src/invite_code.h
-
-    src/ffmpeg_check.cpp
-    src/ffmpeg_check.h
-
-    src/version.h.in
-    resources/stream-client.rc
-)
-
-
-# WIN32 = programa de janela: o Windows nao abre console junto.
-add_executable(stream-receiver WIN32
-    src/receiver.cpp
-
-    src/video_reassembly.cpp
-    src/video_reassembly.h
-
+    # Comum
     src/app_settings.cpp
     src/app_settings.h
     src/power_mode.cpp
     src/power_mode.h
-
+    src/crash_report.cpp
+    src/crash_report.h
     src/ui_common.cpp
     src/ui_common.h
     src/ui_widgets.cpp
     src/ui_widgets.h
-    src/receiver_screens.cpp
-    src/receiver_screens.h
-    src/crash_report.cpp
-    src/crash_report.h
-
-    src/h264_decoder.cpp
-    src/h264_decoder.h
-
-    src/audio_decoder.cpp
-    src/audio_decoder.h
-
-    src/audio_playback.cpp
-    src/audio_playback.h
-
     src/signaling_client.cpp
     src/signaling_client.h
-
     src/nat_traversal.cpp
     src/nat_traversal.h
     src/stun_message.h
     src/udp_viewers.h
-
     src/stream_crypto.cpp
     src/stream_crypto.h
-
     src/invite_code.cpp
     src/invite_code.h
-
     src/ffmpeg_check.cpp
     src/ffmpeg_check.h
+    src/video_protocol.h
+    src/audio_protocol.h
 
     src/version.h.in
-    resources/stream-receiver.rc
+    resources/stream-project.rc
 )
 
 
-target_compile_definitions(stream-client PRIVATE
+set_target_properties(stream-project PROPERTIES
+    OUTPUT_NAME "StreamProject"
+)
+
+
+target_compile_definitions(stream-project PRIVATE
     UNICODE
     _UNICODE
     WIN32_LEAN_AND_MEAN
@@ -259,40 +225,16 @@ target_compile_definitions(stream-client PRIVATE
 )
 
 
-target_compile_definitions(stream-receiver PRIVATE
-    UNICODE
-    _UNICODE
-    WIN32_LEAN_AND_MEAN
-    NOMINMAX
-)
-
-
-target_link_libraries(stream-client PRIVATE
+target_link_libraries(stream-project PRIVATE
     d3d11
     dxgi
+    d3dcompiler
     windowsapp
     ws2_32
     ole32
     opus
     winhttp
     winmm
-    monocypher
-    bcrypt
-    imgui
-    d3dcompiler
-    dwmapi
-    shell32
-)
-
-
-target_link_libraries(stream-receiver PRIVATE
-    ws2_32
-    ole32
-    opus
-    d3d11
-    dxgi
-    d3dcompiler
-    winhttp
     monocypher
     bcrypt
     imgui

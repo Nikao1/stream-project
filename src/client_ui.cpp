@@ -18,7 +18,11 @@
 #include "ui_common.h"
 #include "app_settings.h"
 #include "power_mode.h"
+#include "sender.h"
 
+
+namespace sender
+{
 
 namespace
 {
@@ -173,8 +177,9 @@ void RelaunchAsAdmin()
     info.nShow = SW_SHOWNORMAL;
 
     // A copia nova espera esta fechar (ver wWinMain).
+    // --transmitir: a copia nova ja abre no modo Transmitir.
     std::wstring parameters =
-        L"--esperar " +
+        L"--transmitir --esperar " +
         std::to_wstring(GetCurrentProcessId());
 
     info.lpParameters = parameters.c_str();
@@ -665,6 +670,7 @@ void DrawUi(
         model.fpsIndex = &g_fpsIndex;
         model.audioIndex = &g_audioIndex;
         model.busy = false;
+        model.canGoBack = !g_sessionStarted;
 
         {
             std::lock_guard<std::mutex> lock(g_textMutex);
@@ -725,46 +731,6 @@ void DrawUi(
 }
 
 } // namespace
-
-
-// ============================================================
-// ClientUiSetupLog
-// ============================================================
-
-void ClientUiSetupLog()
-{
-    FILE* logFile = nullptr;
-
-    if (freopen_s(
-            &logFile,
-            "stream-client.log",
-            "w",
-            stdout) != 0)
-    {
-        // Nao deu pra criar o arquivo (pasta sem permissao de
-        // escrita, ou outro stream-client ja aberto): descarta
-        // o log, mas o programa segue funcionando.
-        freopen_s(
-            &logFile,
-            "NUL",
-            "w",
-            stdout
-        );
-    }
-
-    // Sem buffer: se o programa fechar de repente, o log ja
-    // esta no disco.
-    setvbuf(
-        stdout,
-        nullptr,
-        _IONBF,
-        0
-    );
-
-    std::cerr.rdbuf(
-        std::cout.rdbuf()
-    );
-}
 
 
 // ============================================================
@@ -910,47 +876,20 @@ void SaveClientSettingsIfChanged()
 }
 
 
-int ClientUiRestoreWindowPlacement(
-    HWND hwnd,
-    int defaultShowCommand)
-{
-    int showCommand =
-        defaultShowCommand;
-
-    ClientSettings().RestoreWindowPlacement(
-        hwnd,
-        showCommand);
-
-    return showCommand;
-}
-
-
-void ClientUiSaveWindowPlacement(
-    HWND hwnd)
-{
-    WINDOWPLACEMENT placement{};
-
-    placement.length = sizeof(placement);
-
-    if (GetWindowPlacement(hwnd, &placement))
-    {
-        ClientSettings().SaveWindowPlacement(
-            placement);
-    }
-
-    PowerSetActive(false);
-}
-
-
 // ============================================================
 // ClientUiInit / Shutdown
 // ============================================================
 
-bool ClientUiInit(
-    HWND hwnd)
+void ClientUiInit(
+    HWND hwnd,
+    ID3D11Device* device,
+    ID3D11DeviceContext* context)
 {
-    if (!ClientViewInit(hwnd))
-        return false;
+    g_hwnd = hwnd;
+
+    ClientViewInit(
+        device,
+        context);
 
     // Som so da janela: so existe no Windows 11 em diante.
     // Quando existe, ja vem marcado (e o que normalmente se
@@ -977,8 +916,6 @@ bool ClientUiInit(
     // Escolhas da ultima vez (qualidade, FPS, som).
     LoadClientSettings();
 
-    PowerDisableThrottling();
-
     // O encoder de video e um ffmpeg.exe: sem ele nao ha
     // transmissao, entao a interface abre direto na tela que
     // explica como resolver.
@@ -995,53 +932,22 @@ bool ClientUiInit(
 
         g_state = State::FfmpegProblem;
     }
-
-    return true;
 }
 
 
-void ClientUiShutdown()
-{
-    ClientViewShutdown();
-}
 
 
 // ============================================================
-// Mensagens da janela
+// ClientUiDrawFrame
+// ============================================================
+//
+// Um frame do modo Transmitir, dentro do frame da interface do
+// programa: previa ao fundo, telas por cima, e o que foi
+// clicado.
 // ============================================================
 
-bool ClientUiHandleMessage(
-    HWND hwnd,
-    UINT message,
-    WPARAM wParam,
-    LPARAM lParam)
-{
-    return
-        UiHandleWindowMessage(
-            hwnd,
-            message,
-            wParam,
-            lParam
-        );
-}
-
-
-void ClientUiResize(
-    uint32_t width,
-    uint32_t height)
-{
-    ClientViewResize(
-        width,
-        height
-    );
-}
-
-
-// ============================================================
-// ClientUiRenderFrame
-// ============================================================
-
-void ClientUiRenderFrame()
+void ClientUiDrawFrame(
+    bool& outGoHome)
 {
     // --------------------------------------------------------
     // Previa da tela compartilhada, no maximo ~10x por segundo:
@@ -1082,21 +988,14 @@ void ClientUiRenderFrame()
 
     SaveClientSettingsIfChanged();
 
-    // Transmitindo: tela acesa e sem economia de energia. (Com
-    // a tela apagada o Windows para de desenhar - e a captura
-    // para junto.)
-    PowerSetActive(
-        g_state == State::Live);
-
-
-    if (!ClientViewBeginFrame())
-        return;
+    ClientViewDrawBackground();
 
     ClientScreenActions actions;
 
     DrawUi(actions);
 
-    ClientViewEndFrame();
+    outGoHome =
+        actions.goHome;
 
 
     // --------------------------------------------------------
@@ -1196,3 +1095,102 @@ void ClientUiRenderFrame()
         }
     }
 }
+
+
+// ============================================================
+// sender.h - o que o programa usa
+// ============================================================
+
+namespace
+{
+
+bool g_open = false;
+
+bool g_engineFailed = false;
+
+} // namespace
+
+
+bool Open(
+    HWND hwnd,
+    ID3D11Device* device,
+    ID3D11DeviceContext* context,
+    std::string& outError)
+{
+    if (g_open)
+        return true;
+
+    if (g_engineFailed)
+    {
+        outError =
+            "O modo Transmitir não conseguiu iniciar. Veja o "
+            "stream-project.log.";
+
+        return false;
+    }
+
+    if (!EngineStart())
+    {
+        g_engineFailed = true;
+
+        EngineStop();
+
+        outError =
+            "Não foi possível iniciar a transmissão (Direct3D "
+            "ou criptografia). Atualize o driver da placa de "
+            "vídeo e tente de novo.";
+
+        return false;
+    }
+
+    ClientUiInit(
+        hwnd,
+        device,
+        context);
+
+    g_open = true;
+
+    return true;
+}
+
+
+void Draw(
+    bool& outGoHome)
+{
+    outGoHome = false;
+
+    if (!g_open)
+        return;
+
+    ClientUiDrawFrame(
+        outGoHome);
+}
+
+
+bool IsOpen()
+{
+    return g_open;
+}
+
+
+bool IsLive()
+{
+    return
+        g_open &&
+        g_state == State::Live;
+}
+
+
+void Shutdown()
+{
+    if (!g_open)
+        return;
+
+    EngineStop();
+
+    ClientViewShutdown();
+
+    g_open = false;
+}
+
+} // namespace sender

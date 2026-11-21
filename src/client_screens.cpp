@@ -199,6 +199,20 @@ void DrawClientSetupScreen(
         );
     }
 
+    if (model.canGoBack)
+    {
+        ImGui::Spacing();
+
+        if (ImGui::Button(
+                "Voltar",
+                ImVec2(
+                    ImGui::GetContentRegionAvail().x,
+                    0.0f)))
+        {
+            actions.goHome = true;
+        }
+    }
+
     UiEndPanel();
 }
 

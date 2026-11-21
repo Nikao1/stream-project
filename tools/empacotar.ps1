@@ -6,8 +6,7 @@
 .DESCRIPTION
     1. Compila o projeto em Release (a menos que use -SemCompilar).
     2. Junta numa pasta:
-         stream-client.exe    (transmitir)
-         stream-receiver.exe  (assistir)
+         StreamProject.exe    (assistir e transmitir)
          ffmpeg.exe           (o verdadeiro - nao um atalho)
          LEIA-ME.txt
     3. Compacta em dist\StreamProject-<versao>-windows.zip e mostra
@@ -77,7 +76,7 @@ $cmakeTexto = Get-Content (Join-Path $projeto "CMakeLists.txt") -Raw
 
 $achou = [regex]::Match(
     $cmakeTexto,
-    "project\s*\(\s*stream-client\s+VERSION\s+([0-9]+\.[0-9]+\.[0-9]+)")
+    "project\s*\(\s*stream-[a-z]+\s+VERSION\s+([0-9]+\.[0-9]+\.[0-9]+)")
 
 if (-not $achou.Success)
 {
@@ -136,11 +135,9 @@ function Achar-Exe([string] $nome)
 
 Passo "Procurando os executaveis"
 
-$client = Achar-Exe "stream-client.exe"
-$receiver = Achar-Exe "stream-receiver.exe"
+$programa = Achar-Exe "StreamProject.exe"
 
-Write-Host "  $client"
-Write-Host "  $receiver"
+Write-Host "  $programa"
 
 
 # ------------------------------------------------------------
@@ -265,8 +262,7 @@ if (Test-Path $zip) { Remove-Item $zip -Force }
 
 New-Item -ItemType Directory -Path $pasta -Force | Out-Null
 
-Copy-Item $client (Join-Path $pasta "stream-client.exe")
-Copy-Item $receiver (Join-Path $pasta "stream-receiver.exe")
+Copy-Item $programa (Join-Path $pasta "StreamProject.exe")
 Copy-Item $ffmpegOk (Join-Path $pasta "ffmpeg.exe")
 
 # LEIA-ME com a versao preenchida. Gravado em UTF-8 com BOM, pra o
@@ -291,4 +287,4 @@ Write-Host "Pronto!" -ForegroundColor Green
 Write-Host ("  {0} ({1:N0} MB)" -f $zip, ((Get-Item $zip).Length / 1MB))
 Write-Host "  SHA-256: $hash"
 Write-Host ""
-Write-Host "Mande o .zip inteiro (nao os .exe soltos)."
+Write-Host "Mande o .zip inteiro (nao o .exe solto)."

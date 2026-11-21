@@ -19,6 +19,9 @@ struct ClientScreenActions
     // "Continuar" na tela inicial
     bool start = false;
 
+    // "Voltar" na tela inicial (volta pro inicio do programa)
+    bool goHome = false;
+
     // "Trocar o que está sendo compartilhado"
     bool openPicker = false;
 
@@ -64,6 +67,9 @@ struct ClientSetupModel
     // true = o usuario ja clicou em transmitir e a sessao esta
     // sendo criada.
     bool busy = false;
+
+    // Mostra "Voltar" (so antes de a sessao ser criada).
+    bool canGoBack = false;
 
     std::string status;
 };

@@ -25,7 +25,29 @@ struct ReceiverScreenActions
     bool openDownloadPage = false;
 
     bool recheckFfmpeg = false;
+
+    // "Voltar" na tela de conexao (volta pro inicio)
+    bool goHome = false;
 };
+
+
+// ------------------------------------------------------------
+// Tela inicial do programa: Assistir ou Transmitir
+// ------------------------------------------------------------
+
+struct HomeScreenActions
+{
+    bool watch = false;
+
+    bool share = false;
+};
+
+// error: aviso em vermelho (ex.: o modo Transmitir nao
+// conseguiu iniciar). Vazio = nenhum.
+void DrawHomeScreen(
+    const std::string& error,
+    HomeScreenActions& actions
+);
 
 
 // ffmpeg.exe ausente ou quebrado: explica e ensina a resolver.

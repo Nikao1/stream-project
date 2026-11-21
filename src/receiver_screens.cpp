@@ -136,6 +136,79 @@ void DrawConnectScreen(
         );
     }
 
+    if (!busy)
+    {
+        ImGui::Spacing();
+
+        if (ImGui::Button(
+                "Voltar",
+                ImVec2(
+                    ImGui::GetContentRegionAvail().x,
+                    0.0f)))
+        {
+            actions.goHome = true;
+        }
+    }
+
+    UiEndPanel();
+}
+
+
+// ============================================================
+// Tela inicial do programa
+// ============================================================
+
+void DrawHomeScreen(
+    const std::string& error,
+    HomeScreenActions& actions)
+{
+    UiBeginCenteredPanel("##inicio", 440.0f);
+
+    UiTitle("Stream Project");
+
+    UiMutedText(
+        "Tela e som direto de um computador para outro, sem "
+        "passar por servidor."
+    );
+
+    ImGui::Spacing();
+    ImGui::Spacing();
+
+    if (UiPrimaryButton("Assistir"))
+    {
+        actions.watch = true;
+    }
+
+    UiMutedText(
+        "Entre com o código de quem está transmitindo."
+    );
+
+    ImGui::Spacing();
+    ImGui::Spacing();
+
+    if (ImGui::Button(
+            "Transmitir",
+            ImVec2(
+                ImGui::GetContentRegionAvail().x,
+                44.0f * UiScale())))
+    {
+        actions.share = true;
+    }
+
+    UiMutedText(
+        "Compartilhe uma tela ou janela com até 4 pessoas."
+    );
+
+    if (!error.empty())
+    {
+        ImGui::Spacing();
+
+        UiWrappedColored(
+            UiColorError(),
+            error.c_str()
+        );
+    }
+
     UiEndPanel();
 }
 
