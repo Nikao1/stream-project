@@ -31,6 +31,33 @@ respostas em texto "chave=valor", uma por linha):
                                       -> ok
     POST /sessions/<code>/close       token        -> ok
 
+Salas (varias pessoas; cada uma pode transmitir, e quem assiste
+escolhe quem ver). A sala so guarda quem esta nela e o codigo de
+SESSAO de cada um que transmite - quem assiste entra nessa
+sessao pelo fluxo normal acima ("join"/"announce"):
+
+    POST /rooms                       name
+                                      -> code, member_id, token,
+                                         ttl + estado da sala
+    POST /rooms/<code>/join           name
+                                      -> member_id, token, ttl +
+                                         estado da sala
+    POST /rooms/<code>/heartbeat      member_id, token
+                                      -> estado da sala
+    POST /rooms/<code>/present        member_id, token,
+                                      session_code, session_token,
+                                      [label]      -> ok
+    POST /rooms/<code>/stop           member_id, token -> ok
+    POST /rooms/<code>/leave          member_id, token -> ok
+
+    Estado da sala:
+        member_count=N
+        member_<i>=<member_id>|<nome>
+        presenter_count=N
+        presenter_<i>=<member_id>|<codigo da sessao>|<nome>|<o que
+                      esta compartilhando>
+    (nome e descricao com %XX, como em URL)
+
 Hole punching: o host registra seu endereco publico (descoberto
 por STUN) ao criar a sessao; o receiver pega esse endereco no
 "join" e anuncia o proprio com "announce"; o host recebe o
@@ -44,7 +71,7 @@ import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import parse_qs
+from urllib.parse import parse_qs, quote
 
 # ------------------------------------------------------------
 # Configuracao
@@ -65,8 +92,19 @@ MAX_ANNOUNCES_PER_SESSION = 16
 CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
 
 # Limite de requisicoes por IP (dificulta adivinhar codigos).
+# Varias pessoas da mesma casa saem pelo mesmo IP, e cada uma
+# numa sala manda ~2 requisicoes a cada 2 s (sala + sessao).
+# 600/min ainda deixa adivinhar um codigo (31^6 possibilidades)
+# fora de questao.
 RATE_LIMIT_WINDOW_SECONDS = 60
-RATE_LIMIT_MAX_REQUESTS = 120
+RATE_LIMIT_MAX_REQUESTS = 600
+
+# Salas
+ROOM_MEMBER_TTL_SECONDS = 20    # some quem parar de mandar heartbeat
+MAX_ROOMS = 2000
+MAX_ROOM_MEMBERS = 9          # quem transmite + ate 8 assistindo (MAX_VIEWERS do programa)
+MAX_NAME_LENGTH = 32
+MAX_LABEL_LENGTH = 80
 
 # So confie em X-Forwarded-For quando o servidor estiver atras
 # de um proxy da hospedagem (Render, Fly etc.): TRUST_PROXY=1
@@ -78,6 +116,7 @@ TRUST_PROXY = os.environ.get("TRUST_PROXY", "0") == "1"
 
 _lock = threading.Lock()
 _sessions = {}      # code -> dict
+_rooms = {}         # code -> {"members": {member_id: dict}}
 _rate = {}          # ip -> [inicio_da_janela, contagem]
 
 
@@ -91,6 +130,21 @@ def _purge_expired():
     expired = [c for c, s in _sessions.items() if s["expires"] <= now]
     for code in expired:
         del _sessions[code]
+
+    # Salas: sai quem parou de dar sinal de vida; sala vazia
+    # some. Quem transmitia e a sessao dele expirou volta a so
+    # assistir.
+    for code in list(_rooms):
+        members = _rooms[code]["members"]
+        for member_id in list(members):
+            member = members[member_id]
+            if now - member["last_seen"] > ROOM_MEMBER_TTL_SECONDS:
+                del members[member_id]
+            elif (member["presenting"] is not None and
+                  member["presenting"]["session_code"] not in _sessions):
+                member["presenting"] = None
+        if not members:
+            del _rooms[code]
 
     stale = [ip for ip, (start, _) in _rate.items()
              if now - start > RATE_LIMIT_WINDOW_SECONDS]
@@ -136,6 +190,48 @@ def _same_network(ip_a, ip_b):
 
 def _valid_port(text):
     return text.isdigit() and 1 <= int(text) <= 65535
+
+
+def _clean_text(text, limit):
+    """Nome/descricao vindos do programa: sem caracteres de
+    controle, sem espacos sobrando, com tamanho limitado."""
+    text = "".join(c for c in text if c.isprintable())
+    return " ".join(text.split())[:limit]
+
+
+def _new_code():
+    """Chamar com _lock adquirido. Salas e sessoes dividem os
+    codigos: um codigo digitado e de uma coisa so."""
+    while True:
+        code = "".join(secrets.choice(CODE_ALPHABET)
+                       for _ in range(CODE_LENGTH))
+        if code not in _sessions and code not in _rooms:
+            return code
+
+
+def _room_state(room):
+    """Chamar com _lock adquirido. Campos do estado da sala."""
+    fields = {}
+    members = sorted(room["members"].items(),
+                     key=lambda item: item[1]["joined"])
+    fields["member_count"] = len(members)
+    presenters = []
+    for i, (member_id, member) in enumerate(members):
+        fields[f"member_{i}"] = f"{member_id}|{quote(member['name'])}"
+        presenting = member["presenting"]
+        if presenting is not None:
+            presenters.append((presenting["since"], member_id,
+                               member["name"], presenting))
+    presenters.sort(key=lambda p: p[0])
+    fields["presenter_count"] = len(presenters)
+    for i, (_, member_id, name, presenting) in enumerate(presenters):
+        fields[f"presenter_{i}"] = "|".join([
+            member_id,
+            presenting["session_code"],
+            quote(name),
+            quote(presenting["label"]),
+        ])
+    return fields
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -186,7 +282,9 @@ class Handler(BaseHTTPRequestHandler):
             with _lock:
                 _purge_expired()
                 count = len(_sessions)
-            self._reply(200, {"ok": 1, "sessions": count})
+                rooms = len(_rooms)
+            self._reply(200, {"ok": 1, "sessions": count,
+                              "rooms": rooms})
         else:
             self._error(404, "not_found")
 
@@ -219,6 +317,23 @@ class Handler(BaseHTTPRequestHandler):
                 return self._keepalive(code, form)
             if action == "close":
                 return self._close(code, form)
+
+        if parts == ["rooms"]:
+            return self._room_create(form)
+
+        if len(parts) == 3 and parts[0] == "rooms":
+            code = parts[1].upper()
+            action = parts[2]
+            if action == "join":
+                return self._room_join(code, form)
+            if action == "heartbeat":
+                return self._room_heartbeat(code, form)
+            if action == "present":
+                return self._room_present(code, form)
+            if action == "stop":
+                return self._room_stop(code, form)
+            if action == "leave":
+                return self._room_leave(code, form)
 
         self._error(404, "not_found")
 
@@ -267,11 +382,7 @@ class Handler(BaseHTTPRequestHandler):
             if len(_sessions) >= MAX_SESSIONS:
                 return self._error(503, "server_full")
 
-            while True:
-                code = "".join(secrets.choice(CODE_ALPHABET)
-                               for _ in range(CODE_LENGTH))
-                if code not in _sessions:
-                    break
+            code = _new_code()
 
             token = secrets.token_hex(16)
             _sessions[code] = {
@@ -382,6 +493,125 @@ class Handler(BaseHTTPRequestHandler):
             if session is None:
                 return self._error(404, "session_not_found")
             del _sessions[code]
+        self._reply(200, {"ok": 1})
+
+
+    # -------------------------- salas -------------------------
+
+    def _room_name(self, form):
+        name = _clean_text(form.get("name", ""), MAX_NAME_LENGTH)
+        return name or "Sem nome"
+
+    def _add_member(self, room, name):
+        """Chamar com _lock adquirido."""
+        member_id = secrets.token_hex(4)
+        while member_id in room["members"]:
+            member_id = secrets.token_hex(4)
+        token = secrets.token_hex(16)
+        now = _now()
+        room["members"][member_id] = {
+            "token": token,
+            "name": name,
+            "joined": now,
+            "last_seen": now,
+            "presenting": None,
+        }
+        return member_id, token
+
+    def _room_member(self, code, form):
+        """Chamar com _lock adquirido. (sala, membro) se o token
+        confere; (None, None) se nao."""
+        room = _rooms.get(code)
+        if room is None:
+            return None, None
+        member = room["members"].get(form.get("member_id", ""))
+        if member is None or not secrets.compare_digest(
+                member["token"], form.get("token", "")):
+            return None, None
+        member["last_seen"] = _now()
+        return room, member
+
+    def _room_create(self, form):
+        name = self._room_name(form)
+        with _lock:
+            if len(_rooms) >= MAX_ROOMS:
+                return self._error(503, "server_full")
+            code = _new_code()
+            room = {"members": {}}
+            _rooms[code] = room
+            member_id, token = self._add_member(room, name)
+            fields = {"code": code, "member_id": member_id,
+                      "token": token, "ttl": ROOM_MEMBER_TTL_SECONDS}
+            fields.update(_room_state(room))
+        self._reply(200, fields)
+
+    def _room_join(self, code, form):
+        name = self._room_name(form)
+        with _lock:
+            room = _rooms.get(code)
+            if room is None:
+                # Pode ser um codigo de SESSAO (versoes sem sala):
+                # quem chama tenta o "join" de sessao em seguida.
+                return self._error(404, "room_not_found")
+            if len(room["members"]) >= MAX_ROOM_MEMBERS:
+                return self._error(409, "room_full")
+            member_id, token = self._add_member(room, name)
+            fields = {"member_id": member_id, "token": token,
+                      "ttl": ROOM_MEMBER_TTL_SECONDS}
+            fields.update(_room_state(room))
+        self._reply(200, fields)
+
+    def _room_heartbeat(self, code, form):
+        with _lock:
+            room, member = self._room_member(code, form)
+            if room is None:
+                return self._error(404, "not_in_room")
+            fields = {"ok": 1}
+            fields.update(_room_state(room))
+        self._reply(200, fields)
+
+    def _room_present(self, code, form):
+        session_code = form.get("session_code", "").upper()
+        session_token = form.get("session_token", "")
+        label = _clean_text(form.get("label", ""), MAX_LABEL_LENGTH)
+        with _lock:
+            room, member = self._room_member(code, form)
+            if room is None:
+                return self._error(404, "not_in_room")
+            # So publica sessao que e DELE (prova: o token da
+            # sessao) - ninguem anuncia a transmissao de outro.
+            session = _sessions.get(session_code)
+            if session is None or not secrets.compare_digest(
+                    session["token"], session_token):
+                return self._error(404, "session_not_found")
+            previous = member["presenting"]
+            member["presenting"] = {
+                "session_code": session_code,
+                "label": label,
+                # Mudar so a descricao nao muda a ordem da lista.
+                "since": (previous["since"]
+                          if previous is not None and
+                          previous["session_code"] == session_code
+                          else _now()),
+            }
+        self._reply(200, {"ok": 1})
+
+    def _room_stop(self, code, form):
+        with _lock:
+            room, member = self._room_member(code, form)
+            if room is None:
+                return self._error(404, "not_in_room")
+            member["presenting"] = None
+        self._reply(200, {"ok": 1})
+
+    def _room_leave(self, code, form):
+        with _lock:
+            room, member = self._room_member(code, form)
+            if room is None:
+                return self._error(404, "not_in_room")
+            del room["members"][form["member_id"]]
+            if not room["members"]:
+                del _rooms[code]
         self._reply(200, {"ok": 1})
 
 
