@@ -2247,6 +2247,9 @@ LRESULT CALLBACK WindowProc(
         std::cout
             << "\nEncerrando Stream Project...\n";
 
+        ClientUiSaveWindowPlacement(
+            hwnd);
+
 
         // ----------------------------------------------------
         // Parar captura
@@ -2641,7 +2644,9 @@ int WINAPI wWinMain(
 
     ShowWindow(
         g_hwnd,
-        nCmdShow
+        ClientUiRestoreWindowPlacement(
+            g_hwnd,
+            nCmdShow)
     );
 
 

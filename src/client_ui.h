@@ -108,6 +108,20 @@ bool ClientUiInit(
 
 void ClientUiShutdown();
 
+// Posicao/tamanho da janela da ultima vez. Chamar depois de
+// criar a janela e antes do ShowWindow; devolve o comando pro
+// ShowWindow (defaultShowCommand se nao havia nada salvo).
+int ClientUiRestoreWindowPlacement(
+    HWND hwnd,
+    int defaultShowCommand
+);
+
+// Chamar no WM_DESTROY (guarda a janela e devolve a energia ao
+// normal).
+void ClientUiSaveWindowPlacement(
+    HWND hwnd
+);
+
 // Chamar no inicio do WindowProc. true = a interface tratou.
 bool ClientUiHandleMessage(
     HWND hwnd,

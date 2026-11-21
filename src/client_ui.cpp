@@ -16,6 +16,8 @@
 #include "ffmpeg_check.h"
 #include "invite_code.h"
 #include "ui_common.h"
+#include "app_settings.h"
+#include "power_mode.h"
 
 
 namespace
@@ -735,6 +737,181 @@ void ClientUiSetupLog()
 
 
 // ============================================================
+// Configuracoes salvas (ver app_settings.h)
+// ============================================================
+
+AppSettings& ClientSettings()
+{
+    static AppSettings settings(L"client.ini");
+
+    return settings;
+}
+
+
+int ClampIndex(
+    int value,
+    int count)
+{
+    return
+        value >= 0 && value < count
+        ? value
+        : 0;
+}
+
+
+// Depois de montar a lista de dispositivos de som.
+void LoadClientSettings()
+{
+    AppSettings& settings =
+        ClientSettings();
+
+    g_qualityIndex =
+        ClampIndex(settings.GetInt(L"Qualidade", 3), 4);
+
+    g_fpsIndex =
+        ClampIndex(settings.GetInt(L"FPS", 0), 3);
+
+    // Som: guardado pelo id do dispositivo (a posicao na lista
+    // muda quando se pluga/despluga um fone).
+    std::wstring deviceId =
+        settings.GetString(L"DispositivoSom", L"");
+
+    g_audioIndex = 0;
+
+    for (size_t i = 0; i < g_audioDevices.size(); ++i)
+    {
+        if (!deviceId.empty() &&
+            g_audioDevices[i].id == deviceId)
+        {
+            g_audioIndex = static_cast<int>(i) + 1;
+
+            break;
+        }
+    }
+
+    if (g_windowAudioSupported)
+    {
+        g_windowAudioOnly =
+            settings.GetInt(L"SomSoDaJanela", 1) != 0;
+    }
+}
+
+
+// Chamada a cada frame: grava so quando algo mudou e ficou
+// parado por meio segundo.
+void SaveClientSettingsIfChanged()
+{
+    struct Saved
+    {
+        int quality;
+        int fps;
+        int audio;
+        bool windowAudio;
+
+        bool operator==(const Saved& other) const
+        {
+            return quality == other.quality &&
+                   fps == other.fps &&
+                   audio == other.audio &&
+                   windowAudio == other.windowAudio;
+        }
+    };
+
+    static bool haveSaved = false;
+    static Saved saved{};
+    static Saved pending{};
+    static ULONGLONG pendingSince = 0;
+
+    Saved now{
+        g_qualityIndex,
+        g_fpsIndex,
+        g_audioIndex,
+        g_windowAudioOnly
+    };
+
+    if (!haveSaved)
+    {
+        saved = now;
+        pending = now;
+        haveSaved = true;
+
+        return;
+    }
+
+    ULONGLONG tick =
+        GetTickCount64();
+
+    if (!(now == pending))
+    {
+        pending = now;
+        pendingSince = tick;
+
+        return;
+    }
+
+    if (pending == saved ||
+        tick - pendingSince < 500)
+    {
+        return;
+    }
+
+    AppSettings& settings =
+        ClientSettings();
+
+    settings.SetInt(L"Qualidade", pending.quality);
+    settings.SetInt(L"FPS", pending.fps);
+
+    settings.SetString(
+        L"DispositivoSom",
+        pending.audio >= 1 &&
+        pending.audio <= static_cast<int>(g_audioDevices.size())
+            ? g_audioDevices[pending.audio - 1].id
+            : std::wstring());
+
+    if (g_windowAudioSupported)
+    {
+        settings.SetInt(
+            L"SomSoDaJanela",
+            pending.windowAudio ? 1 : 0);
+    }
+
+    saved = pending;
+}
+
+
+int ClientUiRestoreWindowPlacement(
+    HWND hwnd,
+    int defaultShowCommand)
+{
+    int showCommand =
+        defaultShowCommand;
+
+    ClientSettings().RestoreWindowPlacement(
+        hwnd,
+        showCommand);
+
+    return showCommand;
+}
+
+
+void ClientUiSaveWindowPlacement(
+    HWND hwnd)
+{
+    WINDOWPLACEMENT placement{};
+
+    placement.length = sizeof(placement);
+
+    if (GetWindowPlacement(hwnd, &placement))
+    {
+        ClientSettings().SaveWindowPlacement(
+            placement);
+    }
+
+    PowerSetActive(false);
+}
+
+
+// ============================================================
 // ClientUiInit / Shutdown
 // ============================================================
 
@@ -765,6 +942,11 @@ bool ClientUiInit(
     {
         g_audioDeviceNames.push_back(device.name);
     }
+
+    // Escolhas da ultima vez (qualidade, FPS, som).
+    LoadClientSettings();
+
+    PowerDisableThrottling();
 
     // O encoder de video e um ffmpeg.exe: sem ele nao ha
     // transmissao, entao a interface abre direto na tela que
@@ -865,6 +1047,15 @@ void ClientUiRenderFrame()
             ClientViewClearPreview();
         }
     }
+
+
+    SaveClientSettingsIfChanged();
+
+    // Transmitindo: tela acesa e sem economia de energia. (Com
+    // a tela apagada o Windows para de desenhar - e a captura
+    // para junto.)
+    PowerSetActive(
+        g_state == State::Live);
 
 
     if (!ClientViewBeginFrame())

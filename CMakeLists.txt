@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.20)
 
 project(stream-client
-    VERSION 0.3.0
+    VERSION 0.3.1
     LANGUAGES C CXX
 )
 
@@ -139,6 +139,11 @@ target_compile_definitions(imgui PRIVATE
 add_executable(stream-client WIN32
     src/main.cpp
 
+    src/app_settings.cpp
+    src/app_settings.h
+    src/power_mode.cpp
+    src/power_mode.h
+
     src/server.cpp
     src/server.h
 
@@ -200,6 +205,11 @@ add_executable(stream-receiver WIN32
 
     src/video_reassembly.cpp
     src/video_reassembly.h
+
+    src/app_settings.cpp
+    src/app_settings.h
+    src/power_mode.cpp
+    src/power_mode.h
 
     src/ui_common.cpp
     src/ui_common.h

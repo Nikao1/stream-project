@@ -34,6 +34,8 @@
 #include "ui_common.h"
 #include "receiver_screens.h"
 #include "crash_report.h"
+#include "app_settings.h"
+#include "power_mode.h"
 #include "version.h"
 
 #pragma comment(lib, "ws2_32.lib")
@@ -3281,6 +3283,142 @@ bool g_fullscreen = false;
 
 WINDOWPLACEMENT g_windowedPlacement{};
 
+
+// ============================================================
+// Configuracoes salvas (ver app_settings.h)
+// ============================================================
+
+AppSettings& ReceiverSettings()
+{
+    static AppSettings settings(L"receiver.ini");
+
+    return settings;
+}
+
+
+void LoadReceiverSettings()
+{
+    AppSettings& settings =
+        ReceiverSettings();
+
+    int volume =
+        settings.GetInt(L"Volume", 100);
+
+    if (volume < 0) volume = 0;
+    if (volume > 100) volume = 100;
+
+    g_volume =
+        static_cast<float>(volume) / 100.0f;
+
+    g_muted =
+        settings.GetInt(L"Mudo", 0) != 0;
+
+    g_fillWindow =
+        settings.GetInt(L"PreencherJanela", 0) != 0;
+
+    g_overlayCollapsed =
+        settings.GetInt(L"PainelFechado", 0) != 0;
+}
+
+
+// Chamada a cada frame: grava so quando algo mudou e ficou
+// parado por meio segundo (arrastar o volume nao vira dezenas
+// de gravacoes).
+void SaveReceiverSettingsIfChanged()
+{
+    struct Saved
+    {
+        int volume;
+        bool muted;
+        bool fill;
+        bool collapsed;
+
+        bool operator==(const Saved& other) const
+        {
+            return volume == other.volume &&
+                   muted == other.muted &&
+                   fill == other.fill &&
+                   collapsed == other.collapsed;
+        }
+    };
+
+    static bool haveSaved = false;
+    static Saved saved{};
+    static Saved pending{};
+    static ULONGLONG pendingSince = 0;
+
+    Saved now{
+        static_cast<int>(g_volume * 100.0f + 0.5f),
+        g_muted,
+        g_fillWindow,
+        g_overlayCollapsed
+    };
+
+    if (!haveSaved)
+    {
+        // Primeira chamada: e o que acabou de ser carregado.
+        saved = now;
+        pending = now;
+        haveSaved = true;
+
+        return;
+    }
+
+    ULONGLONG tick =
+        GetTickCount64();
+
+    if (!(now == pending))
+    {
+        pending = now;
+        pendingSince = tick;
+
+        return;
+    }
+
+    if (pending == saved ||
+        tick - pendingSince < 500)
+    {
+        return;
+    }
+
+    AppSettings& settings =
+        ReceiverSettings();
+
+    settings.SetInt(L"Volume", pending.volume);
+    settings.SetInt(L"Mudo", pending.muted ? 1 : 0);
+    settings.SetInt(L"PreencherJanela", pending.fill ? 1 : 0);
+    settings.SetInt(L"PainelFechado", pending.collapsed ? 1 : 0);
+
+    saved = pending;
+}
+
+
+void SaveReceiverWindowPlacement()
+{
+    if (!g_hwnd)
+        return;
+
+    if (g_fullscreen)
+    {
+        // Em tela cheia, o que vale e como a janela estava
+        // antes.
+        ReceiverSettings().SaveWindowPlacement(
+            g_windowedPlacement);
+
+        return;
+    }
+
+    WINDOWPLACEMENT placement{};
+
+    placement.length = sizeof(placement);
+
+    if (GetWindowPlacement(g_hwnd, &placement))
+    {
+        ReceiverSettings().SaveWindowPlacement(
+            placement);
+    }
+}
+
 // Pedido de tela cheia vindo da interface (botao do painel). Ver
 // o comentario em DrawReceiverUi.
 constexpr UINT WM_APP_TOGGLE_FULLSCREEN = WM_APP + 10;
@@ -4139,6 +4277,15 @@ void DrawReceiverUi()
 
     g_audioPlayback.SetMuted(g_muted);
 
+    SaveReceiverSettingsIfChanged();
+
+
+    // Assistindo: tela acesa e sem economia de energia (o
+    // Windows nao sabe que tem video rolando, porque ninguem
+    // mexe no mouse).
+    PowerSetActive(
+        g_uiState == UiState::Connected);
+
 
     // --------------------------------------------------------
     // Estatisticas no log, a cada 5s durante o stream (pra
@@ -4709,6 +4856,11 @@ LRESULT CALLBACK WindowProc(
 
     case WM_DESTROY:
     {
+        SaveReceiverWindowPlacement();
+
+        PowerSetActive(false);
+
+
         // ====================================================
         // Parar aplicação
         // ====================================================
@@ -4894,6 +5046,10 @@ int main()
         << STREAM_APP_VERSION
         << " ==========\n";
 
+    PowerDisableThrottling();
+
+    LoadReceiverSettings();
+
 
     // Comecar com o log do decoder vazio a cada execucao.
     std::ofstream(
@@ -5048,9 +5204,16 @@ int main()
     }
 
 
+    int showCommand =
+        SW_SHOW;
+
+    ReceiverSettings().RestoreWindowPlacement(
+        g_hwnd,
+        showCommand);
+
     ShowWindow(
         g_hwnd,
-        SW_SHOW
+        showCommand
     );
 
     UpdateWindow(
