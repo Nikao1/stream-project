@@ -11,3 +11,7 @@
 # Logs e relatorios de crash gerados ao rodar os programas
 *.log
 *.dmp
+
+# Python
+__pycache__/
+*.pyc

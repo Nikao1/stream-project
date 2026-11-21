@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.20)
 
 project(stream-project
-    VERSION 0.4.0
+    VERSION 0.5.0
     LANGUAGES C CXX
 )
 
@@ -194,6 +194,8 @@ add_executable(stream-project WIN32
     src/ui_widgets.h
     src/signaling_client.cpp
     src/signaling_client.h
+    src/room_client.cpp
+    src/room_client.h
     src/nat_traversal.cpp
     src/nat_traversal.h
     src/stun_message.h
@@ -240,4 +242,5 @@ target_link_libraries(stream-project PRIVATE
     imgui
     dwmapi
     shell32
+    advapi32
 )

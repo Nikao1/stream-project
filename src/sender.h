@@ -42,6 +42,29 @@ bool IsOpen();
 
 bool IsLive();
 
+// Modo sala: o painel troca o codigo da sessao por "Voltar para
+// a sala" e "Parar de transmitir" (o codigo vai pra sala).
+void SetRoomMode(
+    bool inRoom
+);
+
+// O que publicar na sala: codigo e prova (token) da sessao e o
+// que esta sendo compartilhado. false = nao esta transmitindo
+// (ou a sessao ainda esta sendo criada).
+bool GetPublishInfo(
+    std::string& outSessionCode,
+    std::string& outSessionToken,
+    std::string& outLabel
+);
+
+// Para de transmitir sem fechar o programa: encerra a captura e
+// a sessao, e volta pra tela de opcoes. O motor (portas,
+// threads) continua ligado pra proxima vez.
+void StopSharing();
+
+// Quantas pessoas estao assistindo esta transmissao.
+int ViewerCount();
+
 void Shutdown();
 
 } // namespace sender

@@ -86,6 +86,9 @@ std::atomic<bool> g_sessionStarted{ false };
 
 std::atomic<bool> g_sessionPending{ false };
 
+// Transmitindo dentro de uma sala (ver sender.h SetRoomMode).
+bool g_roomMode = false;
+
 
 // ------------------------------------------------------------
 // Seletor (so a thread da janela mexe)
@@ -670,7 +673,14 @@ void DrawUi(
         model.fpsIndex = &g_fpsIndex;
         model.audioIndex = &g_audioIndex;
         model.busy = false;
-        model.canGoBack = !g_sessionStarted;
+
+        // Numa sala da pra voltar sempre que nao estiver
+        // capturando (a sessao criada e descartada); fora dela,
+        // so antes de criar a sessao.
+        model.canGoBack =
+            g_roomMode
+            ? !g_captureRunning && !g_sessionPending
+            : !g_sessionStarted;
 
         {
             std::lock_guard<std::mutex> lock(g_textMutex);
@@ -720,6 +730,35 @@ void DrawUi(
     model.qualityLabel = QualityLabel();
     model.qualityIndex = &g_qualityIndex;
     model.fpsIndex = &g_fpsIndex;
+    model.inRoom = g_roomMode;
+    model.canStop = !g_sessionPending;
+
+    // Upload estimado: uma copia do video por pessoa, mais ~8%
+    // de cabecalhos, criptografia e reenvios.
+    if (model.viewers > 0)
+    {
+        uint32_t target =
+            g_targetOutputHeight.load();
+
+        uint32_t height =
+            target > 0
+            ? target
+            : (g_captureHeight > 0 ? g_captureHeight : 1080);
+
+        double perViewer =
+            PickBitrateMbps(height, g_targetFps.load()) * 1.08;
+
+        int total =
+            static_cast<int>(perViewer * model.viewers + 0.5);
+
+        model.uploadLabel =
+            "Upload estimado: ~" +
+            std::to_string(total) +
+            " Mbps";
+
+        model.uploadWarning =
+            total > 40;
+    }
     model.symmetricNat = g_symmetricNat;
     model.replyInput = g_replyInput;
     model.replyInputSize = sizeof(g_replyInput);
@@ -938,6 +977,65 @@ void ClientUiInit(
 
 
 // ============================================================
+// StopSharingInternal
+// ============================================================
+//
+// "Parar de transmitir": encerra a captura e a sessao, esquece
+// quem estava assistindo e volta pra tela de opcoes. O motor
+// (portas, threads, encoder) continua ligado.
+// ============================================================
+
+void StopSharingInternal()
+{
+    // A sessao ainda esta sendo criada numa thread: parar agora
+    // deixaria uma sessao orfa no servidor.
+    if (g_sessionPending)
+        return;
+
+    std::cout
+        << "\nTransmissao encerrada (Parar de transmitir).\n";
+
+    StopCapture();
+
+    g_signalingHost.Stop();
+
+    g_udpServer.ClearViewers();
+    g_udpAudioServer.ClearViewers();
+
+    g_udpServer.SetAllowAnonymous(false);
+    g_udpAudioServer.SetAllowAnonymous(false);
+
+    g_inviteMode = false;
+
+    {
+        std::lock_guard<std::mutex> lock(g_textMutex);
+
+        g_inviteText.clear();
+        g_replyStatus.clear();
+        g_status.clear();
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(g_displayMutex);
+
+        g_displayPixels.clear();
+        g_displayWidth = 0;
+        g_displayHeight = 0;
+    }
+
+    ClientViewClearPreview();
+
+    g_sharingLabel.clear();
+
+    g_pickerError.clear();
+
+    g_sessionStarted = false;
+
+    g_state = State::Setup;
+}
+
+
+// ============================================================
 // ClientUiDrawFrame
 // ============================================================
 //
@@ -996,6 +1094,28 @@ void ClientUiDrawFrame(
 
     outGoHome =
         actions.goHome;
+
+    // Saindo das telas do modo numa sala antes de escolher o que
+    // compartilhar: a sessao criada nao serve pra nada.
+    if (actions.goHome &&
+        g_roomMode &&
+        g_sessionStarted &&
+        !g_captureRunning)
+    {
+        StopSharingInternal();
+    }
+
+    if (actions.stopSharing)
+    {
+        StopSharingInternal();
+
+        // Na sala, volta pra lista; fora dela, fica na tela de
+        // opcoes (com "Voltar" pro inicio).
+        if (g_roomMode)
+        {
+            outGoHome = true;
+        }
+    }
 
 
     // --------------------------------------------------------
@@ -1178,6 +1298,55 @@ bool IsLive()
     return
         g_open &&
         g_state == State::Live;
+}
+
+
+void SetRoomMode(
+    bool inRoom)
+{
+    g_roomMode = inRoom;
+}
+
+
+bool GetPublishInfo(
+    std::string& outSessionCode,
+    std::string& outSessionToken,
+    std::string& outLabel)
+{
+    if (!g_open ||
+        g_state != State::Live ||
+        !g_captureRunning)
+    {
+        return false;
+    }
+
+    outSessionCode = g_signalingHost.GetCode();
+
+    outSessionToken = g_signalingHost.GetToken();
+
+    outLabel = g_sharingLabel;
+
+    return
+        !outSessionCode.empty() &&
+        !outSessionToken.empty();
+}
+
+
+void StopSharing()
+{
+    if (g_open)
+    {
+        StopSharingInternal();
+    }
+}
+
+
+int ViewerCount()
+{
+    return
+        g_open
+        ? static_cast<int>(g_udpServer.GetViewerCount())
+        : 0;
 }
 
 

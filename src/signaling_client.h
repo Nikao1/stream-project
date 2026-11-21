@@ -7,6 +7,7 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <vector>
 
 // ============================================================
 // SINALIZACAO
@@ -147,6 +148,10 @@ public:
     // Codigo atual da sessao (vazio se nao ha sessao).
     std::string GetCode();
 
+    // Prova de que a sessao e nossa (pra anunciar a transmissao
+    // numa sala - ver SignalingRoomPresent). Vazio sem sessao.
+    std::string GetToken();
+
 private:
     bool CreateSession(
         std::string& outError
@@ -176,3 +181,103 @@ private:
 
     SignalingViewerCallback m_viewerCallback;
 };
+
+
+// ============================================================
+// SALAS
+// ============================================================
+//
+// Uma sala junta varias pessoas; qualquer uma pode transmitir
+// e quem assiste escolhe quem ver. O servidor so guarda quem
+// esta na sala e o codigo de SESSAO de cada um que transmite:
+// pra assistir, o programa entra nessa sessao pelo caminho de
+// sempre (SignalingJoinSession). Video e audio continuam indo
+// direto de um computador pro outro.
+//
+// As funcoes abaixo sao chamadas de threads de trabalho (podem
+// demorar enquanto o servidor gratuito "acorda").
+// ============================================================
+
+struct RoomMember
+{
+    std::string id;
+    std::string name;
+};
+
+struct RoomPresenter
+{
+    std::string memberId;
+
+    // Codigo da SESSAO de quem transmite (pra assistir).
+    std::string sessionCode;
+
+    std::string name;
+
+    // O que esta sendo compartilhado (ex.: "Tela 1").
+    std::string label;
+};
+
+struct RoomState
+{
+    std::vector<RoomMember> members;
+
+    // Na ordem em que comecaram a transmitir.
+    std::vector<RoomPresenter> presenters;
+};
+
+struct RoomMembership
+{
+    std::string code;
+    std::string memberId;
+    std::string token;
+};
+
+enum class RoomJoinResult
+{
+    Joined,
+    NotFound,   // nao ha sala com esse codigo (pode ser de sessao)
+    Full,
+    Error
+};
+
+bool SignalingCreateRoom(
+    const std::string& name,
+    RoomMembership& outMembership,
+    RoomState& outState,
+    std::string& outError
+);
+
+RoomJoinResult SignalingJoinRoom(
+    const std::string& code,
+    const std::string& name,
+    RoomMembership& outMembership,
+    RoomState& outState,
+    std::string& outError
+);
+
+// outGone = o servidor nao conhece mais este membro (sala
+// fechou, ou ficamos tempo demais sem dar sinal de vida).
+bool SignalingRoomHeartbeat(
+    const RoomMembership& membership,
+    RoomState& outState,
+    bool& outGone,
+    std::string& outError
+);
+
+bool SignalingRoomPresent(
+    const RoomMembership& membership,
+    const std::string& sessionCode,
+    const std::string& sessionToken,
+    const std::string& label,
+    std::string& outError
+);
+
+bool SignalingRoomStop(
+    const RoomMembership& membership,
+    std::string& outError
+);
+
+bool SignalingRoomLeave(
+    const RoomMembership& membership,
+    std::string& outError
+);

@@ -49,6 +49,12 @@ public:
         return m_viewers.Count();
     }
 
+    // Esquece todos os espectadores (ver UdpServer).
+    void ClearViewers()
+    {
+        m_viewers.Clear();
+    }
+
     // Envia um pacote Opus (já codificado) completo pra todos
     // os espectadores conectados. Não
     // fragmenta - pacotes Opus típicos (20ms, ~128kbps) cabem

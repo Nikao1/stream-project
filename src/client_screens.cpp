@@ -258,10 +258,23 @@ void DrawClientLiveScreen(
 
 
     // --------------------------------------------------------
-    // Como as pessoas entram: codigo da sessao ou convite
+    // Como as pessoas entram: pela sala, codigo da sessao ou
+    // convite
     // --------------------------------------------------------
 
-    if (model.sessionPending)
+    if (model.inRoom)
+    {
+        UiMutedText(
+            "Quem está na sala vê sua transmissão na lista e "
+            "escolhe assistir."
+        );
+
+        if (UiPrimaryButton("Voltar para a sala"))
+        {
+            actions.goHome = true;
+        }
+    }
+    else if (model.sessionPending)
     {
         UiFieldLabel("Código da sessão");
 
@@ -393,6 +406,21 @@ void DrawClientLiveScreen(
             UiColorSuccess(),
             watching.c_str()
         );
+
+        if (!model.uploadLabel.empty())
+        {
+            UiMutedText(model.uploadLabel.c_str());
+        }
+
+        if (model.uploadWarning)
+        {
+            UiWrappedColored(
+                UiColorError(),
+                "Upload alto para a maioria das internets. Se a "
+                "imagem travar para quem assiste, baixe a "
+                "qualidade abaixo."
+            );
+        }
     }
     else
     {
@@ -505,6 +533,21 @@ void DrawClientLiveScreen(
             "sua rede local pode não conseguir conectar."
         );
     }
+
+    ImGui::Spacing();
+
+    ImGui::BeginDisabled(!model.canStop);
+
+    if (ImGui::Button(
+            "Parar de transmitir",
+            ImVec2(
+                ImGui::GetContentRegionAvail().x,
+                0.0f)))
+    {
+        actions.stopSharing = true;
+    }
+
+    ImGui::EndDisabled();
 
     UiEndPanel();
 }

@@ -53,6 +53,13 @@ public:
         return m_viewers.Count();
     }
 
+    // Esquece todos os espectadores (a transmissao acabou;
+    // quem quiser assistir de novo manda HELLO pra sessao nova).
+    void ClearViewers()
+    {
+        m_viewers.Clear();
+    }
+
     // Fragmenta e envia um frame H264 (Annex B) completo pra
     // TODOS os espectadores conectados, usando o protocolo
     // orientado a frame (video_protocol.h). Retorna false se

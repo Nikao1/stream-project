@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <string>
+#include <vector>
 
 // ============================================================
 // TELAS DO RECEIVER
@@ -32,21 +33,115 @@ struct ReceiverScreenActions
 
 
 // ------------------------------------------------------------
-// Tela inicial do programa: Assistir ou Transmitir
+// Tela inicial do programa
 // ------------------------------------------------------------
+//
+// Nome + "Criar uma sala" + "Entrar" com um codigo (de sala, ou
+// de uma transmissao de versoes sem sala), e "Transmitir sem
+// sala" pro fluxo direto.
+
+struct HomeScreenModel
+{
+    char* name = nullptr;
+    size_t nameSize = 0;
+
+    char* code = nullptr;
+    size_t codeSize = 0;
+
+    // true = criando/entrando (o servidor pode levar ate ~1
+    // minuto pra acordar).
+    bool busy = false;
+
+    std::string status;
+
+    // Aviso em vermelho (vazio = nenhum).
+    std::string error;
+};
 
 struct HomeScreenActions
 {
-    bool watch = false;
+    bool createRoom = false;
 
-    bool share = false;
+    bool enter = false;
+
+    bool shareWithoutRoom = false;
 };
 
-// error: aviso em vermelho (ex.: o modo Transmitir nao
-// conseguiu iniciar). Vazio = nenhum.
 void DrawHomeScreen(
-    const std::string& error,
+    HomeScreenModel& model,
     HomeScreenActions& actions
+);
+
+
+// ------------------------------------------------------------
+// Sala: quem esta, quem transmite, assistir/transmitir
+// ------------------------------------------------------------
+
+struct RoomPresenterEntry
+{
+    std::string name;
+    std::string label;
+
+    bool isMe = false;
+
+    // Esta pessoa assiste (ou esta conectando a) este.
+    bool watching = false;
+};
+
+struct RoomScreenModel
+{
+    std::string code;
+
+    std::vector<RoomPresenterEntry> presenters;
+
+    // Nomes de quem esta na sala (o desta pessoa marcado).
+    std::vector<std::string> members;
+
+    int maxMembers = 9;
+
+    // Esta pessoa esta transmitindo.
+    bool sharing = false;
+    std::string sharingLabel;
+    int sharingViewers = 0;
+
+    // Conectando a alguem (nao da pra trocar no meio).
+    bool connecting = false;
+    std::string connectingTo;
+
+    // Aviso neutro (ex.: "Fulano parou de transmitir.").
+    std::string notice;
+
+    // Erro (ex.: nao conseguiu conectar).
+    std::string error;
+
+    // Sem resposta do servidor da sala ha alguns segundos.
+    bool offline = false;
+};
+
+struct RoomScreenActions
+{
+    // Indice em presenters (-1 = nenhum).
+    int watch = -1;
+
+    // "Transmitir minha tela" / "Opções da transmissão"
+    bool openShare = false;
+
+    bool stopShare = false;
+
+    bool leave = false;
+};
+
+void DrawRoomScreen(
+    RoomScreenModel& model,
+    RoomScreenActions& actions
+);
+
+
+// Conectado a alguem da sala, esperando o primeiro frame.
+void DrawRoomWaitingScreen(
+    const std::string& presenterName,
+    const std::string& versionWarning,
+    bool& outBackToRoom
 );
 
 
@@ -116,11 +211,20 @@ struct StreamOverlayModel
     // 0 = invisivel, 1 = totalmente visivel (o painel some
     // aos poucos quando o mouse fica parado).
     float alpha = 1.0f;
+
+    // Assistindo dentro de uma sala: mostra quem transmite e o
+    // botao "Voltar para a sala".
+    bool inRoom = false;
+
+    std::string presenterName;
 };
 
 struct StreamOverlayActions
 {
     bool toggleFullscreen = false;
+
+    // "Voltar para a sala" (so com StreamOverlayModel.inRoom)
+    bool backToRoom = false;
 };
 
 // Desenha no canto superior direito. Devolve true se o mouse

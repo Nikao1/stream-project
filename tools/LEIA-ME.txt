@@ -2,37 +2,52 @@ STREAM PROJECT {VERSAO}
 =======================
 
 Compartilhe a tela (ou uma janela) com som, direto de um
-computador para outro, com até 4 pessoas assistindo.
+computador para outro. Numa sala, várias pessoas podem
+transmitir e cada uma escolhe quem quer assistir.
 
 Os dois arquivos precisam ficar juntos na mesma pasta:
 
-  StreamProject.exe    o programa (assistir e transmitir)
+  StreamProject.exe    o programa
   ffmpeg.exe           usado pelo programa (não apague)
 
-Abra o StreamProject.exe e escolha Assistir ou Transmitir.
 
+SALA (o jeito normal de usar)
+-----------------------------
+1. Abra o StreamProject.exe e escreva seu nome.
+2. Uma pessoa clica em "Criar uma sala" e passa o código da
+   sala para os outros.
+3. Os outros digitam o código e clicam em Entrar.
 
-PARA ASSISTIR
--------------
-1. Clique em Assistir.
-2. Digite o código de 6 letras que a pessoa que transmite te
-   passou e clique em Conectar.
+Dentro da sala:
+- "Transmitir minha tela": escolha a qualidade, o FPS e o que
+  vai compartilhar (uma tela inteira ou uma janela).
+- Na lista "Transmitindo agora", clique em Assistir em quem
+  você quer ver. Para trocar, volte para a sala e escolha
+  outra pessoa.
+- Dá para transmitir e assistir ao mesmo tempo.
+- Cabem até 9 pessoas por sala; cada transmissão aceita até 8
+  pessoas assistindo.
 
 Durante o vídeo, mexa o mouse para ver as opções (volume,
-preencher a janela, tela cheia). Atalhos: M liga e desliga o
-som, setas mudam o volume, F11 ou duplo clique é tela cheia.
+preencher a janela, tela cheia, voltar para a sala). Atalhos:
+M liga e desliga o som, setas mudam o volume, F11 ou duplo
+clique é tela cheia.
 
 
-PARA TRANSMITIR
----------------
-1. Clique em Transmitir.
-2. Escolha a qualidade, o FPS e o som, e clique em
-   "Escolher o que transmitir".
-3. Escolha uma tela inteira ou uma janela.
-4. Passe o código que aparece para quem vai assistir.
+UPLOAD DE QUEM TRANSMITE
+------------------------
+Quem transmite envia uma cópia do vídeo para cada pessoa que
+assiste. Com muita gente em 1080p, a internet de quem transmite
+pode não dar conta e a imagem trava para todos. O painel da
+transmissão mostra o upload estimado; se ficar alto, baixe a
+qualidade ali mesmo, sem parar a transmissão.
 
-Dá para trocar a qualidade e o FPS durante a transmissão, no
-painel do canto.
+
+SEM SALA
+--------
+"Transmitir sem sala" gera um código só da sua transmissão (como
+nas versões antigas). Quem for assistir digita esse código no
+mesmo campo da tela inicial.
 
 
 SE O WINDOWS AVISAR
@@ -48,6 +63,9 @@ Baixe o programa só de quem você conhece.
 Se o Firewall do Windows perguntar, clique em Permitir: o vídeo
 e o som vão direto de um computador para o outro.
 
+Se aparecer "O Windows bloqueou a captura de tela", use o botão
+"Abrir como administrador" que aparece logo abaixo.
+
 
 SE ALGO DER ERRADO
 ------------------
@@ -56,5 +74,5 @@ stream-project.log e ffmpeg-decoder.log. Se ele fechar
 sozinho, aparece também um arquivo .dmp. Mande esses arquivos
 para quem te passou o programa.
 
-Quem transmite e quem assiste devem usar a mesma versão (o
-número aparece no título da janela).
+Todos na sala devem usar a mesma versão (o número aparece no
+título da janela).

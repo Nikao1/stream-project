@@ -14,6 +14,7 @@
 #include <string>
 #include <cstdint>
 #include <vector>
+#include <cctype>
 #include <thread>
 #include <chrono>
 #include <cstdio>
@@ -38,6 +39,7 @@
 #include "app_settings.h"
 #include "power_mode.h"
 #include "sender.h"
+#include "room_client.h"
 #include "version.h"
 
 #pragma comment(lib, "ws2_32.lib")
@@ -674,6 +676,17 @@ std::mutex g_frameMutex;
 std::atomic<bool>
 g_running{ true };
 
+// true enquanto as threads de video/audio do modo Assistir devem
+// rodar. Desligar (ViewerDisconnect) encerra so a conexao - o
+// programa continua (ex.: trocar de tela numa sala).
+std::atomic<bool>
+g_watching{ false };
+
+inline bool WatchKeepGoing()
+{
+    return g_running && g_watching;
+}
+
 
 // ============================================================
 // FPS
@@ -1104,34 +1117,10 @@ void TryPresentPendingFrames()
     }
 
 
-    // ========================================================
-    // Atualizar título + repintar
-    // ========================================================
-
-    if (g_hwnd)
-    {
-        wchar_t title[256]{};
-
-
-        swprintf_s(
-            title,
-            L"Stream Project " STREAM_APP_VERSION_W
-            L" - assistindo %ux%u - %d FPS",
-            g_frameWidth,
-            g_frameHeight,
-            g_fps.load()
-        );
-
-
-        SetWindowTextW(
-            g_hwnd,
-            title
-        );
-
-
-        // Nao precisa pedir repintura: o laco principal
-        // redesenha a janela a cada vsync (ver main).
-    }
+    // (O titulo da janela e atualizado pela thread da janela -
+    // ver UpdateWindowTitle. Daqui, da thread de video, o
+    // SetWindowText faria esta thread esperar pela da janela,
+    // e a janela pode estar esperando esta thread terminar.)
 }
 
 
@@ -1687,7 +1676,7 @@ void ReceiverThread()
     );
 
 
-    while (g_running)
+    while (WatchKeepGoing())
     {
         // ====================================================
         // Perdas: pede reenvio do que faltou / desiste do que
@@ -1809,7 +1798,7 @@ void ReceiverThread()
             );
 
 
-        if (!g_running)
+        if (!WatchKeepGoing())
             break;
 
 
@@ -1887,7 +1876,7 @@ void ReceiverThread()
             received ==
             SOCKET_ERROR)
         {
-            if (!g_running)
+            if (!WatchKeepGoing())
                 break;
 
 
@@ -1977,6 +1966,22 @@ void ReceiverThread()
         }
     }
 
+
+    // Saindo so desta conexao (o programa continua): avisa
+    // quem transmite pra liberar a vaga na hora, em vez de
+    // esperar os 15 s sem sinal de vida.
+    if (g_running &&
+        g_udpSocket != INVALID_SOCKET)
+    {
+        sendto(
+            g_udpSocket,
+            "BYE1",
+            4,
+            0,
+            reinterpret_cast<sockaddr*>(&g_serverAddress),
+            sizeof(g_serverAddress)
+        );
+    }
 
     std::cout
         << "\nThread UDP encerrada.\n";
@@ -2156,7 +2161,7 @@ void AudioReceiverThread()
         0;
 
 
-    while (g_running)
+    while (WatchKeepGoing())
     {
         // ====================================================
         // Reenviar HELLO periodicamente ate receber audio
@@ -2261,7 +2266,7 @@ void AudioReceiverThread()
             );
 
 
-        if (!g_running)
+        if (!WatchKeepGoing())
             break;
 
 
@@ -2485,6 +2490,19 @@ void AudioReceiverThread()
     g_audioPlayback.Stop();
 
     g_audioDecoder.Stop();
+
+    // (ver o fim do ReceiverThread)
+    if (g_running)
+    {
+        sendto(
+            audioSocket,
+            "BYE1",
+            4,
+            0,
+            reinterpret_cast<sockaddr*>(&serverAddress),
+            sizeof(serverAddress)
+        );
+    }
 
     closesocket(
         audioSocket
@@ -3261,8 +3279,10 @@ std::atomic<UiState> g_uiState{ UiState::Connect };
 //   Home   tela inicial: "Assistir" ou "Transmitir"
 //   Watch  assistir - o fluxo do antigo stream-receiver (este
 //          arquivo)
-//   Share  transmitir - o antigo stream-client, que virou o
-//          modulo "sender" (sender.h)
+//   Share  transmitir sem sala - o antigo stream-client, que
+//          virou o modulo "sender" (sender.h)
+//   Room   numa sala: lista de quem transmite, assistir
+//          qualquer um, transmitir tambem (ver RoomView)
 //
 // A janela, o Direct3D e a interface sao sempre deste arquivo;
 // no modo Share, quem desenha as telas e o sender.
@@ -3272,7 +3292,8 @@ enum class AppMode
 {
     Home,
     Watch,
-    Share
+    Share,
+    Room
 };
 
 std::atomic<AppMode> g_appMode{ AppMode::Home };
@@ -3546,6 +3567,11 @@ void ToggleFullscreen()
 }
 
 std::atomic<bool> g_connectBusy{ false };
+
+// "Voltar" enquanto a conexao ainda estava sendo montada: a
+// thread de conexao desiste ao terminar, em vez de comecar a
+// receber.
+std::atomic<bool> g_connectCancelled{ false };
 
 std::thread g_connectThread;
 
@@ -4068,6 +4094,26 @@ void ConnectWorker(
         return;
     }
 
+    if (g_connectCancelled)
+    {
+        // Desistiram no meio (voltaram pra sala): nao comeca.
+        closesocket(g_udpSocket);
+
+        g_udpSocket =
+            INVALID_SOCKET;
+
+        g_uiState =
+            UiState::Connect;
+
+        g_connectBusy =
+            false;
+
+        return;
+    }
+
+    g_watching =
+        true;
+
     g_receiverThread =
         std::thread(ReceiverThread);
 
@@ -4086,6 +4132,9 @@ void StartConnect()
 {
     if (g_connectBusy.exchange(true))
         return;
+
+    g_connectCancelled =
+        false;
 
     // A tentativa anterior (se houve) ja terminou - so falta
     // recolher a thread.
@@ -4113,6 +4162,120 @@ void StartConnect()
             ConnectWorker,
             std::string(g_uiInput)
         );
+}
+
+
+// ============================================================
+// ViewerDisconnect
+// ============================================================
+//
+// Encerra so a conexao do modo Assistir (o programa continua):
+// para as threads de video e audio (que avisam quem transmite
+// que saimos), fecha o socket, para o decoder e zera tudo, pra
+// uma nova conexao comecar limpa. Chamar pela thread da janela.
+//
+// Se a conexao ainda esta sendo montada, so marca pra ela
+// desistir ao terminar.
+// ============================================================
+
+void ViewerDisconnect()
+{
+    if (g_connectBusy)
+    {
+        g_connectCancelled = true;
+
+        return;
+    }
+
+    if (g_connectThread.joinable())
+    {
+        g_connectThread.join();
+    }
+
+    bool wasWatching =
+        g_watching.exchange(false);
+
+    // As threads acordam em ate 200 ms (select) e saem.
+    if (g_receiverThread.joinable())
+    {
+        g_receiverThread.join();
+    }
+
+    if (g_audioReceiverThread.joinable())
+    {
+        g_audioReceiverThread.join();
+    }
+
+    g_decoder.Stop();
+
+    if (g_udpSocket != INVALID_SOCKET)
+    {
+        closesocket(g_udpSocket);
+
+        g_udpSocket =
+            INVALID_SOCKET;
+    }
+
+
+    // --------------------------------------------------------
+    // Estado do video
+    // --------------------------------------------------------
+
+    {
+        std::lock_guard<std::mutex> lock(
+            g_frameMutex
+        );
+
+        g_framePixels.clear();
+
+        g_shownWidth = 0;
+        g_shownHeight = 0;
+
+        g_pendingVideoFrames.clear();
+
+        g_videoTimestampQueue.clear();
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(
+            g_syncMutex
+        );
+
+        g_haveSyncBaseline = false;
+    }
+
+    g_streamReceived = false;
+
+    g_frameWidth = 0;
+    g_frameHeight = 0;
+
+    g_haveResolutionFrameId = false;
+    g_resolutionFrameId = 0;
+
+    g_reassembler = VideoReassembler();
+
+    SyncReassemblyStats();
+
+    g_statLate = 0;
+
+    g_fps = 0;
+
+    {
+        std::lock_guard<std::mutex> lock(
+            g_uiMutex
+        );
+
+        g_versionWarning.clear();
+    }
+
+    g_uiState =
+        UiState::Connect;
+
+    if (wasWatching)
+    {
+        std::cout
+            << "\nConexao encerrada (Assistir).\n";
+    }
 }
 
 
@@ -4151,6 +4314,673 @@ void OpenShareMode()
 
 
 // ============================================================
+// SALA
+// ============================================================
+//
+// Dentro da sala a tela alterna entre:
+//
+//   Lobby  a lista (quem transmite, quem esta, transmitir)
+//   Watch  assistindo alguem (video + painel)
+//   Share  as telas do modo Transmitir (opcoes, escolher a
+//          tela, painel da transmissao)
+//
+// Assistir alguem = entrar na SESSAO dessa pessoa pelo caminho
+// de sempre (StartConnect com o codigo da sessao). Trocar de
+// tela = ViewerDisconnect + conectar na outra.
+// ============================================================
+
+enum class RoomView
+{
+    Lobby,
+    Watch,
+    Share
+};
+
+RoomClient g_room;
+
+RoomView g_roomView = RoomView::Lobby;
+
+// Quem esta sendo assistido (vazio = ninguem). So a thread da
+// janela mexe nestes.
+std::string g_watchSessionCode;
+std::string g_watchName;
+
+// Acabou de clicar em "Assistir": vai pro video quando
+// conectar.
+bool g_watchAutoShow = false;
+
+std::string g_roomNotice;
+std::string g_roomError;
+
+
+// ------------------------------------------------------------
+// Tela inicial: nome, criar/entrar
+// ------------------------------------------------------------
+
+char g_nameInput[64]{};
+
+char g_homeCodeInput[32]{};
+
+enum class HomeResult
+{
+    None,
+    Room,
+    Session,
+    Error
+};
+
+std::atomic<bool> g_homeBusy{ false };
+
+std::atomic<HomeResult> g_homeResult{ HomeResult::None };
+
+std::thread g_homeThread;
+
+// Protegidos por g_uiMutex
+std::string g_homeStatus;
+std::string g_homeWorkerError;
+std::string g_homeSessionCode;
+
+
+std::string WideToUtf8(
+    const std::wstring& text)
+{
+    if (text.empty())
+        return std::string();
+
+    int size =
+        WideCharToMultiByte(
+            CP_UTF8, 0,
+            text.c_str(), static_cast<int>(text.size()),
+            nullptr, 0, nullptr, nullptr);
+
+    std::string result(static_cast<size_t>(size), '\0');
+
+    WideCharToMultiByte(
+        CP_UTF8, 0,
+        text.c_str(), static_cast<int>(text.size()),
+        result.data(), size, nullptr, nullptr);
+
+    return result;
+}
+
+
+std::wstring Utf8ToWide(
+    const std::string& text)
+{
+    if (text.empty())
+        return std::wstring();
+
+    int size =
+        MultiByteToWideChar(
+            CP_UTF8, 0,
+            text.c_str(), static_cast<int>(text.size()),
+            nullptr, 0);
+
+    std::wstring result(static_cast<size_t>(size), L'\0');
+
+    MultiByteToWideChar(
+        CP_UTF8, 0,
+        text.c_str(), static_cast<int>(text.size()),
+        result.data(), size);
+
+    return result;
+}
+
+
+// Nome salvo; na primeira vez, o usuario do Windows.
+void LoadName()
+{
+    std::wstring name =
+        ReceiverSettings().GetString(L"Nome", L"");
+
+    if (name.empty())
+    {
+        wchar_t user[128]{};
+
+        DWORD size = 128;
+
+        if (GetUserNameW(user, &size))
+        {
+            name = user;
+        }
+    }
+
+    std::string utf8 =
+        WideToUtf8(name);
+
+    strncpy_s(
+        g_nameInput,
+        utf8.c_str(),
+        _TRUNCATE);
+}
+
+
+std::string CurrentName()
+{
+    std::string name = g_nameInput;
+
+    size_t first = name.find_first_not_of(" \t");
+
+    size_t last = name.find_last_not_of(" \t");
+
+    name =
+        first == std::string::npos
+        ? std::string()
+        : name.substr(first, last - first + 1);
+
+    return name.empty() ? std::string("Sem nome") : name;
+}
+
+
+void SaveName()
+{
+    ReceiverSettings().SetString(
+        L"Nome",
+        Utf8ToWide(CurrentName()));
+}
+
+
+void HomeWorker(
+    bool create,
+    std::string code,
+    std::string name)
+{
+    std::string error;
+
+    if (create)
+    {
+        {
+            std::lock_guard<std::mutex> lock(g_uiMutex);
+
+            g_homeStatus = "Criando a sala";
+        }
+
+        if (g_room.Create(name, error))
+        {
+            g_homeResult = HomeResult::Room;
+        }
+        else
+        {
+            std::cout
+                << "Sala: nao deu pra criar: "
+                << error
+                << "\n";
+
+            std::lock_guard<std::mutex> lock(g_uiMutex);
+
+            g_homeWorkerError =
+                "Não foi possível criar a sala. Verifique sua "
+                "internet e tente de novo.";
+
+            g_homeResult = HomeResult::Error;
+        }
+
+        g_homeBusy = false;
+
+        return;
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(g_uiMutex);
+
+        g_homeStatus = "Procurando o código";
+    }
+
+    RoomJoinResult result =
+        g_room.Join(code, name, error);
+
+    switch (result)
+    {
+    case RoomJoinResult::Joined:
+        g_homeResult = HomeResult::Room;
+        break;
+
+    case RoomJoinResult::NotFound:
+    {
+        // Nao e sala: pode ser o codigo de quem transmite sem
+        // sala (ou de uma versao sem salas).
+        std::lock_guard<std::mutex> lock(g_uiMutex);
+
+        g_homeSessionCode = code;
+
+        g_homeResult = HomeResult::Session;
+        break;
+    }
+
+    case RoomJoinResult::Full:
+    {
+        std::lock_guard<std::mutex> lock(g_uiMutex);
+
+        g_homeWorkerError =
+            "Essa sala está cheia (9 pessoas).";
+
+        g_homeResult = HomeResult::Error;
+        break;
+    }
+
+    default:
+    {
+        std::cout
+            << "Sala: nao deu pra entrar: "
+            << error
+            << "\n";
+
+        std::lock_guard<std::mutex> lock(g_uiMutex);
+
+        g_homeWorkerError =
+            "Não foi possível falar com o servidor. Verifique "
+            "sua internet e tente de novo.";
+
+        g_homeResult = HomeResult::Error;
+        break;
+    }
+    }
+
+    g_homeBusy = false;
+}
+
+
+void StartHomeWorker(
+    bool create,
+    const std::string& code)
+{
+    if (g_homeBusy.exchange(true))
+        return;
+
+    if (g_homeThread.joinable())
+    {
+        g_homeThread.join();
+    }
+
+    g_homeError.clear();
+
+    g_homeResult = HomeResult::None;
+
+    SaveName();
+
+    g_homeThread =
+        std::thread(
+            HomeWorker,
+            create,
+            code,
+            CurrentName());
+}
+
+
+// ------------------------------------------------------------
+// Entrar / sair da sala
+// ------------------------------------------------------------
+
+void EnterRoom()
+{
+    g_room.Start();
+
+    sender::SetRoomMode(true);
+
+    g_roomView = RoomView::Lobby;
+
+    g_roomNotice.clear();
+    g_roomError.clear();
+
+    g_watchSessionCode.clear();
+    g_watchName.clear();
+
+    g_appMode = AppMode::Room;
+}
+
+
+// message: aviso pra tela inicial (vazio = nenhum).
+void LeaveRoom(
+    const std::string& message)
+{
+    ViewerDisconnect();
+
+    g_watchSessionCode.clear();
+    g_watchName.clear();
+
+    sender::StopSharing();
+
+    sender::SetRoomMode(false);
+
+    g_room.Leave();
+
+    g_homeError = message;
+
+    g_appMode = AppMode::Home;
+}
+
+
+// "Assistir" numa pessoa da lista.
+void RoomWatch(
+    const RoomPresenter& presenter)
+{
+    if (presenter.sessionCode == g_watchSessionCode &&
+        g_uiState == UiState::Connected)
+    {
+        g_roomView = RoomView::Watch;
+
+        return;
+    }
+
+    // Conexao anterior ainda sendo montada: o botao fica
+    // desabilitado ate ela terminar (ver RoomScreenModel).
+    if (g_connectBusy)
+        return;
+
+    ViewerDisconnect();
+
+    g_watchSessionCode = presenter.sessionCode;
+    g_watchName = presenter.name;
+    g_watchAutoShow = true;
+
+    g_roomNotice.clear();
+    g_roomError.clear();
+
+    strncpy_s(
+        g_uiInput,
+        presenter.sessionCode.c_str(),
+        _TRUNCATE);
+
+    std::cout
+        << "Sala: assistindo "
+        << presenter.name
+        << " (sessao "
+        << presenter.sessionCode
+        << ")\n";
+
+    StartConnect();
+}
+
+
+// "Voltar para a sala" assistindo alguem: para de assistir
+// (libera a internet e a vaga de quem transmite).
+void RoomStopWatching()
+{
+    ViewerDisconnect();
+
+    g_watchSessionCode.clear();
+    g_watchName.clear();
+
+    g_watchAutoShow = false;
+
+    g_roomView = RoomView::Lobby;
+}
+
+
+void OpenRoomShare()
+{
+    std::string error;
+
+    if (!sender::Open(
+            g_hwnd,
+            g_rendererDevice.Get(),
+            g_rendererContext.Get(),
+            error))
+    {
+        g_roomError = error;
+
+        return;
+    }
+
+    g_roomView = RoomView::Share;
+}
+
+
+// ------------------------------------------------------------
+// RoomSync - a cada frame, na sala
+// ------------------------------------------------------------
+//
+// Publica/retira a transmissao desta pessoa, acompanha a
+// conexao com quem esta sendo assistido e percebe quando essa
+// pessoa parou de transmitir ou a sala acabou.
+// ------------------------------------------------------------
+
+void RoomSync(
+    const RoomState& state)
+{
+    std::string code;
+    std::string token;
+    std::string label;
+
+    if (sender::GetPublishInfo(code, token, label))
+    {
+        g_room.SetPresenting(code, token, label);
+    }
+    else
+    {
+        g_room.SetPresenting("", "", "");
+    }
+
+    if (g_room.IsLost())
+    {
+        LeaveRoom(
+            "A sala foi encerrada (ou o servidor reiniciou). "
+            "Crie outra ou entre de novo pelo código.");
+
+        return;
+    }
+
+    if (g_watchSessionCode.empty())
+        return;
+
+    // A conexao falhou (o motivo fica em g_uiError).
+    if (!g_connectBusy &&
+        !g_watching &&
+        g_uiState == UiState::Connect)
+    {
+        {
+            std::lock_guard<std::mutex> lock(g_uiMutex);
+
+            g_roomError =
+                g_uiError.empty()
+                ? "Não foi possível conectar a " + g_watchName + "."
+                : g_uiError;
+        }
+
+        g_watchSessionCode.clear();
+        g_watchName.clear();
+
+        g_watchAutoShow = false;
+
+        g_roomView = RoomView::Lobby;
+
+        return;
+    }
+
+    // Conectou: mostra o video.
+    if (g_watchAutoShow &&
+        g_uiState == UiState::Connected)
+    {
+        g_watchAutoShow = false;
+
+        if (g_roomView == RoomView::Lobby)
+        {
+            g_roomView = RoomView::Watch;
+        }
+    }
+
+    // A pessoa parou de transmitir (ou saiu da sala).
+    bool stillPresenting = false;
+
+    for (const RoomPresenter& presenter : state.presenters)
+    {
+        if (presenter.sessionCode == g_watchSessionCode)
+        {
+            stillPresenting = true;
+
+            break;
+        }
+    }
+
+    if (!stillPresenting &&
+        !g_room.IsOffline())
+    {
+        g_roomNotice =
+            g_watchName + " parou de transmitir.";
+
+        RoomStopWatching();
+    }
+}
+
+
+// ------------------------------------------------------------
+// Titulo da janela (sempre pela thread da janela)
+// ------------------------------------------------------------
+
+void UpdateWindowTitle()
+{
+    if (!g_hwnd)
+        return;
+
+    std::wstring title =
+        L"Stream Project " STREAM_APP_VERSION_W;
+
+    if (g_appMode == AppMode::Room)
+    {
+        title += L" - sala " + Utf8ToWide(g_room.GetCode());
+    }
+
+    if (g_streamReceived &&
+        g_frameWidth > 0)
+    {
+        wchar_t details[96]{};
+
+        swprintf_s(
+            details,
+            L" - assistindo %ux%u - %d FPS",
+            g_frameWidth,
+            g_frameHeight,
+            g_fps.load());
+
+        title += details;
+    }
+
+    static std::wstring lastTitle;
+
+    if (title != lastTitle)
+    {
+        lastTitle = title;
+
+        SetWindowTextW(g_hwnd, title.c_str());
+    }
+}
+
+
+// ============================================================
+// DrawVideoOverlay
+// ============================================================
+//
+// Painel sobre o video (volume, preencher, tela cheia...):
+// aparece quando o mouse mexe e some sozinho depois de uns
+// segundos parado. Numa sala, mostra quem transmite e
+// "Voltar para a sala".
+// ============================================================
+
+void DrawVideoOverlay(
+    ReceiverScreenActions& actions,
+    bool inRoom,
+    const std::string& presenterName,
+    bool& outBackToRoom)
+{
+    // ----------------------------------------------------
+    // Painel sobre o video: aparece quando o mouse mexe e
+    // some sozinho depois de uns segundos parado.
+    // ----------------------------------------------------
+
+    static double lastActivity = -100.0;
+
+    static bool overlayHovered = false;
+
+    ImGuiIO& io = ImGui::GetIO();
+
+    double now = ImGui::GetTime();
+
+    bool keyboardFree = !io.WantTextInput;
+
+    if (io.MouseDelta.x != 0.0f ||
+        io.MouseDelta.y != 0.0f ||
+        overlayHovered)
+    {
+        lastActivity = now;
+    }
+
+    // Atalhos de teclado (tambem mostram o painel).
+    if (keyboardFree)
+    {
+        if (ImGui::IsKeyPressed(ImGuiKey_M, false))
+        {
+            g_muted = !g_muted;
+
+            lastActivity = now;
+        }
+
+        if (ImGui::IsKeyPressed(ImGuiKey_UpArrow))
+        {
+            g_volume += 0.05f;
+
+            g_muted = false;
+
+            lastActivity = now;
+        }
+
+        if (ImGui::IsKeyPressed(ImGuiKey_DownArrow))
+        {
+            g_volume -= 0.05f;
+
+            lastActivity = now;
+        }
+
+        if (g_volume < 0.0f) g_volume = 0.0f;
+        if (g_volume > 1.0f) g_volume = 1.0f;
+    }
+
+    // Visivel por 2,5s depois da ultima atividade, sumindo
+    // ao longo de mais 0,5s.
+    double idle = now - lastActivity;
+
+    float alpha =
+        idle < 2.5 ? 1.0f :
+        idle < 3.0 ? static_cast<float>((3.0 - idle) / 0.5) :
+        0.0f;
+
+    StreamOverlayModel overlay;
+
+    overlay.volume = &g_volume;
+    overlay.muted = &g_muted;
+    overlay.fillWindow = &g_fillWindow;
+    overlay.fullscreen = g_fullscreen;
+    overlay.collapsed = &g_overlayCollapsed;
+    overlay.fps = g_fps.load();
+    overlay.width = g_frameWidth;
+    overlay.height = g_frameHeight;
+    overlay.lostNetwork = g_statLostNetwork.load();
+    overlay.recovered = g_statRecovered.load();
+    overlay.late = g_statLate.load();
+    overlay.alpha = alpha;
+
+    overlay.inRoom = inRoom;
+    overlay.presenterName = presenterName;
+
+    StreamOverlayActions overlayActions;
+
+    overlayHovered =
+        DrawStreamOverlay(
+            overlay,
+            overlayActions);
+
+    if (overlayActions.toggleFullscreen)
+    {
+        actions.toggleFullscreen = true;
+    }
+
+    if (overlayActions.backToRoom)
+    {
+        outBackToRoom = true;
+    }
+}
+
+
+// ============================================================
 //
 // Chamada uma vez por frame, de dentro do RenderFrame, com o
 // render target ja ativo. Durante o stream nao desenha nada -
@@ -4172,6 +5002,73 @@ void DrawReceiverUi()
     HomeScreenActions homeActions;
 
     bool shareGoHome = false;
+
+    RoomScreenActions roomActions;
+
+    bool backToRoom = false;
+
+    // Sala: estado do servidor e o que a tela mostrou (pra
+    // traduzir o clique em "Assistir" de volta pra pessoa).
+    RoomState roomState;
+
+    std::vector<RoomPresenter> shownPresenters;
+
+    if (mode == AppMode::Room)
+    {
+        roomState = g_room.GetState();
+
+        RoomSync(roomState);
+
+        // RoomSync pode ter saido da sala.
+        mode = g_appMode.load();
+    }
+
+    // Criar/entrar terminou (thread de trabalho)?
+    if (!g_homeBusy &&
+        g_homeResult != HomeResult::None)
+    {
+        HomeResult result =
+            g_homeResult.exchange(HomeResult::None);
+
+        if (g_homeThread.joinable())
+        {
+            g_homeThread.join();
+        }
+
+        if (result == HomeResult::Room)
+        {
+            EnterRoom();
+
+            roomState = g_room.GetState();
+        }
+        else if (result == HomeResult::Session)
+        {
+            // Codigo de quem transmite sem sala: o fluxo de
+            // sempre do modo Assistir.
+            std::string code;
+
+            {
+                std::lock_guard<std::mutex> lock(g_uiMutex);
+
+                code = g_homeSessionCode;
+            }
+
+            strncpy_s(g_uiInput, code.c_str(), _TRUNCATE);
+
+            g_appMode = AppMode::Watch;
+
+            StartConnect();
+        }
+        else if (result == HomeResult::Error)
+        {
+            std::lock_guard<std::mutex> lock(g_uiMutex);
+
+            g_homeError = g_homeWorkerError;
+        }
+
+        mode = g_appMode.load();
+        state = g_uiState.load();
+    }
 
 
     // ffmpeg com problema vale pros dois modos (os dois usam):
@@ -4196,8 +5093,23 @@ void DrawReceiverUi()
     }
     else if (mode == AppMode::Home)
     {
+        HomeScreenModel home;
+
+        home.name = g_nameInput;
+        home.nameSize = sizeof(g_nameInput);
+        home.code = g_homeCodeInput;
+        home.codeSize = sizeof(g_homeCodeInput);
+        home.busy = g_homeBusy;
+        home.error = g_homeError;
+
+        {
+            std::lock_guard<std::mutex> lock(g_uiMutex);
+
+            home.status = g_homeStatus;
+        }
+
         DrawHomeScreen(
-            g_homeError,
+            home,
             homeActions
         );
     }
@@ -4206,6 +5118,104 @@ void DrawReceiverUi()
         sender::Draw(
             shareGoHome
         );
+    }
+    else if (mode == AppMode::Room)
+    {
+        if (g_roomView == RoomView::Share)
+        {
+            sender::Draw(
+                shareGoHome
+            );
+        }
+        else if (g_roomView == RoomView::Watch &&
+                 g_streamReceived)
+        {
+            DrawVideoOverlay(
+                actions,
+                true,
+                g_watchName,
+                backToRoom);
+        }
+        else if (g_roomView == RoomView::Watch)
+        {
+            std::string versionWarning;
+
+            {
+                std::lock_guard<std::mutex> lock(g_uiMutex);
+
+                versionWarning = g_versionWarning;
+            }
+
+            DrawRoomWaitingScreen(
+                g_watchName,
+                versionWarning,
+                backToRoom);
+        }
+        else
+        {
+            RoomScreenModel room;
+
+            room.code = g_room.GetCode();
+
+            std::string myId =
+                g_room.GetMemberId();
+
+            for (const RoomPresenter& presenter :
+                 roomState.presenters)
+            {
+                RoomPresenterEntry entry;
+
+                entry.name = presenter.name;
+                entry.label = presenter.label;
+                entry.isMe = presenter.memberId == myId;
+                entry.watching =
+                    !g_watchSessionCode.empty() &&
+                    presenter.sessionCode == g_watchSessionCode;
+
+                room.presenters.push_back(entry);
+
+                shownPresenters.push_back(presenter);
+            }
+
+            for (const RoomMember& member : roomState.members)
+            {
+                room.members.push_back(
+                    member.id == myId
+                        ? member.name + " (você)"
+                        : member.name);
+            }
+
+            room.sharing = sender::IsLive();
+
+            if (room.sharing)
+            {
+                std::string code;
+                std::string token;
+
+                sender::GetPublishInfo(
+                    code,
+                    token,
+                    room.sharingLabel);
+
+                room.sharingViewers =
+                    sender::ViewerCount();
+            }
+
+            room.connecting =
+                g_connectBusy ||
+                (!g_watchSessionCode.empty() &&
+                 g_uiState == UiState::Connecting);
+
+            room.connectingTo = g_watchName;
+            room.notice = g_roomNotice;
+            room.error = g_roomError;
+            room.offline = g_room.IsOffline();
+
+            DrawRoomScreen(
+                room,
+                roomActions
+            );
+        }
     }
     else if (state == UiState::Connect ||
              state == UiState::Connecting)
@@ -4236,93 +5246,13 @@ void DrawReceiverUi()
     }
     else if (g_streamReceived)
     {
-        // ----------------------------------------------------
-        // Painel sobre o video: aparece quando o mouse mexe e
-        // some sozinho depois de uns segundos parado.
-        // ----------------------------------------------------
+        bool unused = false;
 
-        static double lastActivity = -100.0;
-
-        static bool overlayHovered = false;
-
-        ImGuiIO& io = ImGui::GetIO();
-
-        double now = ImGui::GetTime();
-
-        bool keyboardFree = !io.WantTextInput;
-
-        if (io.MouseDelta.x != 0.0f ||
-            io.MouseDelta.y != 0.0f ||
-            overlayHovered)
-        {
-            lastActivity = now;
-        }
-
-        // Atalhos de teclado (tambem mostram o painel).
-        if (keyboardFree)
-        {
-            if (ImGui::IsKeyPressed(ImGuiKey_M, false))
-            {
-                g_muted = !g_muted;
-
-                lastActivity = now;
-            }
-
-            if (ImGui::IsKeyPressed(ImGuiKey_UpArrow))
-            {
-                g_volume += 0.05f;
-
-                g_muted = false;
-
-                lastActivity = now;
-            }
-
-            if (ImGui::IsKeyPressed(ImGuiKey_DownArrow))
-            {
-                g_volume -= 0.05f;
-
-                lastActivity = now;
-            }
-
-            if (g_volume < 0.0f) g_volume = 0.0f;
-            if (g_volume > 1.0f) g_volume = 1.0f;
-        }
-
-        // Visivel por 2,5s depois da ultima atividade, sumindo
-        // ao longo de mais 0,5s.
-        double idle = now - lastActivity;
-
-        float alpha =
-            idle < 2.5 ? 1.0f :
-            idle < 3.0 ? static_cast<float>((3.0 - idle) / 0.5) :
-            0.0f;
-
-        StreamOverlayModel overlay;
-
-        overlay.volume = &g_volume;
-        overlay.muted = &g_muted;
-        overlay.fillWindow = &g_fillWindow;
-        overlay.fullscreen = g_fullscreen;
-        overlay.collapsed = &g_overlayCollapsed;
-        overlay.fps = g_fps.load();
-        overlay.width = g_frameWidth;
-        overlay.height = g_frameHeight;
-        overlay.lostNetwork = g_statLostNetwork.load();
-        overlay.recovered = g_statRecovered.load();
-        overlay.late = g_statLate.load();
-        overlay.alpha = alpha;
-
-        StreamOverlayActions overlayActions;
-
-        overlayHovered =
-            DrawStreamOverlay(
-                overlay,
-                overlayActions);
-
-        if (overlayActions.toggleFullscreen)
-        {
-            actions.toggleFullscreen = true;
-        }
+        DrawVideoOverlay(
+            actions,
+            false,
+            std::string(),
+            unused);
     }
     else
     {
@@ -4378,23 +5308,108 @@ void DrawReceiverUi()
     // Navegacao entre os modos
     // --------------------------------------------------------
 
-    if (homeActions.watch)
+    // Tela inicial
+    if (homeActions.createRoom)
     {
-        g_homeError.clear();
-
-        g_appMode = AppMode::Watch;
+        StartHomeWorker(true, std::string());
     }
 
-    if (homeActions.share)
+    if (homeActions.enter)
+    {
+        std::string code = g_homeCodeInput;
+
+        size_t first = code.find_first_not_of(" \t");
+        size_t last = code.find_last_not_of(" \t");
+
+        code =
+            first == std::string::npos
+            ? std::string()
+            : code.substr(first, last - first + 1);
+
+        if (code.empty())
+        {
+            g_homeError =
+                "Digite o código da sala (6 letras e números).";
+        }
+        else if (LooksLikeSessionCode(code))
+        {
+            for (char& c : code)
+            {
+                c = static_cast<char>(
+                    toupper(static_cast<unsigned char>(c)));
+            }
+
+            StartHomeWorker(false, code);
+        }
+        else
+        {
+            // Convite manual ou IP: o fluxo direto do modo
+            // Assistir.
+            SaveName();
+
+            strncpy_s(g_uiInput, code.c_str(), _TRUNCATE);
+
+            g_homeError.clear();
+
+            g_appMode = AppMode::Watch;
+
+            StartConnect();
+        }
+    }
+
+    if (homeActions.shareWithoutRoom)
     {
         OpenShareMode();
     }
 
-    if (shareGoHome ||
-        actions.goHome)
+    // Sala
+    if (roomActions.watch >= 0 &&
+        roomActions.watch <
+            static_cast<int>(shownPresenters.size()))
+    {
+        RoomWatch(
+            shownPresenters[roomActions.watch]);
+    }
+
+    if (roomActions.openShare)
+    {
+        OpenRoomShare();
+    }
+
+    if (roomActions.stopShare)
+    {
+        sender::StopSharing();
+    }
+
+    if (backToRoom)
+    {
+        RoomStopWatching();
+    }
+
+    if (roomActions.leave)
+    {
+        LeaveRoom(std::string());
+    }
+
+    // "Voltar" nas telas do modo Transmitir / Assistir
+    if (shareGoHome)
+    {
+        if (g_appMode == AppMode::Room)
+        {
+            g_roomView = RoomView::Lobby;
+        }
+        else
+        {
+            g_appMode = AppMode::Home;
+        }
+    }
+
+    if (actions.goHome)
     {
         g_appMode = AppMode::Home;
     }
+
+    UpdateWindowTitle();
 
 
     // --------------------------------------------------------
@@ -5214,6 +6229,8 @@ int AppMain(
 
     LoadReceiverSettings();
 
+    LoadName();
+
 
     // Comecar com o log do decoder vazio a cada execucao.
     std::ofstream(
@@ -5474,9 +6491,31 @@ int AppMain(
     }
 
 
+    // Sala: avisa que saiu (senao os outros continuam vendo
+    // esta pessoa por ~20 s).
+    if (g_room.IsActive())
+    {
+        g_room.Leave();
+    }
+
     // Modo Transmitir: encerra a sessao, a captura e as threads
     // dele (se chegou a ser aberto).
     sender::Shutdown();
+
+    // Criando/entrando numa sala (a espera pelo servidor pode
+    // durar ate 90 s): nada a preservar, encerra direto.
+    if (g_homeBusy)
+    {
+        std::cout
+            << "\nEncerrado enquanto entrava numa sala.\n";
+
+        ExitProcess(0);
+    }
+
+    if (g_homeThread.joinable())
+    {
+        g_homeThread.join();
+    }
 
 
     // Fechou no meio de uma tentativa de conexao (a espera pelo

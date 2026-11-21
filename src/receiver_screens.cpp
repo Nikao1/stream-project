@@ -159,7 +159,7 @@ void DrawConnectScreen(
 // ============================================================
 
 void DrawHomeScreen(
-    const std::string& error,
+    HomeScreenModel& model,
     HomeScreenActions& actions)
 {
     UiBeginCenteredPanel("##inicio", 440.0f);
@@ -172,41 +172,401 @@ void DrawHomeScreen(
     );
 
     ImGui::Spacing();
-    ImGui::Spacing();
 
-    if (UiPrimaryButton("Assistir"))
-    {
-        actions.watch = true;
-    }
+    ImGui::BeginDisabled(model.busy);
 
-    UiMutedText(
-        "Entre com o código de quem está transmitindo."
+    UiFieldLabel("Seu nome");
+
+    ImGui::SetNextItemWidth(
+        ImGui::GetContentRegionAvail().x);
+
+    ImGui::InputTextWithHint(
+        "##nome",
+        "Como os outros vão te ver na sala",
+        model.name,
+        model.nameSize
     );
 
     ImGui::Spacing();
+
+    if (UiPrimaryButton(
+            model.busy ? "Aguarde..." : "Criar uma sala",
+            !model.busy))
+    {
+        actions.createRoom = true;
+    }
+
+    ImGui::Spacing();
+
+    UiFieldLabel("Ou entre com um código");
+
+    const char* enterLabel = "Entrar";
+
+    float enterWidth =
+        ImGui::CalcTextSize(enterLabel).x +
+        ImGui::GetStyle().FramePadding.x * 4.0f;
+
+    ImGui::SetNextItemWidth(
+        ImGui::GetContentRegionAvail().x -
+        enterWidth -
+        ImGui::GetStyle().ItemSpacing.x
+    );
+
+    bool submitted =
+        ImGui::InputTextWithHint(
+            "##codigo",
+            "Código da sala",
+            model.code,
+            model.codeSize,
+            ImGuiInputTextFlags_EnterReturnsTrue |
+            ImGuiInputTextFlags_AutoSelectAll
+        );
+
+    ImGui::SameLine();
+
+    if (ImGui::Button(
+            enterLabel,
+            ImVec2(enterWidth, 0.0f)) ||
+        submitted)
+    {
+        actions.enter = true;
+    }
+
+    ImGui::EndDisabled();
+
+    if (model.busy)
+    {
+        UiMutedText(
+            (model.status + UiBusyDots()).c_str()
+        );
+
+        UiMutedText(
+            "Na primeira vez depois de um tempo parado, o "
+            "servidor pode levar até 1 minuto para responder."
+        );
+    }
+    else if (!model.error.empty())
+    {
+        UiWrappedColored(
+            UiColorError(),
+            model.error.c_str()
+        );
+    }
+    else
+    {
+        UiMutedText(
+            "Funciona também com o código de quem transmite "
+            "sem sala."
+        );
+    }
+
+    ImGui::Spacing();
+
+    ImGui::Separator();
+
+    ImGui::BeginDisabled(model.busy);
+
+    if (ImGui::Button(
+            "Transmitir sem sala",
+            ImVec2(
+                ImGui::GetContentRegionAvail().x,
+                0.0f)))
+    {
+        actions.shareWithoutRoom = true;
+    }
+
+    ImGui::EndDisabled();
+
+    UiEndPanel();
+}
+
+
+// ============================================================
+// Sala
+// ============================================================
+
+void DrawRoomScreen(
+    RoomScreenModel& model,
+    RoomScreenActions& actions)
+{
+    static double codeCopiedAt = 0.0;
+
+    UiBeginCenteredPanel("##sala", 480.0f);
+
+    UiTitle(("Sala " + model.code).c_str());
+
+    {
+        bool recentlyCopied =
+            codeCopiedAt > 0.0 &&
+            ImGui::GetTime() - codeCopiedAt < 2.0;
+
+        if (ImGui::Button(
+                recentlyCopied
+                    ? "Copiado!##copiarsala"
+                    : "Copiar código da sala##copiarsala",
+                ImVec2(
+                    ImGui::GetContentRegionAvail().x,
+                    0.0f)))
+        {
+            ImGui::SetClipboardText(model.code.c_str());
+
+            codeCopiedAt = ImGui::GetTime();
+        }
+    }
+
+    UiMutedText(
+        ("Passe este código para quem vai entrar. Cabem até " +
+         std::to_string(model.maxMembers) + " pessoas.").c_str()
+    );
+
+    if (model.offline)
+    {
+        UiWrappedColored(
+            UiColorError(),
+            "Sem resposta do servidor da sala. Verifique sua "
+            "internet - quem você já está assistindo continua."
+        );
+    }
+
+    ImGui::Separator();
+
+
+    // --------------------------------------------------------
+    // Quem esta transmitindo
+    // --------------------------------------------------------
+
+    UiFieldLabel("Transmitindo agora");
+
+    ImGui::Spacing();
+
+    if (model.presenters.empty())
+    {
+        UiMutedText("Ninguém está transmitindo ainda.");
+    }
+
+    const float buttonWidth =
+        ImGui::CalcTextSize("Assistindo").x +
+        ImGui::GetStyle().FramePadding.x * 4.0f;
+
+    for (size_t i = 0; i < model.presenters.size(); ++i)
+    {
+        const RoomPresenterEntry& entry =
+            model.presenters[i];
+
+        ImGui::PushID(static_cast<int>(i));
+
+        float textWidth =
+            ImGui::GetContentRegionAvail().x -
+            buttonWidth -
+            ImGui::GetStyle().ItemSpacing.x;
+
+        ImGui::BeginGroup();
+
+        ImGui::PushTextWrapPos(
+            ImGui::GetCursorPosX() + textWidth);
+
+        ImGui::TextUnformatted(
+            entry.isMe
+                ? (entry.name + " (você)").c_str()
+                : entry.name.c_str());
+
+        if (!entry.label.empty())
+        {
+            ImGui::PushStyleColor(
+                ImGuiCol_Text,
+                UiColorMuted());
+
+            ImGui::TextUnformatted(entry.label.c_str());
+
+            ImGui::PopStyleColor();
+        }
+
+        ImGui::PopTextWrapPos();
+
+        ImGui::EndGroup();
+
+        ImGui::SameLine(
+            ImGui::GetContentRegionMax().x - buttonWidth);
+
+        if (entry.isMe)
+        {
+            ImGui::BeginDisabled();
+
+            ImGui::Button(
+                "Você",
+                ImVec2(buttonWidth, 0.0f));
+
+            ImGui::EndDisabled();
+        }
+        else if (entry.watching)
+        {
+            ImGui::BeginDisabled();
+
+            ImGui::Button(
+                model.connecting ? "Conectando" : "Assistindo",
+                ImVec2(buttonWidth, 0.0f));
+
+            ImGui::EndDisabled();
+        }
+        else
+        {
+            ImGui::BeginDisabled(model.connecting);
+
+            if (ImGui::Button(
+                    "Assistir",
+                    ImVec2(buttonWidth, 0.0f)))
+            {
+                actions.watch = static_cast<int>(i);
+            }
+
+            ImGui::EndDisabled();
+        }
+
+        ImGui::PopID();
+
+        ImGui::Spacing();
+    }
+
+    if (model.connecting)
+    {
+        UiMutedText(
+            ("Conectando a " + model.connectingTo +
+             UiBusyDots()).c_str()
+        );
+    }
+
+    if (!model.notice.empty())
+    {
+        UiMutedText(model.notice.c_str());
+    }
+
+    if (!model.error.empty())
+    {
+        UiWrappedColored(
+            UiColorError(),
+            model.error.c_str()
+        );
+    }
+
+    ImGui::Separator();
+
+
+    // --------------------------------------------------------
+    // A transmissao desta pessoa
+    // --------------------------------------------------------
+
+    if (model.sharing)
+    {
+        std::string text =
+            "Você está transmitindo: " +
+            model.sharingLabel +
+            "  ·  " +
+            std::to_string(model.sharingViewers) +
+            " assistindo";
+
+        UiWrappedColored(
+            UiColorSuccess(),
+            text.c_str()
+        );
+
+        const ImGuiStyle& style = ImGui::GetStyle();
+
+        float half =
+            (ImGui::GetContentRegionAvail().x -
+             style.ItemSpacing.x) * 0.5f;
+
+        if (ImGui::Button(
+                "Opções da transmissão",
+                ImVec2(half, 0.0f)))
+        {
+            actions.openShare = true;
+        }
+
+        ImGui::SameLine();
+
+        if (ImGui::Button(
+                "Parar de transmitir",
+                ImVec2(half, 0.0f)))
+        {
+            actions.stopShare = true;
+        }
+    }
+    else
+    {
+        if (UiPrimaryButton("Transmitir minha tela"))
+        {
+            actions.openShare = true;
+        }
+    }
+
+
+    // --------------------------------------------------------
+    // Quem esta na sala
+    // --------------------------------------------------------
+
+    ImGui::Spacing();
+
+    std::string people =
+        "Na sala (" +
+        std::to_string(model.members.size()) +
+        "): ";
+
+    for (size_t i = 0; i < model.members.size(); ++i)
+    {
+        if (i > 0)
+            people += ", ";
+
+        people += model.members[i];
+    }
+
+    UiMutedText(people.c_str());
+
     ImGui::Spacing();
 
     if (ImGui::Button(
-            "Transmitir",
+            "Sair da sala",
             ImVec2(
                 ImGui::GetContentRegionAvail().x,
-                44.0f * UiScale())))
+                0.0f)))
     {
-        actions.share = true;
+        actions.leave = true;
     }
 
+    UiEndPanel();
+}
+
+
+void DrawRoomWaitingScreen(
+    const std::string& presenterName,
+    const std::string& versionWarning,
+    bool& outBackToRoom)
+{
+    UiBeginCenteredPanel("##salaaguardando", 440.0f);
+
+    UiTitle(presenterName.c_str());
+
     UiMutedText(
-        "Compartilhe uma tela ou janela com até 4 pessoas."
+        (std::string("Aguardando a imagem chegar") +
+         UiBusyDots()).c_str()
     );
 
-    if (!error.empty())
+    if (!versionWarning.empty())
     {
-        ImGui::Spacing();
-
         UiWrappedColored(
             UiColorError(),
-            error.c_str()
+            versionWarning.c_str()
         );
+    }
+
+    ImGui::Spacing();
+
+    if (ImGui::Button(
+            "Voltar para a sala",
+            ImVec2(
+                ImGui::GetContentRegionAvail().x,
+                0.0f)))
+    {
+        outBackToRoom = true;
     }
 
     UiEndPanel();
@@ -419,7 +779,10 @@ bool DrawStreamOverlay(
     // Alinha o texto com o centro do botao de fechar.
     ImGui::AlignTextToFramePadding();
 
-    ImGui::TextUnformatted("Opções");
+    ImGui::TextUnformatted(
+        model.inRoom && !model.presenterName.empty()
+            ? model.presenterName.c_str()
+            : "Opções");
 
     ImGui::PopStyleColor();
 
@@ -539,6 +902,17 @@ bool DrawStreamOverlay(
             ImVec2(rowWidth, 0.0f)))
     {
         actions.toggleFullscreen = true;
+    }
+
+    // Na sala: voltar pra lista (trocar de tela, transmitir...)
+    if (model.inRoom)
+    {
+        if (ImGui::Button(
+                "Voltar para a sala",
+                ImVec2(rowWidth, 0.0f)))
+        {
+            actions.backToRoom = true;
+        }
     }
 
 

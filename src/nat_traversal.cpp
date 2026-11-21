@@ -516,6 +516,17 @@ bool UdpServiceViewers(
         {
             viewers.Touch(from, now);
         }
+        else if (received == 4 &&
+                 std::memcmp(buffer, "BYE1", 4) == 0)
+        {
+            // O espectador parou de assistir (trocou de tela na
+            // sala, por exemplo): libera a vaga na hora. So
+            // vale pra quem ja esta na lista.
+            if (viewers.Remove(from))
+            {
+                outLeft.push_back(from);
+            }
+        }
         else if (onOtherPacket)
         {
             onOtherPacket(from, bytes, size);

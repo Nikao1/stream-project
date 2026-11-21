@@ -32,7 +32,8 @@ const wchar_t PROCESS_LOOPBACK_DEVICE[] =
 enum : int
 {
     ACTIVATION_TYPE_PROCESS_LOOPBACK = 1,
-    LOOPBACK_MODE_INCLUDE_TARGET_PROCESS_TREE = 0
+    LOOPBACK_MODE_INCLUDE_TARGET_PROCESS_TREE = 0,
+    LOOPBACK_MODE_EXCLUDE_TARGET_PROCESS_TREE = 1
 };
 
 struct ProcessLoopbackActivationParams
@@ -161,6 +162,7 @@ using ActivateAudioInterfaceAsyncFn =
 // abrir.
 HRESULT ActivateProcessLoopbackClient(
     DWORD processId,
+    bool exclude,
     IAudioClient** outClient)
 {
     *outClient = nullptr;
@@ -190,7 +192,9 @@ HRESULT ActivateProcessLoopbackClient(
         processId;
 
     params.loopbackMode =
-        LOOPBACK_MODE_INCLUDE_TARGET_PROCESS_TREE;
+        exclude
+        ? LOOPBACK_MODE_EXCLUDE_TARGET_PROCESS_TREE
+        : LOOPBACK_MODE_INCLUDE_TARGET_PROCESS_TREE;
 
     PROPVARIANT activationParams{};
 
@@ -671,20 +675,43 @@ void AudioCapture::CaptureThread()
     m_capturingProcess =
         false;
 
+    m_excludingSelf =
+        false;
+
 
     // --------------------------------------------------------
-    // Som de UM processo (janela escolhida)
+    // Som por processo
+    //
+    // - Janela escolhida: so o som do programa dela.
+    // - "Som do computador" no dispositivo padrao: tudo MENOS
+    //   este programa. Quem transmite e assiste ao mesmo tempo
+    //   (sala) nao devolve pros outros o som que esta ouvindo -
+    //   sem isso, o audio voltaria em eco.
     //
     // Se der certo, pula toda a parte de dispositivo abaixo.
     // Se nao der (Windows antigo, processo ja fechado...), cai
     // pro som do dispositivo, como antes.
     // --------------------------------------------------------
 
-    if (m_targetProcessId != 0)
+    DWORD loopbackProcess =
+        m_targetProcessId;
+
+    bool excludeSelf =
+        loopbackProcess == 0 &&
+        m_selectedDeviceId.empty();
+
+    if (excludeSelf)
+    {
+        loopbackProcess =
+            GetCurrentProcessId();
+    }
+
+    if (loopbackProcess != 0)
     {
         hr =
             ActivateProcessLoopbackClient(
-                m_targetProcessId,
+                loopbackProcess,
+                excludeSelf,
                 &m_audioClient
             );
 
@@ -746,21 +773,33 @@ void AudioCapture::CaptureThread()
             if (SUCCEEDED(hr))
             {
                 m_capturingProcess =
-                    true;
+                    !excludeSelf;
 
-                std::cout
-                    << "AudioCapture: capturando so o som do "
-                    << "processo "
-                    << m_targetProcessId
-                    << ".\n";
+                m_excludingSelf =
+                    excludeSelf;
+
+                if (excludeSelf)
+                {
+                    std::cout
+                        << "AudioCapture: capturando o som do "
+                        << "computador, menos o deste programa.\n";
+                }
+                else
+                {
+                    std::cout
+                        << "AudioCapture: capturando so o som do "
+                        << "processo "
+                        << m_targetProcessId
+                        << ".\n";
+                }
 
                 goto client_ready;
             }
         }
 
         std::cout
-            << "AudioCapture: nao deu pra capturar o som so "
-            << "da janela (HRESULT "
+            << "AudioCapture: nao deu pra capturar o som por "
+            << "processo (HRESULT "
             << hr
             << ") - usando o som do dispositivo.\n";
 
@@ -1004,6 +1043,8 @@ client_ready:
         << "AudioCapture: captura de audio iniciada ("
         << (m_capturingProcess
             ? "so a janela escolhida"
+            : m_excludingSelf
+            ? "som do computador, sem o deste programa"
             : "som do dispositivo")
         << ").\n";
 

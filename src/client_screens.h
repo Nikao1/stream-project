@@ -28,6 +28,9 @@ struct ClientScreenActions
     // Qualidade ou FPS trocados durante a transmissao
     bool qualityChanged = false;
 
+    // "Parar de transmitir" (volta pra tela de opcoes)
+    bool stopSharing = false;
+
     // Seletor: item clicado (indice na lista de telas ou de
     // janelas; -1 = nenhum).
     int pickMonitor = -1;
@@ -126,6 +129,22 @@ struct ClientLiveModel
     // avisa em actions.qualityChanged).
     int* qualityIndex = nullptr;
     int* fpsIndex = nullptr;
+
+    // Numa sala: sem codigo de sessao no painel (quem esta na
+    // sala ve a transmissao na lista) e com "Voltar para a
+    // sala" (actions.goHome).
+    bool inRoom = false;
+
+    // Upload estimado (uma copia do video por pessoa), ex.:
+    // "~26 Mbps de upload". Vazio = ninguem assistindo.
+    std::string uploadLabel;
+
+    // true = upload alto: sugere baixar a qualidade.
+    bool uploadWarning = false;
+
+    // false = a sessao ainda esta sendo criada (nao da pra
+    // parar no meio).
+    bool canStop = true;
 
     bool symmetricNat = false;
 

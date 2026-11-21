@@ -964,3 +964,423 @@ std::string SignalingHost::GetCode()
 
     return m_code;
 }
+
+
+std::string SignalingHost::GetToken()
+{
+    std::lock_guard<std::mutex> lock(m_mutex);
+
+    return m_code.empty() ? std::string() : m_token;
+}
+
+
+// ============================================================
+// SALAS
+// ============================================================
+
+namespace
+{
+
+// Nome/descricao no corpo da requisicao: %XX pra tudo que nao
+// e letra/numero ASCII (o nome pode ter acento, espaco, &...).
+std::string UrlEncode(
+    const std::string& text)
+{
+    static const char* hex = "0123456789ABCDEF";
+
+    std::string result;
+
+    for (unsigned char c : text)
+    {
+        if ((c >= 'A' && c <= 'Z') ||
+            (c >= 'a' && c <= 'z') ||
+            (c >= '0' && c <= '9') ||
+            c == '-' || c == '_' || c == '.' || c == '~')
+        {
+            result += static_cast<char>(c);
+        }
+        else
+        {
+            result += '%';
+            result += hex[c >> 4];
+            result += hex[c & 0xF];
+        }
+    }
+
+    return result;
+}
+
+
+std::string UrlDecode(
+    const std::string& text)
+{
+    auto hexValue = [](char c) -> int
+    {
+        if (c >= '0' && c <= '9') return c - '0';
+        if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+        if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+        return -1;
+    };
+
+    std::string result;
+
+    for (size_t i = 0; i < text.size(); ++i)
+    {
+        if (text[i] == '%' &&
+            i + 2 < text.size())
+        {
+            int high = hexValue(text[i + 1]);
+            int low = hexValue(text[i + 2]);
+
+            if (high >= 0 && low >= 0)
+            {
+                result += static_cast<char>(high * 16 + low);
+
+                i += 2;
+
+                continue;
+            }
+        }
+
+        result += text[i];
+    }
+
+    return result;
+}
+
+
+// "a|b|c" -> {"a", "b", "c"}
+std::vector<std::string> SplitBars(
+    const std::string& text)
+{
+    std::vector<std::string> parts;
+
+    size_t start = 0;
+
+    for (;;)
+    {
+        size_t bar = text.find('|', start);
+
+        if (bar == std::string::npos)
+        {
+            parts.push_back(text.substr(start));
+
+            return parts;
+        }
+
+        parts.push_back(text.substr(start, bar - start));
+
+        start = bar + 1;
+    }
+}
+
+
+// Estado da sala vindo do servidor (ver signaling_server.py).
+void ParseRoomState(
+    std::map<std::string, std::string>& fields,
+    RoomState& outState)
+{
+    outState = RoomState{};
+
+    int members =
+        std::atoi(fields["member_count"].c_str());
+
+    for (int i = 0; i < members && i < 64; ++i)
+    {
+        std::vector<std::string> parts =
+            SplitBars(fields["member_" + std::to_string(i)]);
+
+        if (parts.size() < 2)
+            continue;
+
+        outState.members.push_back(
+            RoomMember{ parts[0], UrlDecode(parts[1]) });
+    }
+
+    int presenters =
+        std::atoi(fields["presenter_count"].c_str());
+
+    for (int i = 0; i < presenters && i < 64; ++i)
+    {
+        std::vector<std::string> parts =
+            SplitBars(fields["presenter_" + std::to_string(i)]);
+
+        if (parts.size() < 4)
+            continue;
+
+        outState.presenters.push_back(
+            RoomPresenter{
+                parts[0],
+                parts[1],
+                UrlDecode(parts[2]),
+                UrlDecode(parts[3]) });
+    }
+}
+
+
+std::string MemberBody(
+    const RoomMembership& membership)
+{
+    return
+        "member_id=" + membership.memberId +
+        "&token=" + membership.token;
+}
+
+
+std::string RoomPath(
+    const RoomMembership& membership,
+    const char* action)
+{
+    return
+        "/rooms/" + membership.code + "/" + action;
+}
+
+} // namespace
+
+
+bool SignalingCreateRoom(
+    const std::string& name,
+    RoomMembership& outMembership,
+    RoomState& outState,
+    std::string& outError)
+{
+    DWORD status = 0;
+
+    std::string response;
+
+    if (!HttpPostWaking(
+            "/rooms",
+            "name=" + UrlEncode(name),
+            "code",
+            status,
+            response,
+            outError))
+    {
+        return false;
+    }
+
+    if (status != 200)
+    {
+        outError =
+            status == 404
+            ? "o servidor de sinalizacao ainda nao tem salas "
+              "(versao antiga do servidor)"
+            : "servidor de sinalizacao respondeu HTTP " +
+              std::to_string(status);
+
+        return false;
+    }
+
+    auto fields =
+        ParseKeyValues(response);
+
+    outMembership.code = fields["code"];
+    outMembership.memberId = fields["member_id"];
+    outMembership.token = fields["token"];
+
+    if (outMembership.code.empty() ||
+        outMembership.memberId.empty() ||
+        outMembership.token.empty())
+    {
+        outError =
+            "resposta invalida do servidor de sinalizacao";
+
+        return false;
+    }
+
+    ParseRoomState(fields, outState);
+
+    return true;
+}
+
+
+RoomJoinResult SignalingJoinRoom(
+    const std::string& code,
+    const std::string& name,
+    RoomMembership& outMembership,
+    RoomState& outState,
+    std::string& outError)
+{
+    DWORD status = 0;
+
+    std::string response;
+
+    if (!HttpPostWaking(
+            "/rooms/" + code + "/join",
+            "name=" + UrlEncode(name),
+            "member_id",
+            status,
+            response,
+            outError))
+    {
+        return RoomJoinResult::Error;
+    }
+
+    // 404 = sem sala com esse codigo. Servidor antigo (sem
+    // salas) tambem responde 404 - nos dois casos quem chama
+    // tenta o codigo como sessao.
+    if (status == 404)
+        return RoomJoinResult::NotFound;
+
+    if (status == 409)
+        return RoomJoinResult::Full;
+
+    if (status != 200)
+    {
+        outError =
+            "servidor de sinalizacao respondeu HTTP " +
+            std::to_string(status);
+
+        return RoomJoinResult::Error;
+    }
+
+    auto fields =
+        ParseKeyValues(response);
+
+    outMembership.code = code;
+    outMembership.memberId = fields["member_id"];
+    outMembership.token = fields["token"];
+
+    if (outMembership.memberId.empty() ||
+        outMembership.token.empty())
+    {
+        outError =
+            "resposta invalida do servidor de sinalizacao";
+
+        return RoomJoinResult::Error;
+    }
+
+    ParseRoomState(fields, outState);
+
+    return RoomJoinResult::Joined;
+}
+
+
+bool SignalingRoomHeartbeat(
+    const RoomMembership& membership,
+    RoomState& outState,
+    bool& outGone,
+    std::string& outError)
+{
+    outGone = false;
+
+    DWORD status = 0;
+
+    std::string response;
+
+    if (!HttpPost(
+            RoomPath(membership, "heartbeat"),
+            MemberBody(membership),
+            status,
+            response,
+            outError))
+    {
+        return false;
+    }
+
+    if (status == 404)
+    {
+        outGone = true;
+
+        outError = "fora da sala";
+
+        return false;
+    }
+
+    if (status != 200)
+    {
+        outError =
+            "servidor de sinalizacao respondeu HTTP " +
+            std::to_string(status);
+
+        return false;
+    }
+
+    auto fields =
+        ParseKeyValues(response);
+
+    ParseRoomState(fields, outState);
+
+    return true;
+}
+
+
+bool SignalingRoomPresent(
+    const RoomMembership& membership,
+    const std::string& sessionCode,
+    const std::string& sessionToken,
+    const std::string& label,
+    std::string& outError)
+{
+    DWORD status = 0;
+
+    std::string response;
+
+    if (!HttpPost(
+            RoomPath(membership, "present"),
+            MemberBody(membership) +
+                "&session_code=" + sessionCode +
+                "&session_token=" + sessionToken +
+                "&label=" + UrlEncode(label),
+            status,
+            response,
+            outError))
+    {
+        return false;
+    }
+
+    if (status != 200)
+    {
+        outError =
+            "servidor de sinalizacao respondeu HTTP " +
+            std::to_string(status);
+
+        return false;
+    }
+
+    return true;
+}
+
+
+bool SignalingRoomStop(
+    const RoomMembership& membership,
+    std::string& outError)
+{
+    DWORD status = 0;
+
+    std::string response;
+
+    if (!HttpPost(
+            RoomPath(membership, "stop"),
+            MemberBody(membership),
+            status,
+            response,
+            outError))
+    {
+        return false;
+    }
+
+    return status == 200;
+}
+
+
+bool SignalingRoomLeave(
+    const RoomMembership& membership,
+    std::string& outError)
+{
+    DWORD status = 0;
+
+    std::string response;
+
+    if (!HttpPost(
+            RoomPath(membership, "leave"),
+            MemberBody(membership),
+            status,
+            response,
+            outError))
+    {
+        return false;
+    }
+
+    return status == 200;
+}

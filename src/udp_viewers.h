@@ -26,7 +26,10 @@
 // transmite: cada um recebe uma copia inteira do fluxo.
 // ============================================================
 
-constexpr size_t MAX_VIEWERS = 4;
+// 8: com mais, o upload de quem transmite (uma copia do video
+// por pessoa) passa do que a maioria dos planos aguenta - ver a
+// estimativa no painel do modo Transmitir.
+constexpr size_t MAX_VIEWERS = 8;
 
 constexpr ULONGLONG VIEWER_TIMEOUT_MS = 15000;
 
@@ -154,6 +157,27 @@ public:
         }
 
         return count;
+    }
+
+
+    // Tira um espectador da lista (ele avisou que saiu).
+    // Devolve true se ele estava na lista.
+    bool Remove(
+        const sockaddr_in& address)
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+
+        for (size_t i = 0; i < m_viewers.size(); ++i)
+        {
+            if (Same(m_viewers[i].viewer.address, address))
+            {
+                m_viewers.erase(m_viewers.begin() + i);
+
+                return true;
+            }
+        }
+
+        return false;
     }
 
 

@@ -98,6 +98,10 @@ bool StartCaptureForTarget(
 );
 
 
+// Para a captura da tela/janela (a transmissao continua ligada,
+// so sem imagem nova).
+void StopCapture();
+
 // Liga/desliga o motor (portas UDP, threads). Ver main.cpp.
 bool EngineStart();
 

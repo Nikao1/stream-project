@@ -116,6 +116,9 @@ private:
 
     std::atomic<bool> m_capturingProcess{ false };
 
+    // true = som do computador sem o deste programa (ver Start).
+    std::atomic<bool> m_excludingSelf{ false };
+
     // Captura por processo e avisada por evento (a do
     // dispositivo e consultada em intervalos).
     HANDLE m_captureEvent = nullptr;
