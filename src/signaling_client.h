@@ -225,6 +225,15 @@ struct RoomState
     std::vector<RoomPresenter> presenters;
 };
 
+struct RoomChatMessage
+{
+    int id = 0;
+
+    std::string memberId;
+    std::string name;
+    std::string text;
+};
+
 struct RoomMembership
 {
     std::string code;
@@ -257,10 +266,20 @@ RoomJoinResult SignalingJoinRoom(
 
 // outGone = o servidor nao conhece mais este membro (sala
 // fechou, ou ficamos tempo demais sem dar sinal de vida).
+// chatAfter: traz tambem as mensagens de chat com id maior que
+// esse (0 = as mais recentes guardadas no servidor).
 bool SignalingRoomHeartbeat(
     const RoomMembership& membership,
+    int chatAfter,
     RoomState& outState,
+    std::vector<RoomChatMessage>& outChat,
     bool& outGone,
+    std::string& outError
+);
+
+bool SignalingRoomChat(
+    const RoomMembership& membership,
+    const std::string& text,
     std::string& outError
 );
 

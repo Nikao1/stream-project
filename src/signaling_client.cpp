@@ -1258,11 +1258,15 @@ RoomJoinResult SignalingJoinRoom(
 
 bool SignalingRoomHeartbeat(
     const RoomMembership& membership,
+    int chatAfter,
     RoomState& outState,
+    std::vector<RoomChatMessage>& outChat,
     bool& outGone,
     std::string& outError)
 {
     outGone = false;
+
+    outChat.clear();
 
     DWORD status = 0;
 
@@ -1270,7 +1274,8 @@ bool SignalingRoomHeartbeat(
 
     if (!HttpPost(
             RoomPath(membership, "heartbeat"),
-            MemberBody(membership),
+            MemberBody(membership) +
+                "&chat_after=" + std::to_string(chatAfter),
             status,
             response,
             outError))
@@ -1300,6 +1305,60 @@ bool SignalingRoomHeartbeat(
         ParseKeyValues(response);
 
     ParseRoomState(fields, outState);
+
+    int count =
+        std::atoi(fields["chat_count"].c_str());
+
+    for (int i = 0; i < count && i < 100; ++i)
+    {
+        std::vector<std::string> parts =
+            SplitBars(fields["chat_" + std::to_string(i)]);
+
+        if (parts.size() < 4)
+            continue;
+
+        RoomChatMessage message;
+
+        message.id = std::atoi(parts[0].c_str());
+        message.memberId = parts[1];
+        message.name = UrlDecode(parts[2]);
+        message.text = UrlDecode(parts[3]);
+
+        outChat.push_back(message);
+    }
+
+    return true;
+}
+
+
+bool SignalingRoomChat(
+    const RoomMembership& membership,
+    const std::string& text,
+    std::string& outError)
+{
+    DWORD status = 0;
+
+    std::string response;
+
+    if (!HttpPost(
+            RoomPath(membership, "chat"),
+            MemberBody(membership) +
+                "&text=" + UrlEncode(text),
+            status,
+            response,
+            outError))
+    {
+        return false;
+    }
+
+    if (status != 200)
+    {
+        outError =
+            "servidor de sinalizacao respondeu HTTP " +
+            std::to_string(status);
+
+        return false;
+    }
 
     return true;
 }

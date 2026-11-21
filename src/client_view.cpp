@@ -5,6 +5,7 @@
 #include <wrl/client.h>
 
 #include <cstring>
+#include <vector>
 
 using Microsoft::WRL::ComPtr;
 
@@ -24,6 +25,12 @@ uint32_t g_previewWidth = 0;
 uint32_t g_previewHeight = 0;
 
 bool g_previewValid = false;
+
+std::vector<ComPtr<ID3D11ShaderResourceView>> g_thumbnails;
+
+// Miniaturas trocadas neste frame: o desenho deste frame ainda
+// usa as antigas, entao so sao soltas no comeco do proximo.
+std::vector<ComPtr<ID3D11ShaderResourceView>> g_retiredThumbnails;
 
 
 bool EnsurePreviewTexture(
@@ -93,6 +100,9 @@ void ClientViewInit(
 
 void ClientViewShutdown()
 {
+    g_thumbnails.clear();
+    g_retiredThumbnails.clear();
+
     g_previewView.Reset();
     g_previewTexture.Reset();
     g_context.Reset();
@@ -174,6 +184,69 @@ void ClientViewDrawBackground()
             0.45f
         );
     }
+}
+
+void* ClientViewAddThumbnail(
+    const uint8_t* bgraPixels,
+    int width,
+    int height)
+{
+    if (!g_device ||
+        !bgraPixels ||
+        width <= 0 ||
+        height <= 0)
+    {
+        return nullptr;
+    }
+
+    D3D11_TEXTURE2D_DESC desc{};
+
+    desc.Width = static_cast<UINT>(width);
+    desc.Height = static_cast<UINT>(height);
+    desc.MipLevels = 1;
+    desc.ArraySize = 1;
+    desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+    desc.SampleDesc.Count = 1;
+    desc.Usage = D3D11_USAGE_IMMUTABLE;
+    desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+
+    D3D11_SUBRESOURCE_DATA data{};
+
+    data.pSysMem = bgraPixels;
+    data.SysMemPitch = static_cast<UINT>(width) * 4;
+
+    ComPtr<ID3D11Texture2D> texture;
+
+    ComPtr<ID3D11ShaderResourceView> view;
+
+    if (FAILED(g_device->CreateTexture2D(
+            &desc, &data, &texture)) ||
+        FAILED(g_device->CreateShaderResourceView(
+            texture.Get(), nullptr, &view)))
+    {
+        return nullptr;
+    }
+
+    g_thumbnails.push_back(view);
+
+    return view.Get();
+}
+
+
+void ClientViewClearThumbnails()
+{
+    for (auto& view : g_thumbnails)
+    {
+        g_retiredThumbnails.push_back(view);
+    }
+
+    g_thumbnails.clear();
+}
+
+
+void ClientViewNewFrame()
+{
+    g_retiredThumbnails.clear();
 }
 
 } // namespace sender

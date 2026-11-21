@@ -13,6 +13,7 @@
 #include "audio_protocol.h"
 #include "client_screens.h"
 #include "client_view.h"
+#include "capture_thumbnails.h"
 #include "ffmpeg_check.h"
 #include "invite_code.h"
 #include "ui_common.h"
@@ -100,6 +101,11 @@ std::vector<CaptureTarget> g_windows;
 std::vector<PickerEntry> g_monitorEntries;
 std::vector<PickerEntry> g_windowEntries;
 
+// Miniaturas do seletor sendo tiradas (ver capture_thumbnails).
+std::shared_ptr<ThumbnailBatch> g_thumbnailBatch;
+
+bool g_thumbnailsApplied = true;
+
 bool g_windowAudioSupported = false;
 
 bool g_windowAudioOnly = false;
@@ -120,22 +126,86 @@ void RefreshPickerLists()
 
     for (const CaptureTarget& target : g_monitors)
     {
-        g_monitorEntries.push_back(
-            { target.title, target.detail });
+        PickerEntry entry;
+
+        entry.title = target.title;
+        entry.detail = target.detail;
+        entry.thumbnailPending = true;
+
+        g_monitorEntries.push_back(entry);
     }
 
     g_windowEntries.clear();
 
     for (const CaptureTarget& target : g_windows)
     {
-        g_windowEntries.push_back(
-            { target.title,
-              target.detail +
-                  (target.minimized
-                      ? "  ·  minimizada (pode aparecer "
-                        "em preto)"
-                      : "") });
+        PickerEntry entry;
+
+        entry.title = target.title;
+        entry.detail = target.detail;
+        entry.minimized = target.minimized;
+        entry.thumbnailPending = !target.minimized;
+
+        g_windowEntries.push_back(entry);
     }
+
+    // Miniaturas novas (numa thread; aparecem quando ficarem
+    // prontas). As antigas saem.
+    ClientViewClearThumbnails();
+
+    g_thumbnailBatch =
+        ThumbnailBatch::Start(g_monitors, g_windows);
+
+    g_thumbnailsApplied = false;
+}
+
+
+// Miniaturas prontas -> texturas nas entradas do seletor.
+void ApplyThumbnailsIfReady()
+{
+    if (g_thumbnailsApplied ||
+        !g_thumbnailBatch ||
+        !g_thumbnailBatch->IsDone())
+    {
+        return;
+    }
+
+    g_thumbnailsApplied = true;
+
+    auto apply =
+        [](std::vector<PickerEntry>& entries,
+           const std::vector<Thumbnail>& thumbs)
+        {
+            for (size_t i = 0;
+                 i < entries.size() && i < thumbs.size();
+                 ++i)
+            {
+                entries[i].thumbnailPending = false;
+
+                const Thumbnail& thumb = thumbs[i];
+
+                if (thumb.pixels.empty())
+                    continue;
+
+                entries[i].thumbnail =
+                    ClientViewAddThumbnail(
+                        thumb.pixels.data(),
+                        thumb.width,
+                        thumb.height);
+
+                entries[i].thumbnailWidth =
+                    static_cast<float>(thumb.width);
+
+                entries[i].thumbnailHeight =
+                    static_cast<float>(thumb.height);
+            }
+        };
+
+    apply(g_monitorEntries, g_thumbnailBatch->Monitors());
+
+    apply(g_windowEntries, g_thumbnailBatch->Windows());
+
+    g_thumbnailBatch.reset();
 }
 
 
@@ -1047,6 +1117,35 @@ void StopSharingInternal()
 void ClientUiDrawFrame(
     bool& outGoHome)
 {
+    ClientViewNewFrame();
+
+    ApplyThumbnailsIfReady();
+
+    // Saiu do seletor: as miniaturas nao servem mais (libera a
+    // memoria delas).
+    static bool hadThumbnails = false;
+
+    if (g_state == State::Picking)
+    {
+        hadThumbnails = true;
+    }
+    else if (hadThumbnails)
+    {
+        hadThumbnails = false;
+
+        ClientViewClearThumbnails();
+
+        g_thumbnailBatch.reset();
+
+        g_thumbnailsApplied = true;
+
+        for (PickerEntry& entry : g_monitorEntries)
+            entry.thumbnail = nullptr;
+
+        for (PickerEntry& entry : g_windowEntries)
+            entry.thumbnail = nullptr;
+    }
+
     // --------------------------------------------------------
     // Previa da tela compartilhada, no maximo ~10x por segundo:
     // e so um espelho pra conferencia, nao precisa (nem deve)

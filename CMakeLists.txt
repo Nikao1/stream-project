@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.20)
 
 project(stream-project
-    VERSION 0.5.0
+    VERSION 0.6.0
     LANGUAGES C CXX
 )
 
@@ -170,6 +170,8 @@ add_executable(stream-project WIN32
     src/client_screens.h
     src/capture_targets.cpp
     src/capture_targets.h
+    src/capture_thumbnails.cpp
+    src/capture_thumbnails.h
     src/h264_encoder.cpp
     src/h264_encoder.h
     src/audio_capture.cpp
@@ -243,4 +245,6 @@ target_link_libraries(stream-project PRIVATE
     dwmapi
     shell32
     advapi32
+    gdi32
+    user32
 )

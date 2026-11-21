@@ -174,6 +174,18 @@ struct PickerEntry
     std::string title;
 
     std::string detail;
+
+    // Miniatura (ImTextureID). nullptr = ainda carregando, ou
+    // sem imagem (janela minimizada).
+    void* thumbnail = nullptr;
+
+    float thumbnailWidth = 0.0f;
+    float thumbnailHeight = 0.0f;
+
+    // Miniaturas ainda sendo tiradas (mostra "carregando").
+    bool thumbnailPending = false;
+
+    bool minimized = false;
 };
 
 struct ClientPickerModel

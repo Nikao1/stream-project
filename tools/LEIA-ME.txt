@@ -20,11 +20,15 @@ SALA (o jeito normal de usar)
 
 Dentro da sala:
 - "Transmitir minha tela": escolha a qualidade, o FPS e o que
-  vai compartilhar (uma tela inteira ou uma janela).
+  vai compartilhar (uma tela inteira ou uma janela - cada uma
+  aparece com uma prévia).
 - Na lista "Transmitindo agora", clique em Assistir em quem
-  você quer ver. Para trocar, volte para a sala e escolha
-  outra pessoa.
+  você quer ver. Para trocar, use "Trocar de tela" no painel
+  do vídeo (mexa o mouse para ele aparecer).
 - Dá para transmitir e assistir ao mesmo tempo.
+- Chat: no lado direito da sala, ou no botão Chat (ou tecla
+  Enter) durante o vídeo.
+- Se a conexão cair, o programa tenta voltar sozinho.
 - Cabem até 9 pessoas por sala; cada transmissão aceita até 8
   pessoas assistindo.
 

@@ -79,8 +79,36 @@ bool UiPrimaryButton(
     bool enabled = true
 );
 
+// Botao de destaque com tamanho escolhido (ex.: "Assistir" na
+// lista da sala).
+bool UiPrimaryButtonSized(
+    const char* label,
+    const ImVec2& size
+);
+
 // "..." animado, pra indicar que algo esta em andamento.
 const char* UiBusyDots();
+
+// Circulo girando (algo esta acontecendo). Ocupa um quadrado
+// de 2 x radius; radius ja na escala da tela.
+void UiSpinner(
+    float radius
+);
+
+// Bolinha com a inicial do nome, numa cor que depende do nome
+// (a mesma pessoa tem sempre a mesma cor). "live" = anel
+// vermelho (esta transmitindo).
+void UiAvatar(
+    const char* name,
+    float diameter,
+    bool live = false
+);
+
+// Logo do programa (monitor com o simbolo de transmitir), num
+// quadrado de "size".
+void UiLogo(
+    float size
+);
 
 
 // Mesmo painel, mas encostado no canto superior esquerdo - pra

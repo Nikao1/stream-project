@@ -169,6 +169,12 @@ private:
 
     std::atomic<uint64_t> m_retransmittedPackets{ 0 };
 
+    // Ultimo envio de video (ou sinal de vida), pra mandar o
+    // sinal de vida quando a tela fica parada.
+    std::atomic<ULONGLONG> m_lastSendMs{ 0 };
+
+    void SendAlivePings();
+
     StunResult m_stun;
 
     SOCKET m_socket;

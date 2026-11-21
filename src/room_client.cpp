@@ -55,6 +55,11 @@ bool RoomClient::Create(
     m_wanted = Presenting{};
     m_published = Presenting{};
 
+    m_chatAfter = 0;
+    m_chat.clear();
+    m_chatTotal = 0;
+    m_outbox.clear();
+
     std::cout
         << "Sala criada: "
         << membership.code
@@ -92,6 +97,11 @@ RoomJoinResult RoomClient::Join(
     m_wanted = Presenting{};
     m_published = Presenting{};
 
+    m_chatAfter = 0;
+    m_chat.clear();
+    m_chatTotal = 0;
+    m_outbox.clear();
+
     std::cout
         << "Entrou na sala "
         << code
@@ -117,6 +127,7 @@ void RoomClient::Start()
     m_active = true;
     m_lost = false;
     m_offline = false;
+    m_heartbeats = 0;
 
     m_thread =
         std::thread(&RoomClient::Loop, this);
@@ -209,6 +220,37 @@ RoomState RoomClient::GetState()
 }
 
 
+void RoomClient::SendChat(
+    const std::string& text)
+{
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+
+        if (m_outbox.size() >= 20)
+            return;
+
+        m_outbox.push_back(text);
+
+        m_wake = true;
+    }
+
+    m_cv.notify_all();
+}
+
+
+std::vector<RoomChatMessage> RoomClient::GetChat(
+    uint64_t& outTotal)
+{
+    std::lock_guard<std::mutex> lock(m_mutex);
+
+    outTotal = m_chatTotal;
+
+    return std::vector<RoomChatMessage>(
+        m_chat.begin(),
+        m_chat.end());
+}
+
+
 // ============================================================
 // Loop
 // ============================================================
@@ -271,16 +313,66 @@ void RoomClient::Loop()
 
 
         // ----------------------------------------------------
-        // Sinal de vida + lista atualizada
+        // Chat: o que esta pessoa escreveu
+        // ----------------------------------------------------
+
+        for (;;)
+        {
+            std::string text;
+
+            {
+                std::lock_guard<std::mutex> lock(m_mutex);
+
+                if (m_outbox.empty())
+                    break;
+
+                text = m_outbox.front();
+            }
+
+            if (!SignalingRoomChat(membership, text, error))
+            {
+                std::cout
+                    << "Sala: chat nao enviado: "
+                    << error
+                    << "\n";
+
+                // Tenta de novo na proxima volta (internet
+                // oscilou), mas nao fica preso nisso.
+                break;
+            }
+
+            std::lock_guard<std::mutex> lock(m_mutex);
+
+            if (!m_outbox.empty())
+            {
+                m_outbox.pop_front();
+            }
+        }
+
+
+        // ----------------------------------------------------
+        // Sinal de vida + lista atualizada + chat novo
         // ----------------------------------------------------
 
         RoomState state;
+
+        std::vector<RoomChatMessage> newMessages;
+
+        int chatAfter = 0;
+
+        {
+            std::lock_guard<std::mutex> lock(m_mutex);
+
+            chatAfter = m_chatAfter;
+        }
 
         bool gone = false;
 
         if (SignalingRoomHeartbeat(
                 membership,
+                chatAfter,
                 state,
+                newMessages,
                 gone,
                 error))
         {
@@ -291,6 +383,25 @@ void RoomClient::Loop()
             std::lock_guard<std::mutex> lock(m_mutex);
 
             m_state = state;
+
+            for (const RoomChatMessage& message : newMessages)
+            {
+                if (message.id <= m_chatAfter)
+                    continue;
+
+                m_chatAfter = message.id;
+
+                m_chat.push_back(message);
+
+                m_chatTotal++;
+            }
+
+            while (m_chat.size() > 200)
+            {
+                m_chat.pop_front();
+            }
+
+            m_heartbeats++;
         }
         else if (gone)
         {

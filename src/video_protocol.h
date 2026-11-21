@@ -104,6 +104,23 @@ constexpr uint32_t VIDEO_FLAG_KEYFRAME =
 // Versoes antigas do client simplesmente ignoram o pedido.
 // ============================================================
 
+// ============================================================
+// SINAL DE VIDA - quem transmite -> espectadores
+// ============================================================
+//
+// A captura do Windows so gera imagem quando a tela muda: uma
+// tela parada nao manda nada. Pra o receiver saber a diferenca
+// entre "tela parada" e "conexao caiu", quem transmite manda
+// este pacote (cifrado, 4 bytes) a cada segundo sem video.
+// Versoes antigas do receiver descartam (pacote pequeno demais
+// pra ser video).
+// ============================================================
+
+constexpr char VIDEO_ALIVE_TAG[4] = { 'S', 'T', 'P', '1' };
+
+constexpr uint64_t VIDEO_ALIVE_INTERVAL_MS = 1000;
+
+
 #pragma pack(push, 1)
 
 struct VideoNackHeader

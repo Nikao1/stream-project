@@ -38,4 +38,19 @@ void ClientViewClearPreview();
 // interface (entre UiBeginFrame e UiEndFrame).
 void ClientViewDrawBackground();
 
+// Miniaturas do seletor: cada uma vira uma textura. Devolve o
+// identificador pra desenhar com o ImGui (nullptr se falhou).
+// Valem ate o proximo ClientViewClearThumbnails.
+void* ClientViewAddThumbnail(
+    const uint8_t* bgraPixels,
+    int width,
+    int height
+);
+
+void ClientViewClearThumbnails();
+
+// Comeco de cada frame do modo: solta o que foi trocado no
+// frame anterior.
+void ClientViewNewFrame();
+
 } // namespace sender

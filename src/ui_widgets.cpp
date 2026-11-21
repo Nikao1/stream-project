@@ -1,5 +1,7 @@
 #include "ui_widgets.h"
 
+#include <algorithm>
+#include <cstring>
 #include <string>
 
 
@@ -308,6 +310,30 @@ bool UiPrimaryButton(
 }
 
 
+bool UiPrimaryButtonSized(
+    const char* label,
+    const ImVec2& size)
+{
+    const ImVec4 accent = UiColorAccent();
+
+    ImGui::PushStyleColor(ImGuiCol_Button, accent);
+
+    ImGui::PushStyleColor(
+        ImGuiCol_ButtonHovered,
+        ImVec4(accent.x + 0.08f, accent.y + 0.08f, accent.z, 1.0f));
+
+    ImGui::PushStyleColor(
+        ImGuiCol_ButtonActive,
+        ImVec4(accent.x - 0.05f, accent.y - 0.05f, accent.z - 0.05f, 1.0f));
+
+    bool clicked = ImGui::Button(label, size);
+
+    ImGui::PopStyleColor(3);
+
+    return clicked;
+}
+
+
 const char* UiBusyDots()
 {
     static const char* frames[] =
@@ -451,4 +477,225 @@ void UiFfmpegProblemPanel(
     }
 
     UiEndPanel();
+}
+
+
+// ============================================================
+// UiSpinner
+// ============================================================
+
+void UiSpinner(
+    float radius)
+{
+    ImVec2 pos = ImGui::GetCursorScreenPos();
+
+    ImGui::Dummy(ImVec2(radius * 2.0f, radius * 2.0f));
+
+    ImDrawList* draw = ImGui::GetWindowDrawList();
+
+    ImVec2 center(pos.x + radius, pos.y + radius);
+
+    float thickness = (std::max)(2.0f, radius * 0.22f);
+
+    // Trilho apagado + arco girando.
+    draw->AddCircle(
+        center,
+        radius - thickness * 0.5f,
+        ImGui::GetColorU32(ImVec4(1, 1, 1, 0.10f)),
+        32,
+        thickness);
+
+    float start =
+        static_cast<float>(ImGui::GetTime()) * 5.0f;
+
+    draw->PathArcTo(
+        center,
+        radius - thickness * 0.5f,
+        start,
+        start + 3.14159f * 0.65f,
+        24);
+
+    draw->PathStroke(
+        ImGui::GetColorU32(UiColorAccent()),
+        ImDrawFlags_None,
+        thickness);
+}
+
+
+// ============================================================
+// UiAvatar
+// ============================================================
+
+namespace
+{
+
+// Primeiro caractere (UTF-8) do nome, em maiuscula quando for
+// letra simples.
+std::string Initial(
+    const char* name)
+{
+    if (!name || !*name)
+        return "?";
+
+    unsigned char first =
+        static_cast<unsigned char>(name[0]);
+
+    size_t length =
+        first < 0x80 ? 1 :
+        (first & 0xE0) == 0xC0 ? 2 :
+        (first & 0xF0) == 0xE0 ? 3 :
+        4;
+
+    std::string initial(name, strnlen(name, length));
+
+    if (initial.size() == 1 &&
+        initial[0] >= 'a' && initial[0] <= 'z')
+    {
+        initial[0] = static_cast<char>(initial[0] - 'a' + 'A');
+    }
+
+    // a-z acentuados mais comuns (UTF-8 de 2 bytes, 0xC3 0xA0..0xBF):
+    // maiuscula = segundo byte - 0x20.
+    if (initial.size() == 2 &&
+        static_cast<unsigned char>(initial[0]) == 0xC3 &&
+        static_cast<unsigned char>(initial[1]) >= 0xA0 &&
+        static_cast<unsigned char>(initial[1]) <= 0xBE)
+    {
+        initial[1] = static_cast<char>(initial[1] - 0x20);
+    }
+
+    return initial;
+}
+
+} // namespace
+
+
+void UiAvatar(
+    const char* name,
+    float diameter,
+    bool live)
+{
+    // Paleta: cores medias, legiveis com texto branco.
+    static const ImU32 palette[] =
+    {
+        IM_COL32(59, 130, 246, 255),   // azul
+        IM_COL32(16, 185, 129, 255),   // verde
+        IM_COL32(245, 158, 11, 255),   // ambar
+        IM_COL32(236, 72, 153, 255),   // rosa
+        IM_COL32(139, 92, 246, 255),   // roxo
+        IM_COL32(20, 184, 166, 255),   // turquesa
+        IM_COL32(239, 68, 68, 255),    // vermelho
+        IM_COL32(132, 204, 22, 255),   // lima
+    };
+
+    // Hash simples (FNV-1a) do nome -> cor.
+    unsigned int hash = 2166136261u;
+
+    for (const char* c = name; c && *c; ++c)
+    {
+        hash ^= static_cast<unsigned char>(*c);
+        hash *= 16777619u;
+    }
+
+    ImU32 color =
+        palette[hash % (sizeof(palette) / sizeof(palette[0]))];
+
+    ImVec2 pos = ImGui::GetCursorScreenPos();
+
+    ImGui::Dummy(ImVec2(diameter, diameter));
+
+    ImDrawList* draw = ImGui::GetWindowDrawList();
+
+    float radius = diameter * 0.5f;
+
+    ImVec2 center(pos.x + radius, pos.y + radius);
+
+    draw->AddCircleFilled(center, radius, color, 32);
+
+    if (live)
+    {
+        draw->AddCircle(
+            center,
+            radius + 1.5f * g_uiScale,
+            IM_COL32(239, 68, 68, 255),
+            32,
+            2.0f * g_uiScale);
+    }
+
+    std::string initial = Initial(name);
+
+    ImVec2 textSize =
+        ImGui::CalcTextSize(initial.c_str());
+
+    draw->AddText(
+        ImVec2(
+            center.x - textSize.x * 0.5f,
+            center.y - textSize.y * 0.5f),
+        IM_COL32(255, 255, 255, 255),
+        initial.c_str());
+}
+
+
+// ============================================================
+// UiLogo
+// ============================================================
+
+void UiLogo(
+    float size)
+{
+    ImVec2 pos = ImGui::GetCursorScreenPos();
+
+    ImGui::Dummy(ImVec2(size, size));
+
+    ImDrawList* draw = ImGui::GetWindowDrawList();
+
+    // Fundo: quadrado arredondado (anil), com um brilho leve na
+    // metade de cima.
+    draw->AddRectFilled(
+        pos,
+        ImVec2(pos.x + size, pos.y + size),
+        IM_COL32(99, 102, 241, 255),
+        size * 0.24f);
+
+    draw->AddRectFilled(
+        pos,
+        ImVec2(pos.x + size, pos.y + size * 0.5f),
+        IM_COL32(255, 255, 255, 22),
+        size * 0.24f,
+        ImDrawFlags_RoundCornersTop);
+
+    // Monitor (contorno branco) + pe.
+    ImU32 white = IM_COL32(255, 255, 255, 255);
+
+    float s = size;
+
+    ImVec2 screenMin(pos.x + s * 0.20f, pos.y + s * 0.24f);
+    ImVec2 screenMax(pos.x + s * 0.80f, pos.y + s * 0.64f);
+
+    draw->AddRect(
+        screenMin,
+        screenMax,
+        white,
+        s * 0.05f,
+        0,
+        (std::max)(1.5f, s * 0.06f));
+
+    draw->AddLine(
+        ImVec2(pos.x + s * 0.50f, pos.y + s * 0.64f),
+        ImVec2(pos.x + s * 0.50f, pos.y + s * 0.74f),
+        white,
+        (std::max)(1.5f, s * 0.06f));
+
+    draw->AddLine(
+        ImVec2(pos.x + s * 0.36f, pos.y + s * 0.76f),
+        ImVec2(pos.x + s * 0.64f, pos.y + s * 0.76f),
+        white,
+        (std::max)(1.5f, s * 0.06f));
+
+    // "Play" no meio da tela.
+    draw->AddTriangleFilled(
+        ImVec2(pos.x + s * 0.44f, pos.y + s * 0.34f),
+        ImVec2(pos.x + s * 0.44f, pos.y + s * 0.54f),
+        ImVec2(pos.x + s * 0.60f, pos.y + s * 0.44f),
+        white);
 }

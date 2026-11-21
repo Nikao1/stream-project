@@ -2,9 +2,11 @@
 
 #include <atomic>
 #include <condition_variable>
+#include <deque>
 #include <mutex>
 #include <string>
 #include <thread>
+#include <vector>
 
 #include "signaling_client.h"
 
@@ -71,11 +73,30 @@ public:
         return m_offline;
     }
 
+    // Quantas respostas do servidor ja chegaram desde que
+    // entrou (a primeira traz o historico do chat).
+    uint64_t HeartbeatCount() const
+    {
+        return m_heartbeats;
+    }
+
     std::string GetCode();
 
     std::string GetMemberId();
 
     RoomState GetState();
+
+    // Chat: manda uma mensagem (sai na proxima volta da thread,
+    // em instantes).
+    void SendChat(
+        const std::string& text
+    );
+
+    // Mensagens recebidas (as ultimas, em ordem). "total" conta
+    // todas desde que entrou - pra saber se chegou algo novo.
+    std::vector<RoomChatMessage> GetChat(
+        uint64_t& outTotal
+    );
 
 private:
     void Loop();
@@ -88,6 +109,7 @@ private:
     std::atomic<bool> m_running{ false };
     std::atomic<bool> m_lost{ false };
     std::atomic<bool> m_offline{ false };
+    std::atomic<uint64_t> m_heartbeats{ 0 };
 
     // Protegidos por m_mutex
     std::string m_name;
@@ -111,4 +133,10 @@ private:
     Presenting m_wanted;
     Presenting m_published;
     bool m_wake = false;
+
+    // Chat (protegido por m_mutex)
+    int m_chatAfter = 0;
+    std::deque<RoomChatMessage> m_chat;
+    uint64_t m_chatTotal = 0;
+    std::deque<std::string> m_outbox;
 };

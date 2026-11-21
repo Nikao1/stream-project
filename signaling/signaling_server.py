@@ -49,6 +49,13 @@ sessao pelo fluxo normal acima ("join"/"announce"):
                                       [label]      -> ok
     POST /rooms/<code>/stop           member_id, token -> ok
     POST /rooms/<code>/leave          member_id, token -> ok
+    POST /rooms/<code>/chat           member_id, token, text
+                                      -> ok, id
+
+    O heartbeat aceita chat_after=<id> e devolve tambem as
+    mensagens de chat mais novas que esse id:
+        chat_count=N
+        chat_<i>=<id>|<member_id>|<nome>|<texto>
 
     Estado da sala:
         member_count=N
@@ -105,6 +112,8 @@ MAX_ROOMS = 2000
 MAX_ROOM_MEMBERS = 9          # quem transmite + ate 8 assistindo (MAX_VIEWERS do programa)
 MAX_NAME_LENGTH = 32
 MAX_LABEL_LENGTH = 80
+MAX_CHAT_LENGTH = 300
+CHAT_HISTORY = 50               # mensagens guardadas por sala (memoria)
 
 # So confie em X-Forwarded-For quando o servidor estiver atras
 # de um proxy da hospedagem (Render, Fly etc.): TRUST_PROXY=1
@@ -207,6 +216,18 @@ def _new_code():
                        for _ in range(CODE_LENGTH))
         if code not in _sessions and code not in _rooms:
             return code
+
+
+def _room_chat(room, after):
+    """Chamar com _lock adquirido. Mensagens com id > after."""
+    fields = {}
+    messages = [m for m in room["chat"] if m["id"] > after]
+    fields["chat_count"] = len(messages)
+    for i, m in enumerate(messages):
+        fields[f"chat_{i}"] = "|".join([
+            str(m["id"]), m["member_id"],
+            quote(m["name"]), quote(m["text"])])
+    return fields
 
 
 def _room_state(room):
@@ -334,6 +355,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._room_stop(code, form)
             if action == "leave":
                 return self._room_leave(code, form)
+            if action == "chat":
+                return self._room_chat_send(code, form)
 
         self._error(404, "not_found")
 
@@ -537,7 +560,7 @@ class Handler(BaseHTTPRequestHandler):
             if len(_rooms) >= MAX_ROOMS:
                 return self._error(503, "server_full")
             code = _new_code()
-            room = {"members": {}}
+            room = {"members": {}, "chat": [], "next_chat_id": 1}
             _rooms[code] = room
             member_id, token = self._add_member(room, name)
             fields = {"code": code, "member_id": member_id,
@@ -562,13 +585,38 @@ class Handler(BaseHTTPRequestHandler):
         self._reply(200, fields)
 
     def _room_heartbeat(self, code, form):
+        after_text = form.get("chat_after", "")
+        after = int(after_text) if after_text.isdigit() else None
         with _lock:
             room, member = self._room_member(code, form)
             if room is None:
                 return self._error(404, "not_in_room")
             fields = {"ok": 1}
             fields.update(_room_state(room))
+            # Programa sem chat (0.5.0) nao manda chat_after:
+            # a resposta continua igual pra ele.
+            if after is not None:
+                fields.update(_room_chat(room, after))
         self._reply(200, fields)
+
+    def _room_chat_send(self, code, form):
+        text = _clean_text(form.get("text", ""), MAX_CHAT_LENGTH)
+        if not text:
+            return self._error(400, "invalid_fields")
+        with _lock:
+            room, member = self._room_member(code, form)
+            if room is None:
+                return self._error(404, "not_in_room")
+            message_id = room["next_chat_id"]
+            room["next_chat_id"] += 1
+            room["chat"].append({
+                "id": message_id,
+                "member_id": form["member_id"],
+                "name": member["name"],
+                "text": text,
+            })
+            room["chat"] = room["chat"][-CHAT_HISTORY:]
+        self._reply(200, {"ok": 1, "id": message_id})
 
     def _room_present(self, code, form):
         session_code = form.get("session_code", "").upper()

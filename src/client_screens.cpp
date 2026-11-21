@@ -597,23 +597,29 @@ std::string Ellipsize(
 }
 
 
-// Item da lista: titulo + linha cinza embaixo, ocupando a
-// largura toda. Devolve true no clique.
-bool PickerItem(
+// Cartao do seletor: miniatura (16:9, a imagem inteira dentro,
+// com borda se a proporcao for outra) + titulo + linha cinza.
+// Devolve true no clique.
+bool PickerCard(
     const PickerEntry& entry,
-    int id)
+    int id,
+    float width)
 {
     const ImGuiStyle& style = ImGui::GetStyle();
 
-    float width =
-        ImGui::GetContentRegionAvail().x;
+    const float scale = UiScale();
 
-    float lineHeight =
+    const float pad = 6.0f * scale;
+
+    const float thumbHeight =
+        (width - pad * 2.0f) * 9.0f / 16.0f;
+
+    const float lineHeight =
         ImGui::GetTextLineHeight();
 
-    float height =
-        lineHeight * 2.0f +
-        style.FramePadding.y * 1.4f;
+    const float height =
+        pad + thumbHeight + pad * 0.8f +
+        lineHeight * 2.0f + pad;
 
     ImVec2 start =
         ImGui::GetCursorScreenPos();
@@ -621,46 +627,177 @@ bool PickerItem(
     ImGui::PushID(id);
 
     bool clicked =
-        ImGui::Selectable(
-            "##item",
-            false,
-            ImGuiSelectableFlags_None,
-            ImVec2(width, height)
-        );
+        ImGui::InvisibleButton(
+            "##cartao",
+            ImVec2(width, height));
+
+    bool hovered =
+        ImGui::IsItemHovered();
 
     ImGui::PopID();
 
     ImDrawList* draw =
         ImGui::GetWindowDrawList();
 
-    float textX =
-        start.x + style.FramePadding.x;
+    ImVec2 end(start.x + width, start.y + height);
 
-    float textWidth =
-        width - style.FramePadding.x * 2.0f;
+    float rounding = style.FrameRounding;
+
+    draw->AddRectFilled(
+        start,
+        end,
+        ImGui::GetColorU32(
+            hovered ? ImGuiCol_FrameBgHovered : ImGuiCol_FrameBg),
+        rounding);
+
+    if (hovered)
+    {
+        draw->AddRect(
+            start,
+            end,
+            ImGui::GetColorU32(UiColorAccent()),
+            rounding,
+            0,
+            2.0f * scale);
+    }
+
+
+    // --------------------------------------------------------
+    // Miniatura
+    // --------------------------------------------------------
+
+    ImVec2 thumbMin(start.x + pad, start.y + pad);
+
+    ImVec2 thumbMax(
+        start.x + width - pad,
+        start.y + pad + thumbHeight);
+
+    draw->AddRectFilled(
+        thumbMin,
+        thumbMax,
+        IM_COL32(8, 9, 12, 255),
+        rounding * 0.6f);
+
+    float boxWidth = thumbMax.x - thumbMin.x;
+    float boxHeight = thumbMax.y - thumbMin.y;
+
+    if (entry.thumbnail &&
+        entry.thumbnailWidth > 0.0f &&
+        entry.thumbnailHeight > 0.0f)
+    {
+        float fit =
+            boxWidth / entry.thumbnailWidth;
+
+        if (entry.thumbnailHeight * fit > boxHeight)
+        {
+            fit = boxHeight / entry.thumbnailHeight;
+        }
+
+        float w = entry.thumbnailWidth * fit;
+        float h = entry.thumbnailHeight * fit;
+
+        ImVec2 imageMin(
+            thumbMin.x + (boxWidth - w) * 0.5f,
+            thumbMin.y + (boxHeight - h) * 0.5f);
+
+        draw->AddImage(
+            reinterpret_cast<ImTextureID>(entry.thumbnail),
+            imageMin,
+            ImVec2(imageMin.x + w, imageMin.y + h));
+    }
+    else
+    {
+        const char* text =
+            entry.thumbnailPending ? "Carregando..." :
+            entry.minimized ? "Minimizada" :
+            "Sem prévia";
+
+        ImVec2 textSize =
+            ImGui::CalcTextSize(text);
+
+        draw->AddText(
+            ImVec2(
+                thumbMin.x + (boxWidth - textSize.x) * 0.5f,
+                thumbMin.y + (boxHeight - textSize.y) * 0.5f),
+            ImGui::GetColorU32(UiColorMuted()),
+            text);
+    }
+
+
+    // --------------------------------------------------------
+    // Textos
+    // --------------------------------------------------------
+
+    float textX = start.x + pad;
+
+    float textWidth = width - pad * 2.0f;
+
+    float textTop = thumbMax.y + pad * 0.8f;
 
     std::string title =
         Ellipsize(entry.title, textWidth);
 
     std::string detail =
-        Ellipsize(entry.detail, textWidth);
-
-    float textTop =
-        start.y + style.FramePadding.y * 0.7f;
+        Ellipsize(
+            entry.minimized
+                ? entry.detail + "  ·  minimizada"
+                : entry.detail,
+            textWidth);
 
     draw->AddText(
         ImVec2(textX, textTop),
         ImGui::GetColorU32(ImGuiCol_Text),
-        title.c_str()
-    );
+        title.c_str());
 
     draw->AddText(
-        ImVec2(
-            textX,
-            textTop + lineHeight),
+        ImVec2(textX, textTop + lineHeight),
         ImGui::GetColorU32(UiColorMuted()),
-        detail.c_str()
-    );
+        detail.c_str());
+
+    if (hovered)
+    {
+        ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+
+        // Titulo cortado: o tooltip mostra inteiro.
+        if (title != entry.title)
+        {
+            ImGui::SetTooltip("%s", entry.title.c_str());
+        }
+    }
+
+    return clicked;
+}
+
+
+// Grade de cartoes. Devolve o indice clicado (-1 = nenhum).
+int PickerGrid(
+    const std::vector<PickerEntry>& entries,
+    int idBase,
+    int columns)
+{
+    const ImGuiStyle& style = ImGui::GetStyle();
+
+    float available =
+        ImGui::GetContentRegionAvail().x;
+
+    float cardWidth =
+        (available - style.ItemSpacing.x * (columns - 1)) /
+        static_cast<float>(columns);
+
+    int clicked = -1;
+
+    for (int i = 0; i < static_cast<int>(entries.size()); ++i)
+    {
+        if (i % columns != 0)
+        {
+            ImGui::SameLine();
+        }
+
+        if (PickerCard(entries[i], idBase + i, cardWidth))
+        {
+            clicked = i;
+        }
+    }
 
     return clicked;
 }
@@ -672,7 +809,7 @@ void DrawClientPickerScreen(
     ClientPickerModel& model,
     ClientScreenActions& actions)
 {
-    UiBeginCenteredPanel("##seletor", 560.0f);
+    UiBeginCenteredPanel("##seletor", 820.0f);
 
     UiTitle("O que você quer compartilhar?");
 
@@ -704,105 +841,77 @@ void DrawClientPickerScreen(
 
 
     // --------------------------------------------------------
-    // Telas
+    // Telas e janelas, em cartoes com miniatura (rolavel)
     // --------------------------------------------------------
-
-    UiFieldLabel("Telas inteiras");
 
     const std::vector<PickerEntry>& monitors =
         *model.monitors;
 
-    ImGui::PushStyleVar(
-        ImGuiStyleVar_ItemSpacing,
-        ImVec2(
-            ImGui::GetStyle().ItemSpacing.x,
-            2.0f * UiScale())
-    );
-
-    for (int i = 0;
-         i < static_cast<int>(monitors.size());
-         ++i)
-    {
-        if (PickerItem(monitors[i], i))
-        {
-            actions.pickMonitor = i;
-        }
-    }
-
-    ImGui::PopStyleVar();
-
-    ImGui::Dummy(ImVec2(0.0f, 4.0f * UiScale()));
-
-
-    // --------------------------------------------------------
-    // Janelas (rolavel)
-    // --------------------------------------------------------
-
-    UiFieldLabel("Janelas");
-
     const std::vector<PickerEntry>& windows =
         *model.windows;
 
-    // A lista ocupa o que sobrar da janela (com limites), pra
-    // o painel inteiro caber mesmo em janelas baixas.
+    // Tres cartoes por linha; em janela estreita, dois.
+    int columns =
+        ImGui::GetContentRegionAvail().x >= 600.0f * UiScale()
+        ? 3
+        : 2;
+
+    // A area ocupa o que sobrar da janela (com limites), pra o
+    // painel inteiro caber mesmo em janelas baixas.
     float reserved =
-        (470.0f + (model.error.empty() ? 0.0f : 80.0f) +
-         (model.offerAdmin ? (model.switching ? 90.0f : 60.0f) : 0.0f) +
-         40.0f * static_cast<float>(monitors.size() > 1
-             ? monitors.size() - 1
-             : 0)) *
+        (300.0f + (model.error.empty() ? 0.0f : 80.0f) +
+         (model.offerAdmin ? (model.switching ? 90.0f : 60.0f) : 0.0f)) *
         UiScale();
 
     float listHeight =
         ImGui::GetMainViewport()->WorkSize.y - reserved;
 
-    float minList = 110.0f * UiScale();
-    float maxList = 320.0f * UiScale();
+    float minList = 220.0f * UiScale();
+    float maxList = 620.0f * UiScale();
 
     if (listHeight < minList) listHeight = minList;
     if (listHeight > maxList) listHeight = maxList;
 
-    ImGui::PushStyleVar(
-        ImGuiStyleVar_WindowPadding,
-        ImVec2(6.0f * UiScale(), 6.0f * UiScale())
-    );
-
     ImGui::BeginChild(
-        "##janelas",
+        "##opcoes",
         ImVec2(0.0f, listHeight),
-        ImGuiChildFlags_Borders |
-        ImGuiChildFlags_AlwaysUseWindowPadding
+        ImGuiChildFlags_None
     );
 
-    ImGui::PopStyleVar();
+    UiFieldLabel("Telas inteiras");
 
-    // Itens colados um no outro (o destaque ao passar o mouse
-    // ja separa visualmente).
-    ImGui::PushStyleVar(
-        ImGuiStyleVar_ItemSpacing,
-        ImVec2(
-            ImGui::GetStyle().ItemSpacing.x,
-            2.0f * UiScale())
-    );
+    ImGui::Spacing();
+
+    int monitorClicked =
+        PickerGrid(monitors, 0, columns);
+
+    if (monitorClicked >= 0)
+    {
+        actions.pickMonitor = monitorClicked;
+    }
+
+    ImGui::Dummy(ImVec2(0.0f, 6.0f * UiScale()));
+
+    UiFieldLabel("Janelas");
+
+    ImGui::Spacing();
 
     if (windows.empty())
     {
         UiMutedText("Nenhuma janela aberta.");
     }
 
-    for (int i = 0;
-         i < static_cast<int>(windows.size());
-         ++i)
+    int windowClicked =
+        PickerGrid(windows, 1000, columns);
+
+    if (windowClicked >= 0)
     {
-        if (PickerItem(windows[i], 1000 + i))
-        {
-            actions.pickWindow = i;
-        }
+        actions.pickWindow = windowClicked;
     }
 
-    ImGui::PopStyleVar();
-
     ImGui::EndChild();
+
+    ImGui::Spacing();
 
 
     // --------------------------------------------------------

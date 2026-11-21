@@ -293,6 +293,9 @@ bool UdpServer::Service()
         );
 
 
+    SendAlivePings();
+
+
     for (const sockaddr_in& address : joined)
     {
         std::cout
@@ -553,8 +556,44 @@ bool UdpServer::SendVideoFrame(
     RememberFrame(
         std::move(frame));
 
+    m_lastSendMs = GetTickCount64();
+
 
     return true;
+}
+
+
+// ============================================================
+// SendAlivePings
+// ============================================================
+//
+// Tela parada (nenhum video saindo ha 1 s): manda o sinal de
+// vida pra cada espectador (ver VIDEO_ALIVE_TAG).
+// ============================================================
+
+void UdpServer::SendAlivePings()
+{
+    ULONGLONG now = GetTickCount64();
+
+    if (now - m_lastSendMs.load() < VIDEO_ALIVE_INTERVAL_MS)
+        return;
+
+    m_lastSendMs = now;
+
+    UdpViewer viewers[MAX_VIEWERS];
+
+    size_t count = m_viewers.Snapshot(viewers);
+
+    unsigned char sealed[sizeof(VIDEO_ALIVE_TAG) + CRYPTO_OVERHEAD];
+
+    for (size_t i = 0; i < count; ++i)
+    {
+        SendTo(
+            viewers[i],
+            reinterpret_cast<const unsigned char*>(VIDEO_ALIVE_TAG),
+            static_cast<int>(sizeof(VIDEO_ALIVE_TAG)),
+            sealed);
+    }
 }
 
 

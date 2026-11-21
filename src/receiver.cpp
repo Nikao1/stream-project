@@ -687,6 +687,14 @@ inline bool WatchKeepGoing()
     return g_running && g_watching;
 }
 
+// Ultimo pacote valido (video ou sinal de vida) de quem
+// transmite - pra perceber conexao caida (reconexao automatica).
+std::atomic<ULONGLONG> g_lastVideoPacketMs{ 0 };
+
+// Quem transmite manda sinal de vida (versao 0.6.0 em diante).
+// So com ele da pra distinguir "tela parada" de "conexao caiu".
+std::atomic<bool> g_senderSendsAlive{ false };
+
 
 // ============================================================
 // FPS
@@ -1918,6 +1926,21 @@ void ReceiverThread()
 
         if (plainSize <= 0)
             continue;
+
+        g_lastVideoPacketMs = GetTickCount64();
+
+        // Sinal de vida (tela parada do outro lado): nada a
+        // montar.
+        if (plainSize == static_cast<int>(sizeof(VIDEO_ALIVE_TAG)) &&
+            std::memcmp(
+                plainBuffer.data(),
+                VIDEO_ALIVE_TAG,
+                sizeof(VIDEO_ALIVE_TAG)) == 0)
+        {
+            g_senderSendsAlive = true;
+
+            continue;
+        }
 
 
         ProcessUdpPacket(
@@ -3573,6 +3596,10 @@ std::atomic<bool> g_connectBusy{ false };
 // receber.
 std::atomic<bool> g_connectCancelled{ false };
 
+// O que foi usado na ultima conexao (codigo, convite ou IP) -
+// pra reconexao automatica.
+std::string g_lastWatchTarget;
+
 std::thread g_connectThread;
 
 std::thread g_receiverThread;
@@ -4136,6 +4163,9 @@ void StartConnect()
     g_connectCancelled =
         false;
 
+    g_lastWatchTarget =
+        std::string(g_uiInput);
+
     // A tentativa anterior (se houve) ja terminou - so falta
     // recolher a thread.
     if (g_connectThread.joinable())
@@ -4246,6 +4276,10 @@ void ViewerDisconnect()
 
     g_streamReceived = false;
 
+    g_senderSendsAlive = false;
+
+    g_lastVideoPacketMs = 0;
+
     g_frameWidth = 0;
     g_frameHeight = 0;
 
@@ -4351,6 +4385,58 @@ bool g_watchAutoShow = false;
 
 std::string g_roomNotice;
 std::string g_roomError;
+
+
+// ------------------------------------------------------------
+// Chat, avisos e reconexao (so a thread da janela mexe)
+// ------------------------------------------------------------
+
+char g_chatInput[300]{};
+
+// Chat aberto por cima do video.
+bool g_videoChatOpen = false;
+
+// Por o cursor no campo do chat no proximo frame.
+bool g_chatFocus = false;
+
+// Quantas mensagens ja foram vistas (chat visivel) e quantas ja
+// viraram aviso.
+uint64_t g_chatSeenTotal = 0;
+uint64_t g_chatToastedTotal = 0;
+
+// As mensagens que ja estavam na sala ao entrar (historico) nao
+// viram avisos nem contam como novas.
+bool g_chatBaselineDone = false;
+
+std::vector<Toast> g_toasts;
+
+// Estado anterior da sala, pra avisar quem entrou/saiu/comecou.
+RoomState g_previousRoomState;
+bool g_haveRoomBaseline = false;
+
+// Reconexao automatica: tentativas seguidas sem imagem (o alvo
+// fica em g_lastWatchTarget).
+int g_reconnectAttempts = 0;
+
+
+void AddToast(
+    const std::string& text)
+{
+    double now = ImGui::GetTime();
+
+    // Tira os que ja sumiram.
+    g_toasts.erase(
+        std::remove_if(
+            g_toasts.begin(),
+            g_toasts.end(),
+            [now](const Toast& toast)
+            {
+                return now - toast.shownAt > 6.0;
+            }),
+        g_toasts.end());
+
+    g_toasts.push_back(Toast{ text, now });
+}
 
 
 // ------------------------------------------------------------
@@ -4615,6 +4701,15 @@ void EnterRoom()
 {
     g_room.Start();
 
+    g_haveRoomBaseline = false;
+    g_previousRoomState = RoomState{};
+
+    g_chatSeenTotal = 0;
+    g_chatToastedTotal = 0;
+    g_chatBaselineDone = false;
+    g_videoChatOpen = false;
+    g_chatInput[0] = '\0';
+
     sender::SetRoomMode(true);
 
     g_roomView = RoomView::Lobby;
@@ -4672,6 +4767,9 @@ void RoomWatch(
     g_watchSessionCode = presenter.sessionCode;
     g_watchName = presenter.name;
     g_watchAutoShow = true;
+
+    g_lastWatchTarget = presenter.sessionCode;
+    g_reconnectAttempts = 0;
 
     g_roomNotice.clear();
     g_roomError.clear();
@@ -4760,6 +4858,126 @@ void RoomSync(
         return;
     }
 
+
+    // --------------------------------------------------------
+    // Avisos: quem entrou, saiu, comecou a transmitir
+    // --------------------------------------------------------
+
+    std::string myId = g_room.GetMemberId();
+
+    const RoomPresenter* newPresenter = nullptr;
+
+    if (!g_haveRoomBaseline)
+    {
+        if (!state.members.empty())
+        {
+            g_previousRoomState = state;
+
+            g_haveRoomBaseline = true;
+
+            // Entrou numa sala onde so uma pessoa transmite:
+            // ja assiste.
+            int others = 0;
+
+            for (const RoomPresenter& presenter : state.presenters)
+            {
+                if (presenter.memberId != myId)
+                {
+                    others++;
+                    newPresenter = &presenter;
+                }
+            }
+
+            if (others != 1)
+            {
+                newPresenter = nullptr;
+            }
+        }
+    }
+    else
+    {
+        auto hasMember =
+            [](const RoomState& room, const std::string& id)
+            {
+                for (const RoomMember& m : room.members)
+                    if (m.id == id) return true;
+                return false;
+            };
+
+        auto hasPresenter =
+            [](const RoomState& room, const std::string& session)
+            {
+                for (const RoomPresenter& p : room.presenters)
+                    if (p.sessionCode == session) return true;
+                return false;
+            };
+
+        // Lista vazia = resposta ainda nao chegou: nada muda.
+        if (!state.members.empty())
+        {
+            for (const RoomMember& member : state.members)
+            {
+                if (member.id != myId &&
+                    !hasMember(g_previousRoomState, member.id))
+                {
+                    AddToast(member.name + " entrou na sala");
+                }
+            }
+
+            for (const RoomMember& member : g_previousRoomState.members)
+            {
+                if (member.id != myId &&
+                    !hasMember(state, member.id))
+                {
+                    AddToast(member.name + " saiu da sala");
+                }
+            }
+
+            int otherPresenters = 0;
+
+            for (const RoomPresenter& presenter : state.presenters)
+            {
+                if (presenter.memberId == myId)
+                    continue;
+
+                otherPresenters++;
+
+                if (!hasPresenter(
+                        g_previousRoomState,
+                        presenter.sessionCode))
+                {
+                    AddToast(
+                        presenter.name +
+                        " começou a transmitir" +
+                        (presenter.label.empty()
+                            ? std::string()
+                            : ": " + presenter.label));
+
+                    newPresenter = &presenter;
+                }
+            }
+
+            // Assistir automatico so quando e a unica pessoa
+            // transmitindo (com mais de uma, a pessoa escolhe).
+            if (otherPresenters != 1)
+            {
+                newPresenter = nullptr;
+            }
+
+            g_previousRoomState = state;
+        }
+    }
+
+    if (newPresenter &&
+        g_roomView == RoomView::Lobby &&
+        g_watchSessionCode.empty() &&
+        !g_connectBusy)
+    {
+        RoomPresenter copy = *newPresenter;
+
+        RoomWatch(copy);
+    }
+
     if (g_watchSessionCode.empty())
         return;
 
@@ -4824,6 +5042,197 @@ void RoomSync(
 
 
 // ------------------------------------------------------------
+// CheckReconnect - a cada frame
+// ------------------------------------------------------------
+//
+// Assistindo e nada chega de quem transmite (nem video, nem o
+// sinal de vida) ha 5 s: a conexao caiu (internet oscilou, o
+// roteador esqueceu o caminho...). Reconecta sozinho, ate 3
+// vezes seguidas. So vale com quem manda sinal de vida - com
+// versoes antigas, tela parada pareceria conexao caida.
+// ------------------------------------------------------------
+
+void CheckReconnect()
+{
+    if (g_uiState != UiState::Connected ||
+        g_connectBusy ||
+        !g_senderSendsAlive)
+    {
+        return;
+    }
+
+    if (g_streamReceived &&
+        g_reconnectAttempts > 0 &&
+        GetTickCount64() - g_lastVideoPacketMs.load() < 2000)
+    {
+        // Voltou a chegar: zera as tentativas.
+        g_reconnectAttempts = 0;
+    }
+
+    ULONGLONG last = g_lastVideoPacketMs.load();
+
+    if (last == 0 ||
+        GetTickCount64() - last < 5000)
+    {
+        return;
+    }
+
+    bool inRoom =
+        g_appMode == AppMode::Room &&
+        !g_watchSessionCode.empty();
+
+    std::string target =
+        inRoom ? g_watchSessionCode : g_lastWatchTarget;
+
+    if (target.empty())
+        return;
+
+    if (g_reconnectAttempts >= 3)
+    {
+        std::cout
+            << "Reconexao: desistindo depois de 3 tentativas.\n";
+
+        if (inRoom)
+        {
+            std::string name = g_watchName;
+
+            RoomStopWatching();
+
+            g_roomError =
+                "A conexão com " + name + " caiu e não voltou. "
+                "Tente assistir de novo.";
+        }
+
+        return;
+    }
+
+    g_reconnectAttempts++;
+
+    std::cout
+        << "Reconexao: nada chega ha 5 s - tentativa "
+        << g_reconnectAttempts
+        << ".\n";
+
+    AddToast(
+        inRoom
+        ? "A conexão com " + g_watchName + " caiu. Reconectando..."
+        : std::string("A conexão caiu. Reconectando..."));
+
+    ViewerDisconnect();
+
+    strncpy_s(g_uiInput, target.c_str(), _TRUNCATE);
+
+    if (inRoom)
+    {
+        // Continua no video: a tela de espera aparece ate a
+        // imagem voltar.
+        g_watchAutoShow = false;
+    }
+
+    StartConnect();
+}
+
+
+// ------------------------------------------------------------
+// Chat: mensagens novas
+// ------------------------------------------------------------
+//
+// Monta as linhas pra tela e, se o chat nao estiver na tela,
+// transforma as mensagens novas dos outros em avisos.
+// ------------------------------------------------------------
+
+std::vector<ChatLine> CollectChat(
+    bool chatVisible,
+    int& outUnread)
+{
+    uint64_t total = 0;
+
+    std::vector<RoomChatMessage> messages =
+        g_room.GetChat(total);
+
+    if (!g_chatBaselineDone &&
+        g_room.HeartbeatCount() > 0)
+    {
+        g_chatBaselineDone = true;
+
+        g_chatToastedTotal = total;
+        g_chatSeenTotal = total;
+    }
+
+    // Antes da primeira resposta: ainda nao ha o que avisar.
+    if (!g_chatBaselineDone)
+    {
+        chatVisible = true;
+    }
+
+    std::string myId = g_room.GetMemberId();
+
+    std::vector<ChatLine> lines;
+
+    lines.reserve(messages.size());
+
+    for (const RoomChatMessage& message : messages)
+    {
+        lines.push_back(
+            ChatLine{
+                message.name,
+                message.text,
+                message.memberId == myId });
+    }
+
+    // Avisos das mensagens novas (so as dos outros).
+    if (!chatVisible &&
+        total > g_chatToastedTotal)
+    {
+        uint64_t fresh = total - g_chatToastedTotal;
+
+        size_t first =
+            messages.size() > fresh
+            ? messages.size() - static_cast<size_t>(fresh)
+            : 0;
+
+        for (size_t i = first; i < messages.size(); ++i)
+        {
+            if (messages[i].memberId != myId)
+            {
+                AddToast(
+                    messages[i].name + ": " + messages[i].text);
+            }
+        }
+    }
+
+    g_chatToastedTotal = total;
+
+    if (chatVisible)
+    {
+        g_chatSeenTotal = total;
+    }
+
+    // As suas nao contam como "nao lidas".
+    int unread = 0;
+
+    if (total > g_chatSeenTotal)
+    {
+        uint64_t fresh = total - g_chatSeenTotal;
+
+        for (size_t i = messages.size();
+             i > 0 && fresh > 0;
+             --i, --fresh)
+        {
+            if (messages[i - 1].memberId != myId)
+            {
+                unread++;
+            }
+        }
+    }
+
+    outUnread = unread;
+
+    return lines;
+}
+
+
+// ------------------------------------------------------------
 // Titulo da janela (sempre pela thread da janela)
 // ------------------------------------------------------------
 
@@ -4880,7 +5289,12 @@ void DrawVideoOverlay(
     ReceiverScreenActions& actions,
     bool inRoom,
     const std::string& presenterName,
-    bool& outBackToRoom)
+    bool& outBackToRoom,
+    const std::vector<std::string>& otherPresenters =
+        std::vector<std::string>(),
+    int unreadChat = 0,
+    int* outSwitchTo = nullptr,
+    bool* outToggleChat = nullptr)
 {
     // ----------------------------------------------------
     // Painel sobre o video: aparece quando o mouse mexe e
@@ -4960,6 +5374,8 @@ void DrawVideoOverlay(
 
     overlay.inRoom = inRoom;
     overlay.presenterName = presenterName;
+    overlay.otherPresenters = otherPresenters;
+    overlay.unreadChat = unreadChat;
 
     StreamOverlayActions overlayActions;
 
@@ -4976,6 +5392,16 @@ void DrawVideoOverlay(
     if (overlayActions.backToRoom)
     {
         outBackToRoom = true;
+    }
+
+    if (outSwitchTo && overlayActions.switchTo >= 0)
+    {
+        *outSwitchTo = overlayActions.switchTo;
+    }
+
+    if (outToggleChat && overlayActions.toggleChat)
+    {
+        *outToggleChat = true;
     }
 }
 
@@ -5012,6 +5438,19 @@ void DrawReceiverUi()
     RoomState roomState;
 
     std::vector<RoomPresenter> shownPresenters;
+
+    // Troca rapida pelo painel do video.
+    std::vector<RoomPresenter> switchPresenters;
+
+    int switchTo = -1;
+
+    bool toggleChat = false;
+
+    bool sendChat = false;
+
+    // O chat ja foi processado neste frame (senao, as mensagens
+    // novas viram avisos mesmo assim - ex.: transmitindo).
+    bool chatHandled = false;
 
     if (mode == AppMode::Room)
     {
@@ -5127,29 +5566,101 @@ void DrawReceiverUi()
                 shareGoHome
             );
         }
-        else if (g_roomView == RoomView::Watch &&
-                 g_streamReceived)
-        {
-            DrawVideoOverlay(
-                actions,
-                true,
-                g_watchName,
-                backToRoom);
-        }
         else if (g_roomView == RoomView::Watch)
         {
-            std::string versionWarning;
+            // Outras pessoas transmitindo: troca rapida.
+            std::string myId = g_room.GetMemberId();
 
+            std::vector<std::string> others;
+
+            for (const RoomPresenter& presenter :
+                 roomState.presenters)
             {
-                std::lock_guard<std::mutex> lock(g_uiMutex);
+                if (presenter.memberId == myId ||
+                    presenter.sessionCode == g_watchSessionCode)
+                {
+                    continue;
+                }
 
-                versionWarning = g_versionWarning;
+                others.push_back(
+                    presenter.label.empty()
+                    ? presenter.name
+                    : presenter.name + "  ·  " + presenter.label);
+
+                switchPresenters.push_back(presenter);
             }
 
-            DrawRoomWaitingScreen(
-                g_watchName,
-                versionWarning,
-                backToRoom);
+            int unread = 0;
+
+            std::vector<ChatLine> chat =
+                CollectChat(g_videoChatOpen, unread);
+
+            chatHandled = true;
+
+            if (g_streamReceived)
+            {
+                DrawVideoOverlay(
+                    actions,
+                    true,
+                    g_watchName,
+                    backToRoom,
+                    others,
+                    unread,
+                    &switchTo,
+                    &toggleChat);
+            }
+            else
+            {
+                std::string versionWarning;
+                std::string status;
+
+                {
+                    std::lock_guard<std::mutex> lock(g_uiMutex);
+
+                    versionWarning = g_versionWarning;
+
+                    status =
+                        g_uiState == UiState::Connected
+                        ? std::string("Aguardando a imagem chegar")
+                        : g_uiStatus;
+                }
+
+                DrawRoomWaitingScreen(
+                    g_watchName,
+                    status,
+                    versionWarning,
+                    backToRoom);
+            }
+
+            // Enter abre o chat (fora de campos de texto).
+            if (!g_videoChatOpen &&
+                !ImGui::GetIO().WantTextInput &&
+                ImGui::IsKeyPressed(ImGuiKey_Enter, false))
+            {
+                toggleChat = true;
+            }
+
+            if (g_videoChatOpen)
+            {
+                bool close = false;
+
+                if (DrawVideoChat(
+                        chat,
+                        g_chatInput,
+                        sizeof(g_chatInput),
+                        g_chatFocus,
+                        close))
+                {
+                    sendChat = true;
+                }
+
+                g_chatFocus = false;
+
+                if (close)
+                {
+                    toggleChat = true;
+                }
+            }
         }
         else
         {
@@ -5211,10 +5722,39 @@ void DrawReceiverUi()
             room.error = g_roomError;
             room.offline = g_room.IsOffline();
 
+            for (const RoomMember& member : roomState.members)
+            {
+                bool live = false;
+
+                for (const RoomPresenter& presenter :
+                     roomState.presenters)
+                {
+                    if (presenter.memberId == member.id)
+                    {
+                        live = true;
+                    }
+                }
+
+                room.memberLive.push_back(live);
+            }
+
+            int unread = 0;
+
+            room.chat = CollectChat(true, unread);
+            room.chatInput = g_chatInput;
+            room.chatInputSize = sizeof(g_chatInput);
+
+            chatHandled = true;
+
             DrawRoomScreen(
                 room,
                 roomActions
             );
+
+            if (roomActions.sendChat)
+            {
+                sendChat = true;
+            }
         }
     }
     else if (state == UiState::Connect ||
@@ -5283,6 +5823,19 @@ void DrawReceiverUi()
             versionWarning
         );
     }
+
+
+    // Sala, sem o chat na tela (ex.: nas telas de transmitir):
+    // mensagens novas viram avisos.
+    if (g_appMode == AppMode::Room &&
+        !chatHandled)
+    {
+        int unread = 0;
+
+        CollectChat(false, unread);
+    }
+
+    DrawToasts(g_toasts);
 
 
     UiEndFrame();
@@ -5384,7 +5937,38 @@ void DrawReceiverUi()
     if (backToRoom)
     {
         RoomStopWatching();
+
+        g_videoChatOpen = false;
     }
+
+    if (switchTo >= 0 &&
+        switchTo < static_cast<int>(switchPresenters.size()))
+    {
+        RoomPresenter target = switchPresenters[switchTo];
+
+        RoomWatch(target);
+
+        // Fica no video: a tela de espera aparece ate a imagem
+        // da outra pessoa chegar.
+        g_roomView = RoomView::Watch;
+    }
+
+    if (toggleChat)
+    {
+        g_videoChatOpen = !g_videoChatOpen;
+
+        g_chatFocus = g_videoChatOpen;
+    }
+
+    if (sendChat &&
+        g_chatInput[0] != '\0')
+    {
+        g_room.SendChat(g_chatInput);
+
+        g_chatInput[0] = '\0';
+    }
+
+    CheckReconnect();
 
     if (roomActions.leave)
     {

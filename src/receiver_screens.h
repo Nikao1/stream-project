@@ -77,6 +77,46 @@ void DrawHomeScreen(
 // Sala: quem esta, quem transmite, assistir/transmitir
 // ------------------------------------------------------------
 
+// Uma linha do chat.
+struct ChatLine
+{
+    std::string name;
+    std::string text;
+
+    // Escrita por esta pessoa.
+    bool mine = false;
+};
+
+
+// Caixa de chat: mensagens (rolavel, sempre no fim quando chega
+// algo novo) + campo pra escrever. Devolve true quando a pessoa
+// envia (o texto fica em "input"; quem chama limpa).
+// focusInput = colocar o cursor no campo agora.
+bool DrawChatBox(
+    const char* id,
+    const std::vector<ChatLine>& lines,
+    char* input,
+    size_t inputSize,
+    float height,
+    bool focusInput
+);
+
+
+// Avisos rapidos no canto (somem sozinhos).
+struct Toast
+{
+    std::string text;
+
+    // ImGui::GetTime() de quando apareceu.
+    double shownAt = 0.0;
+};
+
+// Desenha os avisos ainda validos (somem em ~5 s).
+void DrawToasts(
+    const std::vector<Toast>& toasts
+);
+
+
 struct RoomPresenterEntry
 {
     std::string name;
@@ -116,6 +156,15 @@ struct RoomScreenModel
 
     // Sem resposta do servidor da sala ha alguns segundos.
     bool offline = false;
+
+    // Quem esta na sala que esta transmitindo (mesma ordem de
+    // members) - bolinha com anel vermelho.
+    std::vector<bool> memberLive;
+
+    // Chat da sala
+    std::vector<ChatLine> chat;
+    char* chatInput = nullptr;
+    size_t chatInputSize = 0;
 };
 
 struct RoomScreenActions
@@ -129,6 +178,9 @@ struct RoomScreenActions
     bool stopShare = false;
 
     bool leave = false;
+
+    // Enviar o que esta em chatInput.
+    bool sendChat = false;
 };
 
 void DrawRoomScreen(
@@ -137,11 +189,24 @@ void DrawRoomScreen(
 );
 
 
-// Conectado a alguem da sala, esperando o primeiro frame.
+// Conectado (ou conectando) a alguem da sala, esperando a
+// imagem. status: a etapa atual (ex.: "Procurando a sessão").
 void DrawRoomWaitingScreen(
     const std::string& presenterName,
+    const std::string& status,
     const std::string& versionWarning,
     bool& outBackToRoom
+);
+
+
+// Chat sobre o video (canto inferior esquerdo). outClose = a
+// pessoa fechou. Devolve true quando envia (texto em input).
+bool DrawVideoChat(
+    const std::vector<ChatLine>& lines,
+    char* input,
+    size_t inputSize,
+    bool focusInput,
+    bool& outClose
 );
 
 
@@ -217,6 +282,13 @@ struct StreamOverlayModel
     bool inRoom = false;
 
     std::string presenterName;
+
+    // Outras pessoas transmitindo na sala (troca rapida, sem
+    // voltar pra lista). Texto pronto: "Nome · o que mostra".
+    std::vector<std::string> otherPresenters;
+
+    // Mensagens de chat nao lidas (botao "Chat (N)").
+    int unreadChat = 0;
 };
 
 struct StreamOverlayActions
@@ -225,6 +297,12 @@ struct StreamOverlayActions
 
     // "Voltar para a sala" (so com StreamOverlayModel.inRoom)
     bool backToRoom = false;
+
+    // Indice em otherPresenters (-1 = nenhum).
+    int switchTo = -1;
+
+    // Abrir/fechar o chat sobre o video.
+    bool toggleChat = false;
 };
 
 // Desenha no canto superior direito. Devolve true se o mouse
