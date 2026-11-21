@@ -497,6 +497,52 @@ void ApplyInviteReply(
 // Acoes da tela inicial
 // ============================================================
 
+// Passa a qualidade/FPS escolhidos na tela pro encoder.
+// Durante a transmissao, pede pra reiniciar o encoder (o
+// receiver percebe a resolucao nova sozinho e se ajusta).
+void ApplyQualitySelection()
+{
+    static const uint32_t heights[] =
+        { 480, 720, 1080, 0 };
+
+    static const uint32_t frameRates[] =
+        { 60, 30, 15 };
+
+    uint32_t height =
+        heights[g_qualityIndex >= 0 && g_qualityIndex < 4
+            ? g_qualityIndex
+            : 3];
+
+    uint32_t fps =
+        frameRates[g_fpsIndex >= 0 && g_fpsIndex < 3
+            ? g_fpsIndex
+            : 0];
+
+    bool changed =
+        height != g_targetOutputHeight.load() ||
+        fps != g_targetFps.load();
+
+    g_targetOutputHeight = height;
+
+    g_targetFps = fps;
+
+    std::cout
+        << "Qualidade selecionada: "
+        << (height > 0
+            ? std::to_string(height) + "p"
+            : std::string("nativa"))
+        << " @ "
+        << fps
+        << " FPS\n";
+
+    if (changed &&
+        g_captureRunning)
+    {
+        g_encoderRestartRequested = true;
+    }
+}
+
+
 void BeginStreaming()
 {
     if (g_state != State::Setup)
@@ -506,21 +552,7 @@ void BeginStreaming()
     // mudar (valem pra proxima captura), mas a sessao ja
     // criada continua a mesma.
 
-    static const uint32_t heights[] =
-        { 480, 720, 1080, 0 };
-
-    static const uint32_t frameRates[] =
-        { 60, 30, 15 };
-
-    g_targetOutputHeight =
-        heights[g_qualityIndex >= 0 && g_qualityIndex < 4
-            ? g_qualityIndex
-            : 3];
-
-    g_targetFps =
-        frameRates[g_fpsIndex >= 0 && g_fpsIndex < 3
-            ? g_fpsIndex
-            : 0];
+    ApplyQualitySelection();
 
     // Indice 0 da lista = padrao do Windows (id vazio).
     if (g_audioIndex >= 1 &&
@@ -538,15 +570,6 @@ void BeginStreaming()
         );
     }
 
-    std::cout
-        << "Qualidade selecionada: "
-        << (g_targetOutputHeight > 0
-            ? std::to_string(g_targetOutputHeight) + "p"
-            : std::string("nativa"))
-        << " @ "
-        << g_targetFps
-        << " FPS\n";
-
     if (!g_sessionStarted.exchange(true))
     {
         std::thread(
@@ -560,20 +583,26 @@ void BeginStreaming()
 
 std::string QualityLabel()
 {
+    uint32_t target =
+        g_targetOutputHeight.load();
+
+    uint32_t fps =
+        g_targetFps.load();
+
     uint32_t height =
-        g_targetOutputHeight > 0
-        ? g_targetOutputHeight
+        target > 0
+        ? target
         : g_captureHeight;
 
     return
-        (g_targetOutputHeight > 0
-            ? std::to_string(g_targetOutputHeight) + "p"
+        (target > 0
+            ? std::to_string(target) + "p"
             : std::string("nativa")) +
         " · " +
-        std::to_string(g_targetFps) +
+        std::to_string(fps) +
         " FPS · " +
         std::to_string(
-            PickBitrateMbps(height, g_targetFps)) +
+            PickBitrateMbps(height, fps)) +
         " Mbps";
 }
 
@@ -683,6 +712,8 @@ void DrawUi(
     model.captureWidth = g_captureWidth;
     model.captureHeight = g_captureHeight;
     model.qualityLabel = QualityLabel();
+    model.qualityIndex = &g_qualityIndex;
+    model.fpsIndex = &g_fpsIndex;
     model.symmetricNat = g_symmetricNat;
     model.replyInput = g_replyInput;
     model.replyInputSize = sizeof(g_replyInput);
@@ -1075,6 +1106,11 @@ void ClientUiRenderFrame()
     if (actions.start)
     {
         BeginStreaming();
+    }
+
+    if (actions.qualityChanged)
+    {
+        ApplyQualitySelection();
     }
 
     if (actions.openPicker)

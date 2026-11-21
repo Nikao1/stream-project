@@ -22,6 +22,9 @@ struct ClientScreenActions
     // "Trocar o que está sendo compartilhado"
     bool openPicker = false;
 
+    // Qualidade ou FPS trocados durante a transmissao
+    bool qualityChanged = false;
+
     // Seletor: item clicado (indice na lista de telas ou de
     // janelas; -1 = nenhum).
     int pickMonitor = -1;
@@ -112,6 +115,11 @@ struct ClientLiveModel
 
     // Ex.: "720p · 60 FPS · 6 Mbps"
     std::string qualityLabel;
+
+    // Mesmos indices da tela inicial (a tela altera direto e
+    // avisa em actions.qualityChanged).
+    int* qualityIndex = nullptr;
+    int* fpsIndex = nullptr;
 
     bool symmetricNat = false;
 

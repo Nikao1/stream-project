@@ -106,11 +106,16 @@ ULONGLONG g_streamClockStart =
 // Qualidade selecionável (definida no prompt inicial)
 // ------------------------------------------------------------
 
-uint32_t g_targetFps =
-    60;
+// Atomicos: a interface pode trocar durante a transmissao
+// (g_encoderRestartRequested avisa a thread do encoder).
+std::atomic<uint32_t> g_targetFps{ 60 };
 
-uint32_t g_targetOutputHeight =
-    0; // 0 = resolucao nativa, sem reescalar
+// 0 = resolucao nativa, sem reescalar
+std::atomic<uint32_t> g_targetOutputHeight{ 0 };
+
+// true = qualidade/FPS mudou durante a transmissao: a thread do
+// encoder reinicia o encoder com os valores novos.
+std::atomic<bool> g_encoderRestartRequested{ false };
 
 // Sinaliza que o usuário já escolheu a tela/janela no seletor -
 // usado pra atrasar o prompt de dispositivo de áudio, evitando
@@ -397,14 +402,20 @@ void EncoderThread()
         // Se resolução mudou, reiniciar encoder
         // --------------------------------------------------------
 
+        bool qualityChanged =
+            g_encoderRestartRequested.exchange(false);
+
         if (!g_h264Encoder.IsRunning() ||
+            qualityChanged ||
             g_encoderWidth != frame.width ||
             g_encoderHeight != frame.height)
         {
             if (g_h264Encoder.IsRunning())
             {
                 std::cout
-                    << "\nH264: resolucao mudou. "
+                    << (qualityChanged
+                        ? "\nH264: qualidade mudou. "
+                        : "\nH264: resolucao mudou. ")
                     << "Reiniciando encoder...\n";
 
 
@@ -435,18 +446,23 @@ void EncoderThread()
                 << "...\n";
 
 
+            // Uma leitura so: a interface pode trocar no meio.
+            uint32_t targetFps =
+                g_targetFps.load();
+
+            uint32_t targetHeight =
+                g_targetOutputHeight.load();
+
             if (!g_h264Encoder.Start(
                     frame.width,
                     frame.height,
-                    g_targetFps,
+                    targetFps,
                     PickBitrateMbps(
-                        g_targetOutputHeight > 0
-                            ? static_cast<uint32_t>(
-                                g_targetOutputHeight)
+                        targetHeight > 0
+                            ? targetHeight
                             : frame.height,
-                        static_cast<uint32_t>(
-                            g_targetFps)),
-                    g_targetOutputHeight))
+                        targetFps),
+                    targetHeight))
             {
                 std::cout
                     << "H264: falha ao iniciar encoder.\n";
@@ -466,12 +482,12 @@ void EncoderThread()
                 << "x"
                 << frame.height
                 << " -> saida "
-                << (g_targetOutputHeight > 0
-                    ? std::to_string(g_targetOutputHeight) +
+                << (targetHeight > 0
+                    ? std::to_string(targetHeight) +
                       "p"
                     : "nativa")
                 << " @ "
-                << g_targetFps
+                << targetFps
                 << " FPS.\n";
         }
 
@@ -504,7 +520,7 @@ void EncoderThread()
             double minIntervalMs =
                 1000.0 /
                 static_cast<double>(
-                    g_targetFps
+                    g_targetFps.load()
                 );
 
 

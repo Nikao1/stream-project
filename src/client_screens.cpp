@@ -67,24 +67,31 @@ bool CopyButton(
 // Tela inicial
 // ============================================================
 
+// Opcoes das listas de qualidade e FPS (mesma ordem dos indices
+// de ClientSetupModel).
+const char* const QUALITY_OPTIONS[] =
+{
+    "480p",
+    "720p",
+    "1080p",
+    "Nativa (a resolução da tela)"
+};
+
+const char* const FPS_OPTIONS[] =
+{
+    "60 FPS",
+    "30 FPS",
+    "15 FPS"
+};
+
+
 void DrawClientSetupScreen(
     ClientSetupModel& model,
     ClientScreenActions& actions)
 {
-    static const char* const qualities[] =
-    {
-        "480p",
-        "720p",
-        "1080p",
-        "Nativa (a resolução da tela)"
-    };
+    const char* const* qualities = QUALITY_OPTIONS;
 
-    static const char* const frameRates[] =
-    {
-        "60 FPS",
-        "30 FPS",
-        "15 FPS"
-    };
+    const char* const* frameRates = FPS_OPTIONS;
 
     UiBeginCenteredPanel("##transmitir", 460.0f);
 
@@ -376,6 +383,86 @@ void DrawClientLiveScreen(
     else
     {
         UiMutedText("Ninguém assistindo ainda.");
+    }
+
+
+    // --------------------------------------------------------
+    // Qualidade (da pra trocar com a transmissao rolando)
+    // --------------------------------------------------------
+
+    if (model.qualityIndex &&
+        model.fpsIndex)
+    {
+        ImGui::Separator();
+
+        // "Nativa" por extenso e longo demais pra meia largura.
+        static const char* const shortQualities[] =
+        {
+            "480p",
+            "720p",
+            "1080p",
+            "Nativa"
+        };
+
+        // Duas colunas: Qualidade | FPS (rotulos numa linha,
+        // listas na de baixo - assim ficam alinhados).
+        float spacing =
+            ImGui::GetStyle().ItemSpacing.x;
+
+        float half =
+            (ImGui::GetContentRegionAvail().x - spacing) * 0.5f;
+
+        float secondX =
+            ImGui::GetCursorPosX() + half + spacing;
+
+        ImGui::PushStyleColor(
+            ImGuiCol_Text,
+            UiColorMuted());
+
+        ImGui::TextUnformatted("Qualidade");
+
+        ImGui::SameLine(secondX);
+
+        ImGui::TextUnformatted("FPS");
+
+        ImGui::PopStyleColor();
+
+        // Cola os rotulos nas listas (como UiFieldLabel).
+        ImGui::SetCursorPosY(
+            ImGui::GetCursorPosY() -
+            ImGui::GetStyle().ItemSpacing.y * 0.6f);
+
+        ImGui::SetNextItemWidth(half);
+
+        if (ImGui::Combo(
+                "##qualidade",
+                model.qualityIndex,
+                shortQualities,
+                4))
+        {
+            actions.qualityChanged = true;
+        }
+
+        ImGui::SameLine(secondX);
+
+        ImGui::SetNextItemWidth(half);
+
+        if (ImGui::Combo(
+                "##fps",
+                model.fpsIndex,
+                FPS_OPTIONS,
+                3))
+        {
+            actions.qualityChanged = true;
+        }
+
+        if (model.viewers > 0)
+        {
+            UiMutedText(
+                "Ao trocar, a imagem de quem assiste pisca por "
+                "um instante."
+            );
+        }
     }
 
 

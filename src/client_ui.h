@@ -56,9 +56,11 @@ extern std::atomic<bool> g_udpServerStarted;
 extern std::atomic<bool> g_audioServerStarted;
 
 // Escolhas de qualidade (a interface preenche antes de comecar).
-extern uint32_t g_targetFps;
+extern std::atomic<uint32_t> g_targetFps;
 
-extern uint32_t g_targetOutputHeight;
+extern std::atomic<uint32_t> g_targetOutputHeight;
+
+extern std::atomic<bool> g_encoderRestartRequested;
 
 extern bool g_captureRunning;
 
