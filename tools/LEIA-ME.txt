@@ -39,6 +39,9 @@ também entrou. A voz vai direto entre vocês, criptografada.
 - "Falar": livre (o microfone fica aberto) ou segurando uma
   tecla - Mouse 4, Mouse 5, Alt direito ou Ctrl direito.
   Funciona com o jogo aberto.
+- "Microfone" e "Ouvir em": escolha o microfone e onde ouvir a
+  voz dos outros (ex.: no fone, mesmo com a transmissão saindo
+  nas caixas de som). A escolha fica salva.
 - Clique no nome de alguém na voz para ajustar o volume dele.
 - Durante o vídeo, quem está falando aparece no canto superior
   esquerdo, e o painel de opções tem o botão do microfone.

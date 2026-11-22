@@ -206,6 +206,10 @@ struct RoomScreenModel
     std::vector<std::string> microphones;
     int microphone = 0;
 
+    // Saidas de som (onde a voz dos outros toca), mesmo esquema.
+    std::vector<std::string> speakers;
+    int speaker = 0;
+
     std::string voiceError;
 
     // Chat da sala
@@ -241,8 +245,12 @@ struct RoomScreenActions
     // RoomScreenModel::microphone; -1 = sem mudanca).
     int voiceMicrophone = -1;
 
-    // A lista de microfones acabou de ser aberta: atualizar.
-    bool voiceRefreshMicrophones = false;
+    // Saida escolhida (mesmo esquema; -1 = sem mudanca).
+    int voiceSpeaker = -1;
+
+    // Uma das listas de dispositivos acabou de ser aberta:
+    // atualizar.
+    bool voiceRefreshDevices = false;
 
     // Volume de uma pessoa mudou (indice em members, -1 = nada).
     int volumeMember = -1;

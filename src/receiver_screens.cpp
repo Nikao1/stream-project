@@ -767,70 +767,84 @@ void DrawVoiceSection(
 
         ImGui::PopStyleColor();
 
-        // Rotulos alinhados ("Microfone:" / "Falar:")
+        // Rotulos alinhados ("Microfone:" / "Ouvir em:" /
+        // "Falar:")
         float labelWidth =
             ImGui::CalcTextSize("Microfone:").x +
             style.ItemSpacing.x;
 
         float fieldX = ImGui::GetCursorPosX() + labelWidth;
 
-        // Microfone
-        ImGui::AlignTextToFramePadding();
-
-        UiMutedText("Microfone:");
-
-        ImGui::SameLine();
-
-        ImGui::SetCursorPosX(fieldX);
-
-        ImGui::SetNextItemWidth(-1.0f);
-
-        {
-            int mic = model.microphone;
-
-            if (mic < 0 ||
-                mic > static_cast<int>(model.microphones.size()))
+        auto deviceRow =
+            [&](const char* label,
+                const char* id,
+                const std::vector<std::string>& names,
+                int selected,
+                int& outChoice)
             {
-                mic = 0;
-            }
+                ImGui::AlignTextToFramePadding();
 
-            const char* preview =
-                mic == 0
-                ? "Padrão do Windows"
-                : model.microphones[mic - 1].c_str();
+                UiMutedText(label);
 
-            if (ImGui::BeginCombo("##mic", preview))
-            {
-                // Acabou de abrir: atualiza a lista (alguem
-                // pode ter ligado um fone agora).
-                if (ImGui::IsWindowAppearing())
+                ImGui::SameLine();
+
+                ImGui::SetCursorPosX(fieldX);
+
+                ImGui::SetNextItemWidth(-1.0f);
+
+                if (selected < 0 ||
+                    selected > static_cast<int>(names.size()))
                 {
-                    actions.voiceRefreshMicrophones = true;
+                    selected = 0;
                 }
 
-                if (ImGui::Selectable("Padrão do Windows", mic == 0))
-                {
-                    actions.voiceMicrophone = 0;
-                }
+                const char* preview =
+                    selected == 0
+                    ? "Padrão do Windows"
+                    : names[selected - 1].c_str();
 
-                for (size_t i = 0; i < model.microphones.size(); ++i)
+                if (ImGui::BeginCombo(id, preview))
                 {
-                    ImGui::PushID(static_cast<int>(i));
-
-                    if (ImGui::Selectable(
-                            model.microphones[i].c_str(),
-                            mic == static_cast<int>(i) + 1))
+                    // Acabou de abrir: atualiza a lista (alguem
+                    // pode ter ligado um fone agora).
+                    if (ImGui::IsWindowAppearing())
                     {
-                        actions.voiceMicrophone =
-                            static_cast<int>(i) + 1;
+                        actions.voiceRefreshDevices = true;
                     }
 
-                    ImGui::PopID();
-                }
+                    if (ImGui::Selectable(
+                            "Padrão do Windows", selected == 0))
+                    {
+                        outChoice = 0;
+                    }
 
-                ImGui::EndCombo();
-            }
-        }
+                    for (size_t i = 0; i < names.size(); ++i)
+                    {
+                        ImGui::PushID(static_cast<int>(i));
+
+                        if (ImGui::Selectable(
+                                names[i].c_str(),
+                                selected == static_cast<int>(i) + 1))
+                        {
+                            outChoice = static_cast<int>(i) + 1;
+                        }
+
+                        ImGui::PopID();
+                    }
+
+                    ImGui::EndCombo();
+                }
+            };
+
+        deviceRow(
+            "Microfone:", "##mic",
+            model.microphones, model.microphone,
+            actions.voiceMicrophone);
+
+        deviceRow(
+            "Ouvir em:", "##saida",
+            model.speakers, model.speaker,
+            actions.voiceSpeaker);
 
         // Modo de falar
         ImGui::AlignTextToFramePadding();

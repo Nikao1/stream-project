@@ -95,6 +95,12 @@ public:
         const std::wstring& deviceId
     );
 
+    // Saida onde a voz dos outros toca (vazio = padrao). Na
+    // voz: troca na hora.
+    void SetSpeaker(
+        const std::wstring& deviceId
+    );
+
     // A voz desta pessoa esta saindo agora (nao mudo e, com
     // segurar-para-falar, tecla apertada).
     bool IsTransmitting() const { return m_transmitting; }
@@ -156,6 +162,7 @@ private:
     // Protegidos por m_mutex
     std::string m_error;
     std::wstring m_microphone;
+    std::wstring m_speaker;
 
     std::map<std::string, std::unique_ptr<VoicePeer>> m_peers;
 

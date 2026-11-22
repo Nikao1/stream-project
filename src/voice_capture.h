@@ -45,9 +45,11 @@ public:
         std::string name;  // nome amigavel (UTF-8)
     };
 
-    // Microfones ativos agora (pode demorar alguns ms - nao
-    // chamar a cada frame).
+    // Microfones / saidas de som ativos agora (pode demorar
+    // alguns ms - nao chamar a cada frame).
     static std::vector<Device> ListMicrophones();
+
+    static std::vector<Device> ListSpeakers();
 
     // Microfone a usar no proximo Start (vazio = padrao do
     // Windows).
@@ -55,6 +57,15 @@ public:
         const std::wstring& deviceId)
     {
         m_deviceId = deviceId;
+    }
+
+    // Saida onde a voz dos outros toca (vazio = padrao) - e o
+    // que o cancelamento de eco tira do microfone. Antes do
+    // Start.
+    void SetSpeaker(
+        const std::wstring& deviceId)
+    {
+        m_speakerId = deviceId;
     }
 
     // Comeca a capturar (thread propria). O resultado de abrir o
@@ -93,6 +104,12 @@ private:
 
     bool RunPlain();
 
+    // dataFlow: eCapture ou eRender (int pra nao puxar os
+    // headers do Windows aqui).
+    static std::vector<Device> ListDevices(
+        int dataFlow
+    );
+
     void Deliver(
         const float* samples,
         size_t count
@@ -101,6 +118,8 @@ private:
     FrameFn m_onFrame;
 
     std::wstring m_deviceId;
+
+    std::wstring m_speakerId;
 
     std::thread m_thread;
 

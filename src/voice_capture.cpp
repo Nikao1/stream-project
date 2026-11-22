@@ -275,6 +275,19 @@ VoiceCapture::~VoiceCapture()
 
 std::vector<VoiceCapture::Device> VoiceCapture::ListMicrophones()
 {
+    return ListDevices(eCapture);
+}
+
+
+std::vector<VoiceCapture::Device> VoiceCapture::ListSpeakers()
+{
+    return ListDevices(eRender);
+}
+
+
+std::vector<VoiceCapture::Device> VoiceCapture::ListDevices(
+    int dataFlow)
+{
     std::vector<Device> result;
 
     HRESULT com =
@@ -291,7 +304,9 @@ std::vector<VoiceCapture::Device> VoiceCapture::ListMicrophones()
             __uuidof(IMMDeviceEnumerator),
             reinterpret_cast<void**>(&enumerator))) &&
         SUCCEEDED(enumerator->EnumAudioEndpoints(
-            eCapture, DEVICE_STATE_ACTIVE, &devices)))
+            static_cast<EDataFlow>(dataFlow),
+            DEVICE_STATE_ACTIVE,
+            &devices)))
     {
         UINT count = 0;
 
@@ -338,7 +353,9 @@ std::vector<VoiceCapture::Device> VoiceCapture::ListMicrophones()
 
             if (entry.name.empty())
             {
-                entry.name = "Microfone " + std::to_string(i + 1);
+                entry.name =
+                    (dataFlow == eCapture ? "Microfone " : "Saída ") +
+                    std::to_string(i + 1);
             }
 
             if (!entry.id.empty())
@@ -550,7 +567,8 @@ bool VoiceCapture::RunEchoCancelled()
         // Microfone escolhido: diz ao DSP qual usar (e a saida
         // padrao, que e onde a voz dos outros toca - a
         // referencia do eco).
-        if (SUCCEEDED(hr) && !m_deviceId.empty())
+        if (SUCCEEDED(hr) &&
+            (!m_deviceId.empty() || !m_speakerId.empty()))
         {
             IMMDeviceEnumerator* enumerator = nullptr;
 
@@ -565,7 +583,21 @@ bool VoiceCapture::RunEchoCancelled()
                     DeviceIndex(enumerator, eCapture, m_deviceId);
 
                 int speaker =
-                    DeviceIndex(enumerator, eRender, std::wstring());
+                    DeviceIndex(enumerator, eRender, m_speakerId);
+
+                // Saida escolhida sumiu: a padrao (o playback
+                // faz o mesmo).
+                if (speaker < 0)
+                {
+                    speaker =
+                        DeviceIndex(enumerator, eRender, std::wstring());
+                }
+
+                if (mic < 0)
+                {
+                    mic =
+                        DeviceIndex(enumerator, eCapture, std::wstring());
+                }
 
                 enumerator->Release();
 
@@ -589,8 +621,8 @@ bool VoiceCapture::RunEchoCancelled()
                 else
                 {
                     std::cout
-                        << "Voz: microfone escolhido nao encontrado - "
-                        << "usando o padrao.\n";
+                        << "Voz: dispositivos de som nao encontrados - "
+                        << "usando os padrao.\n";
                 }
             }
         }

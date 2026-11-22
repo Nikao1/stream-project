@@ -5,6 +5,7 @@
 #include <audioclient.h>
 
 #include <cstdint>
+#include <string>
 #include <vector>
 #include <deque>
 #include <thread>
@@ -65,8 +66,18 @@ public:
         m_lowLatency = lowLatency;
     }
 
+    // Saida de som (id do Windows; vazio = padrao). Chamar antes
+    // de Start(). Se o dispositivo sumiu, usa o padrao.
+    void SetDevice(
+        const std::wstring& deviceId)
+    {
+        m_deviceId = deviceId;
+    }
+
 private:
     void RenderThread();
+
+    std::wstring m_deviceId;
 
     IMMDeviceEnumerator* m_deviceEnumerator;
     IMMDevice* m_device;

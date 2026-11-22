@@ -515,6 +515,12 @@ void VoiceChannel::JoinWorker()
     {
         m_playback.SetLowLatency(true);
 
+        {
+            std::lock_guard<std::mutex> lock(m_mutex);
+
+            m_playback.SetDevice(m_speaker);
+        }
+
         ok = m_playback.Start();
 
         if (!ok)
@@ -628,6 +634,7 @@ void VoiceChannel::JoinWorker()
             std::lock_guard<std::mutex> lock(m_mutex);
 
             m_capture.SetDevice(m_microphone);
+            m_capture.SetSpeaker(m_speaker);
         }
 
         m_capture.Start(
@@ -948,6 +955,43 @@ void VoiceChannel::SetMicrophone(
     m_capture.Stop();
 
     m_capture.SetDevice(deviceId);
+
+    m_capture.Start(
+        [this](const float* samples, size_t count)
+        {
+            OnMicFrame(samples, count);
+        });
+}
+
+
+void VoiceChannel::SetSpeaker(
+    const std::wstring& deviceId)
+{
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+
+        if (deviceId == m_speaker)
+            return;
+
+        m_speaker = deviceId;
+    }
+
+    if (!m_joined)
+        return;
+
+    // Reabre a saida no dispositivo novo (o mixador continua
+    // mandando; o que chegar no meio da troca se perde)...
+    m_playback.Stop();
+
+    m_playback.SetDevice(deviceId);
+
+    m_playback.Start();
+
+    // ...e o microfone, pro cancelamento de eco olhar a saida
+    // nova.
+    m_capture.Stop();
+
+    m_capture.SetSpeaker(deviceId);
 
     m_capture.Start(
         [this](const float* samples, size_t count)

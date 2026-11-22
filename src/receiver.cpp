@@ -3364,6 +3364,11 @@ std::wstring g_voiceMicrophone;
 
 std::vector<VoiceCapture::Device> g_microphones;
 
+// Saida da voz (mesmo esquema).
+std::wstring g_voiceSpeaker;
+
+std::vector<VoiceCapture::Device> g_speakers;
+
 // Indice da opcao -> tecla virtual (0 = fala livre).
 int VoicePushToTalkKey(
     int option)
@@ -3429,6 +3434,9 @@ void LoadReceiverSettings()
 
     g_voiceMicrophone =
         settings.GetString(L"VozMicrofone", L"");
+
+    g_voiceSpeaker =
+        settings.GetString(L"VozSaida", L"");
 
     if (g_voicePushToTalk < 0 ||
         g_voicePushToTalk >= VOICE_PTT_OPTION_COUNT)
@@ -5888,6 +5896,16 @@ void DrawReceiverUi()
                     room.microphone = static_cast<int>(i) + 1;
                 }
             }
+
+            for (size_t i = 0; i < g_speakers.size(); ++i)
+            {
+                room.speakers.push_back(g_speakers[i].name);
+
+                if (g_speakers[i].id == g_voiceSpeaker)
+                {
+                    room.speaker = static_cast<int>(i) + 1;
+                }
+            }
             room.voiceError = g_voice.ErrorText();
 
             int unread = 0;
@@ -6096,14 +6114,36 @@ void DrawReceiverUi()
 
         g_voice.SetMicrophone(g_voiceMicrophone);
 
+        g_voice.SetSpeaker(g_voiceSpeaker);
+
         g_microphones = VoiceCapture::ListMicrophones();
+
+        g_speakers = VoiceCapture::ListSpeakers();
 
         g_voice.Join();
     }
 
-    if (roomActions.voiceRefreshMicrophones)
+    if (roomActions.voiceRefreshDevices)
     {
         g_microphones = VoiceCapture::ListMicrophones();
+
+        g_speakers = VoiceCapture::ListSpeakers();
+    }
+
+    if (roomActions.voiceSpeaker >= 0)
+    {
+        int choice = roomActions.voiceSpeaker;
+
+        g_voiceSpeaker =
+            choice > 0 &&
+            choice <= static_cast<int>(g_speakers.size())
+            ? g_speakers[choice - 1].id
+            : std::wstring();
+
+        ReceiverSettings().SetString(
+            L"VozSaida", g_voiceSpeaker);
+
+        g_voice.SetSpeaker(g_voiceSpeaker);
     }
 
     if (roomActions.voiceMicrophone >= 0)

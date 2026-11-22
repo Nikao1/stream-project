@@ -223,12 +223,33 @@ void AudioPlayback::RenderThread()
     }
 
 
-    hr =
-        m_deviceEnumerator->GetDefaultAudioEndpoint(
-            eRender,
-            eConsole,
-            &m_device
-        );
+    hr = E_FAIL;
+
+    if (!m_deviceId.empty())
+    {
+        hr =
+            m_deviceEnumerator->GetDevice(
+                m_deviceId.c_str(),
+                &m_device
+            );
+
+        if (FAILED(hr))
+        {
+            std::cout
+                << "AudioPlayback: saida escolhida nao "
+                << "encontrada - usando a padrao.\n";
+        }
+    }
+
+    if (FAILED(hr))
+    {
+        hr =
+            m_deviceEnumerator->GetDefaultAudioEndpoint(
+                eRender,
+                eConsole,
+                &m_device
+            );
+    }
 
 
     if (FAILED(hr))
