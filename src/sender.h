@@ -3,7 +3,9 @@
 #include <windows.h>
 #include <d3d11.h>
 
+#include <cstdint>
 #include <string>
+#include <vector>
 
 // ============================================================
 // MODO TRANSMITIR - o que o programa usa
@@ -61,6 +63,15 @@ bool GetPublishInfo(
 // a sessao, e volta pra tela de opcoes. O motor (portas,
 // threads) continua ligado pra proxima vez.
 void StopSharing();
+
+// Previa na lista da sala (marcada no painel da transmissao).
+// Podem ser chamadas de outra thread.
+bool RoomPreviewEnabled();
+
+// Imagem pequena (JPEG ~320x180) do que esta sendo transmitido.
+bool CaptureRoomThumbnail(
+    std::vector<uint8_t>& outJpeg
+);
 
 // Quantas pessoas estao assistindo esta transmissao.
 int ViewerCount();

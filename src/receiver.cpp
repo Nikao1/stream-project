@@ -40,7 +40,11 @@
 #include "power_mode.h"
 #include "sender.h"
 #include "room_client.h"
+#include "room_crypto.h"
 #include "voice_channel.h"
+#include <map>
+#include "shortcuts.h"
+#include "image_codec.h"
 #include "version.h"
 
 #pragma comment(lib, "ws2_32.lib")
@@ -3350,12 +3354,21 @@ float g_volume = 1.0f;
 
 bool g_muted = false;
 
-// Canal de voz: tecla de "segurar para falar" (indice em
-// VOICE_PTT_OPTION_NAMES, salvo) e microfone mudo (so nesta
-// execucao).
-int g_voicePushToTalk = 0;
+// Canal de voz da sala (ver voice_channel.h).
+VoiceChannel g_voice;
 
-bool g_voiceMuted = false;
+// Atalhos (tecla virtual por atalho, 0 = nenhum; salvos - ver
+// shortcuts.h). Tela de atalhos aberta + linha esperando tecla.
+int g_shortcutKeys[SHORTCUT_COUNT]{};
+
+bool g_shortcutsOpen = false;
+
+KeyCapture g_keyCapture;
+
+int g_captureRow = -1;
+
+// Painel "Pessoas" sobre o video / a transmissao.
+bool g_peopleOpen = false;
 
 // Microfone da voz (id do Windows, salvo; vazio = padrao) e a
 // lista mostrada na tela (atualizada ao entrar na voz e ao
@@ -3368,20 +3381,6 @@ std::vector<VoiceCapture::Device> g_microphones;
 std::wstring g_voiceSpeaker;
 
 std::vector<VoiceCapture::Device> g_speakers;
-
-// Indice da opcao -> tecla virtual (0 = fala livre).
-int VoicePushToTalkKey(
-    int option)
-{
-    switch (option)
-    {
-    case 1: return VK_XBUTTON1;
-    case 2: return VK_XBUTTON2;
-    case 3: return VK_RMENU;
-    case 4: return VK_RCONTROL;
-    default: return 0;
-    }
-}
 
 // Exibicao do video (ver StreamOverlayModel).
 bool g_fillWindow = false;
@@ -3429,20 +3428,86 @@ void LoadReceiverSettings()
     g_overlayCollapsed =
         settings.GetInt(L"PainelFechado", 0) != 0;
 
-    g_voicePushToTalk =
-        settings.GetInt(L"VozTecla", 0);
+    for (int i = 0; i < SHORTCUT_COUNT; ++i)
+    {
+        const ShortcutDef& def = GetShortcutDef(i);
+
+        int key = settings.GetInt(def.settingsKey, -1);
+
+        g_shortcutKeys[i] =
+            key < 0 || key > 255 ? def.defaultKey : key;
+    }
+
+    // Versao 0.7 de teste: "segurar para falar" era uma lista.
+    if (settings.GetInt(L"AtalhoFalar", -1) < 0)
+    {
+        static const int oldKeys[] =
+            { 0, VK_XBUTTON1, VK_XBUTTON2, VK_RMENU, VK_RCONTROL };
+
+        int old = settings.GetInt(L"VozTecla", 0);
+
+        if (old > 0 && old < 5)
+        {
+            g_shortcutKeys[SHORTCUT_PUSH_TO_TALK] = oldKeys[old];
+        }
+    }
 
     g_voiceMicrophone =
         settings.GetString(L"VozMicrofone", L"");
 
     g_voiceSpeaker =
         settings.GetString(L"VozSaida", L"");
+}
 
-    if (g_voicePushToTalk < 0 ||
-        g_voicePushToTalk >= VOICE_PTT_OPTION_COUNT)
+
+void SaveShortcuts()
+{
+    AppSettings& settings = ReceiverSettings();
+
+    for (int i = 0; i < SHORTCUT_COUNT; ++i)
     {
-        g_voicePushToTalk = 0;
+        settings.SetInt(
+            GetShortcutDef(i).settingsKey,
+            g_shortcutKeys[i]);
     }
+}
+
+
+// Atalhos globais (lidos na thread do microfone).
+void ApplyVoiceShortcuts()
+{
+    g_voice.SetPushToTalkKey(
+        g_shortcutKeys[SHORTCUT_PUSH_TO_TALK]);
+
+    g_voice.SetMuteToggleKey(
+        g_shortcutKeys[SHORTCUT_TOGGLE_MIC]);
+}
+
+
+// Nome da tecla de um atalho ("" = nenhum).
+std::string ShortcutName(
+    int id)
+{
+    int key = g_shortcutKeys[id];
+
+    return key == 0 ? std::string() : ShortcutKeyName(key);
+}
+
+
+// Atalho local apertado neste frame (janela em foco, fora de
+// campos de texto e com a tela de atalhos fechada). Chamar uma
+// vez por frame por atalho.
+bool LocalShortcut(
+    int id)
+{
+    int key = g_shortcutKeys[id];
+
+    bool pressed = ShortcutPressed(key, g_hwnd);
+
+    return
+        pressed &&
+        !g_shortcutsOpen &&
+        !ImGui::GetIO().WantTextInput;
 }
 
 
@@ -3457,15 +3522,13 @@ void SaveReceiverSettingsIfChanged()
         bool muted;
         bool fill;
         bool collapsed;
-        int voiceKey;
 
         bool operator==(const Saved& other) const
         {
             return volume == other.volume &&
                    muted == other.muted &&
                    fill == other.fill &&
-                   collapsed == other.collapsed &&
-                   voiceKey == other.voiceKey;
+                   collapsed == other.collapsed;
         }
     };
 
@@ -3478,8 +3541,7 @@ void SaveReceiverSettingsIfChanged()
         static_cast<int>(g_volume * 100.0f + 0.5f),
         g_muted,
         g_fillWindow,
-        g_overlayCollapsed,
-        g_voicePushToTalk
+        g_overlayCollapsed
     };
 
     if (!haveSaved)
@@ -3516,7 +3578,6 @@ void SaveReceiverSettingsIfChanged()
     settings.SetInt(L"Mudo", pending.muted ? 1 : 0);
     settings.SetInt(L"PreencherJanela", pending.fill ? 1 : 0);
     settings.SetInt(L"PainelFechado", pending.collapsed ? 1 : 0);
-    settings.SetInt(L"VozTecla", pending.voiceKey);
 
     saved = pending;
 }
@@ -4425,9 +4486,6 @@ enum class RoomView
 
 RoomClient g_room;
 
-// Canal de voz da sala (ver voice_channel.h).
-VoiceChannel g_voice;
-
 RoomView g_roomView = RoomView::Lobby;
 
 // Quem esta sendo assistido (vazio = ninguem). So a thread da
@@ -4651,8 +4709,12 @@ void HomeWorker(
             std::lock_guard<std::mutex> lock(g_uiMutex);
 
             g_homeWorkerError =
-                "Não foi possível criar a sala. Verifique sua "
-                "internet e tente de novo.";
+                error.find("desatualizado") != std::string::npos
+                ? "O servidor da sala está desatualizado (sem "
+                  "criptografia de ponta a ponta). Atualize o "
+                  "servidor e tente de novo."
+                : "Não foi possível criar a sala. Verifique sua "
+                  "internet e tente de novo.";
 
             g_homeResult = HomeResult::Error;
         }
@@ -4679,13 +4741,54 @@ void HomeWorker(
 
     case RoomJoinResult::NotFound:
     {
-        // Nao e sala: pode ser o codigo de quem transmite sem
-        // sala (ou de uma versao sem salas).
+        std::string roomCode;
+        std::string secret;
+
+        ParseRoomInvite(code, roomCode, secret);
+
         std::lock_guard<std::mutex> lock(g_uiMutex);
 
-        g_homeSessionCode = code;
+        if (!secret.empty())
+        {
+            // Codigo completo de sala, mas a sala nao existe
+            // mais (fecha quando todos saem).
+            g_homeWorkerError =
+                "Sala não encontrada. Ela fecha quando todo mundo "
+                "sai - peça um código novo.";
+
+            g_homeResult = HomeResult::Error;
+            break;
+        }
+
+        // Nao e sala: pode ser o codigo de quem transmite sem
+        // sala (ou de uma versao sem salas).
+        g_homeSessionCode = roomCode.empty() ? code : roomCode;
 
         g_homeResult = HomeResult::Session;
+        break;
+    }
+
+    case RoomJoinResult::NeedsKey:
+    {
+        std::lock_guard<std::mutex> lock(g_uiMutex);
+
+        g_homeWorkerError =
+            "Código incompleto. Peça o código inteiro da sala, com "
+            "a parte depois do traço (ex.: RWRSAP-K7F9QM2X).";
+
+        g_homeResult = HomeResult::Error;
+        break;
+    }
+
+    case RoomJoinResult::WrongKey:
+    {
+        std::lock_guard<std::mutex> lock(g_uiMutex);
+
+        g_homeWorkerError =
+            "A parte do código depois do traço não confere. "
+            "Confira se foi digitada certinho.";
+
+        g_homeResult = HomeResult::Error;
         break;
     }
 
@@ -4753,8 +4856,124 @@ void StartHomeWorker(
 // Entrar / sair da sala
 // ------------------------------------------------------------
 
+// Entrar na voz (botao na sala ou no painel de pessoas).
+void StartVoice()
+{
+    ApplyVoiceShortcuts();
+
+    g_voice.SetMicrophone(g_voiceMicrophone);
+
+    g_voice.SetSpeaker(g_voiceSpeaker);
+
+    g_microphones = VoiceCapture::ListMicrophones();
+
+    g_speakers = VoiceCapture::ListSpeakers();
+
+    g_voice.Join();
+}
+
+
+// ------------------------------------------------------------
+// Previas de quem transmite (lista "Transmitindo agora")
+// ------------------------------------------------------------
+//
+// A RoomClient baixa os JPEGs; aqui viram texturas (so a thread
+// da janela mexe neste mapa).
+// ------------------------------------------------------------
+
+struct RoomThumbTexture
+{
+    std::string version;
+
+    ComPtr<ID3D11ShaderResourceView> view;
+
+    int width = 0;
+    int height = 0;
+};
+
+std::map<std::string, RoomThumbTexture> g_roomThumbs;
+
+
+// Textura da previa de memberId (atualiza se mudou). nullptr =
+// sem previa.
+const RoomThumbTexture* RoomThumbnail(
+    const std::string& memberId)
+{
+    std::string version = g_room.ThumbnailVersion(memberId);
+
+    if (version.empty())
+    {
+        g_roomThumbs.erase(memberId);
+
+        return nullptr;
+    }
+
+    RoomThumbTexture& entry = g_roomThumbs[memberId];
+
+    if (entry.version != version)
+    {
+        // Marca a versao mesmo se falhar (nao tenta de novo a
+        // cada frame a mesma imagem quebrada).
+        entry.version = version;
+
+        std::vector<uint8_t> jpeg;
+
+        std::vector<uint8_t> pixels;
+
+        int width = 0;
+        int height = 0;
+
+        if (g_rendererDevice &&
+            g_room.GetThumbnail(memberId, version, jpeg) &&
+            ImageDecodeToBgra(
+                jpeg.data(), jpeg.size(), pixels, width, height))
+        {
+            D3D11_TEXTURE2D_DESC desc{};
+
+            desc.Width = static_cast<UINT>(width);
+            desc.Height = static_cast<UINT>(height);
+            desc.MipLevels = 1;
+            desc.ArraySize = 1;
+            desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+            desc.SampleDesc.Count = 1;
+            desc.Usage = D3D11_USAGE_IMMUTABLE;
+            desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+
+            D3D11_SUBRESOURCE_DATA data{};
+
+            data.pSysMem = pixels.data();
+            data.SysMemPitch = static_cast<UINT>(width) * 4;
+
+            ComPtr<ID3D11Texture2D> texture;
+
+            ComPtr<ID3D11ShaderResourceView> view;
+
+            if (SUCCEEDED(g_rendererDevice->CreateTexture2D(
+                    &desc, &data, &texture)) &&
+                SUCCEEDED(g_rendererDevice->CreateShaderResourceView(
+                    texture.Get(), nullptr, &view)))
+            {
+                entry.view = view;
+                entry.width = width;
+                entry.height = height;
+            }
+        }
+    }
+
+    return entry.view ? &entry : nullptr;
+}
+
+
 void EnterRoom()
 {
+    // Previa da propria transmissao (thread da sala).
+    g_room.SetThumbnailSource(
+        []() { return sender::RoomPreviewEnabled(); },
+        [](std::vector<uint8_t>& jpeg)
+        {
+            return sender::CaptureRoomThumbnail(jpeg);
+        });
+
     g_room.Start();
 
     g_haveRoomBaseline = false;
@@ -4796,6 +5015,8 @@ void LeaveRoom(
     g_voice.Leave();
 
     g_room.Leave();
+
+    g_roomThumbs.clear();
 
     g_homeError = message;
 
@@ -4941,8 +5162,6 @@ void RoomSync(
 
     std::string myId = g_room.GetMemberId();
 
-    const RoomPresenter* newPresenter = nullptr;
-
     if (!g_haveRoomBaseline)
     {
         if (!state.members.empty())
@@ -4951,23 +5170,8 @@ void RoomSync(
 
             g_haveRoomBaseline = true;
 
-            // Entrou numa sala onde so uma pessoa transmite:
-            // ja assiste.
-            int others = 0;
-
-            for (const RoomPresenter& presenter : state.presenters)
-            {
-                if (presenter.memberId != myId)
-                {
-                    others++;
-                    newPresenter = &presenter;
-                }
-            }
-
-            if (others != 1)
-            {
-                newPresenter = nullptr;
-            }
+            // Ninguem e levado pra transmissao de ninguem:
+            // cada um escolhe em "Transmitindo agora".
         }
     }
     else
@@ -5009,14 +5213,10 @@ void RoomSync(
                 }
             }
 
-            int otherPresenters = 0;
-
             for (const RoomPresenter& presenter : state.presenters)
             {
                 if (presenter.memberId == myId)
                     continue;
-
-                otherPresenters++;
 
                 if (!hasPresenter(
                         g_previousRoomState,
@@ -5028,30 +5228,11 @@ void RoomSync(
                         (presenter.label.empty()
                             ? std::string()
                             : ": " + presenter.label));
-
-                    newPresenter = &presenter;
                 }
-            }
-
-            // Assistir automatico so quando e a unica pessoa
-            // transmitindo (com mais de uma, a pessoa escolhe).
-            if (otherPresenters != 1)
-            {
-                newPresenter = nullptr;
             }
 
             g_previousRoomState = state;
         }
-    }
-
-    if (newPresenter &&
-        g_roomView == RoomView::Lobby &&
-        g_watchSessionCode.empty() &&
-        !g_connectBusy)
-    {
-        RoomPresenter copy = *newPresenter;
-
-        RoomWatch(copy);
     }
 
     if (g_watchSessionCode.empty())
@@ -5322,7 +5503,13 @@ void UpdateWindowTitle()
 
     if (g_appMode == AppMode::Room)
     {
-        title += L" - sala " + Utf8ToWide(g_room.GetCode());
+        // So o endereco da sala (o segredo nao fica a mostra
+        // na barra de tarefas).
+        std::string code = g_room.GetCode();
+
+        title +=
+            L" - sala " +
+            Utf8ToWide(code.substr(0, code.find('-')));
     }
 
     if (g_streamReceived &&
@@ -5361,6 +5548,118 @@ void UpdateWindowTitle()
 // "Voltar para a sala".
 // ============================================================
 
+// Painel "Pessoas" (sobre o video ou a transmissao): monta o
+// modelo a partir da sala e aplica o que a pessoa fez.
+void DrawRoomPeoplePanel(
+    const RoomState& state,
+    bool rightSide,
+    float topOffset)
+{
+    std::string myId = g_room.GetMemberId();
+
+    PeoplePanelModel model;
+
+    model.rightSide = rightSide;
+    model.topOffset = topOffset;
+
+    for (const RoomMember& member : state.members)
+    {
+        PeopleEntry entry;
+
+        entry.name = member.name;
+        entry.isMe = member.id == myId;
+
+        for (const RoomPresenter& presenter : state.presenters)
+        {
+            if (presenter.memberId == member.id)
+            {
+                entry.live = true;
+            }
+        }
+
+        if (entry.isMe)
+        {
+            if (g_voice.IsJoined())
+            {
+                entry.voice =
+                    g_voice.IsTransmitting() &&
+                    g_voice.MicLevel() > 0.02f
+                    ? MemberVoice::Speaking
+                    : MemberVoice::In;
+            }
+        }
+        else if (!member.voiceSession.empty())
+        {
+            if (!g_voice.IsJoined())
+            {
+                entry.voice = MemberVoice::In;
+            }
+            else if (!g_voice.IsConnected(member.id))
+            {
+                entry.voice = MemberVoice::Connecting;
+            }
+            else
+            {
+                entry.voice =
+                    g_voice.IsSpeaking(member.id)
+                    ? MemberVoice::Speaking
+                    : MemberVoice::In;
+            }
+        }
+
+        entry.volume = g_voice.PeerVolume(member.id);
+
+        model.people.push_back(entry);
+    }
+
+    model.voiceJoined = g_voice.IsJoined();
+    model.voiceJoining = g_voice.IsJoining();
+    model.voiceMuted = g_voice.IsMuted();
+    model.voiceTransmitting = g_voice.IsTransmitting();
+    model.micLevel = g_voice.MicLevel();
+    model.pttKey = ShortcutName(SHORTCUT_PUSH_TO_TALK);
+    model.muteKey = ShortcutName(SHORTCUT_TOGGLE_MIC);
+    model.voiceError = g_voice.ErrorText();
+
+    PeoplePanelActions actions;
+
+    DrawPeoplePanel(model, actions);
+
+    if (actions.close)
+    {
+        g_peopleOpen = false;
+    }
+
+    if (actions.voiceJoin)
+    {
+        StartVoice();
+    }
+
+    if (actions.voiceLeave)
+    {
+        g_voice.Leave();
+    }
+
+    if (actions.toggleMute)
+    {
+        g_voice.SetMuted(!g_voice.IsMuted());
+    }
+
+    if (actions.volumeMember >= 0 &&
+        actions.volumeMember < static_cast<int>(state.members.size()))
+    {
+        g_voice.SetPeerVolume(
+            state.members[actions.volumeMember].id,
+            actions.volumeValue);
+    }
+
+    if (actions.openShortcuts)
+    {
+        g_shortcutsOpen = true;
+    }
+}
+
+
 void DrawVideoOverlay(
     ReceiverScreenActions& actions,
     bool inRoom,
@@ -5397,7 +5696,7 @@ void DrawVideoOverlay(
     // Atalhos de teclado (tambem mostram o painel).
     if (keyboardFree)
     {
-        if (ImGui::IsKeyPressed(ImGuiKey_M, false))
+        if (LocalShortcut(SHORTCUT_TOGGLE_SOUND))
         {
             g_muted = !g_muted;
 
@@ -5453,7 +5752,31 @@ void DrawVideoOverlay(
     overlay.otherPresenters = otherPresenters;
     overlay.unreadChat = unreadChat;
     overlay.voiceJoined = inRoom && g_voice.IsJoined();
-    overlay.voiceMuted = g_voiceMuted;
+    overlay.voiceMuted = g_voice.IsMuted();
+    overlay.peopleOpen = g_peopleOpen;
+
+    {
+        // "M: som  ·  setas: volume  ·  F11: tela cheia ..."
+        std::string hint;
+
+        auto add =
+            [&hint](const std::string& key, const char* what)
+            {
+                if (key.empty())
+                    return;
+
+                if (!hint.empty())
+                    hint += "  ·  ";
+
+                hint += key + ": " + what;
+            };
+
+        add(ShortcutName(SHORTCUT_TOGGLE_SOUND), "som");
+        add("setas", "volume");
+        add(ShortcutName(SHORTCUT_FULLSCREEN), "tela cheia");
+
+        overlay.keyHint = hint;
+    }
 
     StreamOverlayActions overlayActions;
 
@@ -5474,9 +5797,17 @@ void DrawVideoOverlay(
 
     if (overlayActions.toggleVoiceMute)
     {
-        g_voiceMuted = !g_voiceMuted;
+        g_voice.SetMuted(!g_voice.IsMuted());
+    }
 
-        g_voice.SetMuted(g_voiceMuted);
+    if (overlayActions.togglePeople)
+    {
+        g_peopleOpen = !g_peopleOpen;
+    }
+
+    if (overlayActions.openShortcuts)
+    {
+        g_shortcutsOpen = true;
     }
 
     if (outSwitchTo && overlayActions.switchTo >= 0)
@@ -5533,12 +5864,34 @@ void DrawReceiverUi()
 
     bool sendChat = false;
 
+    // Atalhos locais deste frame (cada um lido uma vez).
+    bool chatShortcut = LocalShortcut(SHORTCUT_CHAT);
+
+    bool peopleShortcut = LocalShortcut(SHORTCUT_PEOPLE);
+
+    if (LocalShortcut(SHORTCUT_FULLSCREEN))
+    {
+        ToggleFullscreen();
+    }
+
+    // Pessoas: no video e transmitindo (na lista da sala ja
+    // aparecem).
+    if (peopleShortcut &&
+        mode == AppMode::Room &&
+        g_roomView != RoomView::Lobby)
+    {
+        g_peopleOpen = !g_peopleOpen;
+    }
+
     // O chat ja foi processado neste frame (senao, as mensagens
     // novas viram avisos mesmo assim - ex.: transmitindo).
     bool chatHandled = false;
 
     if (mode == AppMode::Room)
     {
+        // Previas: so baixa com a lista na tela.
+        g_room.SetWantThumbnails(g_roomView == RoomView::Lobby);
+
         roomState = g_room.GetState();
 
         RoomSync(roomState);
@@ -5650,6 +6003,74 @@ void DrawReceiverUi()
             sender::Draw(
                 shareGoHome
             );
+
+            // Chat e pessoas tambem enquanto transmite (no canto
+            // direito - o painel da transmissao fica no esquerdo).
+            int unread = 0;
+
+            std::vector<ChatLine> chat =
+                CollectChat(g_videoChatOpen, unread);
+
+            chatHandled = true;
+
+            ShareToolbarActions bar;
+
+            float barHeight =
+                DrawShareRoomToolbar(
+                    g_peopleOpen,
+                    g_videoChatOpen,
+                    unread,
+                    g_voice.IsJoined(),
+                    g_voice.IsMuted(),
+                    bar);
+
+            if (bar.togglePeople)
+            {
+                g_peopleOpen = !g_peopleOpen;
+            }
+
+            if (bar.toggleChat)
+            {
+                toggleChat = true;
+            }
+
+            if (bar.toggleMute)
+            {
+                g_voice.SetMuted(!g_voice.IsMuted());
+            }
+
+            if (g_peopleOpen)
+            {
+                DrawRoomPeoplePanel(roomState, true, barHeight);
+            }
+
+            if (chatShortcut && !g_videoChatOpen)
+            {
+                toggleChat = true;
+            }
+
+            if (g_videoChatOpen)
+            {
+                bool close = false;
+
+                if (DrawVideoChat(
+                        chat,
+                        g_chatInput,
+                        sizeof(g_chatInput),
+                        g_chatFocus,
+                        close,
+                        true))
+                {
+                    sendChat = true;
+                }
+
+                g_chatFocus = false;
+
+                if (close)
+                {
+                    toggleChat = true;
+                }
+            }
         }
         else if (g_roomView == RoomView::Watch)
         {
@@ -5682,7 +6103,11 @@ void DrawReceiverUi()
 
             chatHandled = true;
 
-            if (g_voice.IsJoined())
+            if (g_peopleOpen)
+            {
+                DrawRoomPeoplePanel(roomState, false, 0.0f);
+            }
+            else if (g_voice.IsJoined())
             {
                 std::vector<std::string> speaking;
 
@@ -5695,7 +6120,7 @@ void DrawReceiverUi()
                     }
                 }
 
-                DrawVoiceSpeakers(speaking, g_voiceMuted);
+                DrawVoiceSpeakers(speaking, g_voice.IsMuted());
             }
 
             if (g_streamReceived)
@@ -5733,10 +6158,8 @@ void DrawReceiverUi()
                     backToRoom);
             }
 
-            // Enter abre o chat (fora de campos de texto).
-            if (!g_videoChatOpen &&
-                !ImGui::GetIO().WantTextInput &&
-                ImGui::IsKeyPressed(ImGuiKey_Enter, false))
+            // Atalho do chat (Enter por padrao) abre o chat.
+            if (chatShortcut && !g_videoChatOpen)
             {
                 toggleChat = true;
             }
@@ -5784,9 +6207,30 @@ void DrawReceiverUi()
                     !g_watchSessionCode.empty() &&
                     presenter.sessionCode == g_watchSessionCode;
 
+                if (const RoomThumbTexture* thumb =
+                        RoomThumbnail(presenter.memberId))
+                {
+                    entry.thumbnail = thumb->view.Get();
+                    entry.thumbWidth = static_cast<float>(thumb->width);
+                    entry.thumbHeight = static_cast<float>(thumb->height);
+                }
+
                 room.presenters.push_back(entry);
 
                 shownPresenters.push_back(presenter);
+            }
+
+            // Previas de quem parou de transmitir.
+            for (auto it = g_roomThumbs.begin(); it != g_roomThumbs.end();)
+            {
+                bool presenting = false;
+
+                for (const RoomPresenter& presenter : roomState.presenters)
+                {
+                    presenting |= presenter.memberId == it->first;
+                }
+
+                it = presenting ? std::next(it) : g_roomThumbs.erase(it);
             }
 
             for (const RoomMember& member : roomState.members)
@@ -5880,12 +6324,13 @@ void DrawReceiverUi()
 
             room.voiceJoined = g_voice.IsJoined();
             room.voiceJoining = g_voice.IsJoining();
-            room.voiceMuted = g_voiceMuted;
+            room.voiceMuted = g_voice.IsMuted();
             room.voiceTransmitting = g_voice.IsTransmitting();
             room.voiceEchoCancel =
                 !room.voiceJoined || g_voice.EchoCancellation();
             room.voiceMicLevel = g_voice.MicLevel();
-            room.voicePushToTalk = g_voicePushToTalk;
+            room.voicePttKey = ShortcutName(SHORTCUT_PUSH_TO_TALK);
+            room.voiceMuteKey = ShortcutName(SHORTCUT_TOGGLE_MIC);
 
             for (size_t i = 0; i < g_microphones.size(); ++i)
             {
@@ -6005,6 +6450,100 @@ void DrawReceiverUi()
         CollectChat(false, unread);
     }
 
+    // --------------------------------------------------------
+    // Tela de atalhos (por cima de qualquer tela)
+    // --------------------------------------------------------
+
+    if (g_shortcutsOpen)
+    {
+        // Esperando a tecla nova?
+        if (g_captureRow >= 0 && g_keyCapture.IsActive())
+        {
+            int key = g_keyCapture.Poll();
+
+            if (key >= 0)
+            {
+                g_shortcutKeys[g_captureRow] = key;
+
+                SaveShortcuts();
+
+                ApplyVoiceShortcuts();
+            }
+
+            if (key != -1)
+            {
+                g_captureRow = -1;
+            }
+        }
+
+        ShortcutsModel shortcuts;
+
+        for (int i = 0; i < SHORTCUT_COUNT; ++i)
+        {
+            const ShortcutDef& def = GetShortcutDef(i);
+
+            ShortcutRow row;
+
+            row.label = def.label;
+            row.help = def.help;
+            row.keyName = ShortcutKeyName(g_shortcutKeys[i]);
+            row.hasKey = g_shortcutKeys[i] != 0;
+            row.global = def.global;
+
+            shortcuts.rows.push_back(row);
+        }
+
+        shortcuts.capturing = g_captureRow;
+
+        ShortcutsActions shortcutActions;
+
+        DrawShortcutsWindow(shortcuts, shortcutActions);
+
+        if (shortcutActions.capture >= 0)
+        {
+            g_captureRow = shortcutActions.capture;
+
+            g_keyCapture.Start();
+        }
+
+        if (shortcutActions.cancelCapture)
+        {
+            g_keyCapture.Cancel();
+
+            g_captureRow = -1;
+        }
+
+        if (shortcutActions.clear >= 0)
+        {
+            g_shortcutKeys[shortcutActions.clear] = 0;
+
+            SaveShortcuts();
+
+            ApplyVoiceShortcuts();
+        }
+
+        if (shortcutActions.restoreDefaults)
+        {
+            for (int i = 0; i < SHORTCUT_COUNT; ++i)
+            {
+                g_shortcutKeys[i] = GetShortcutDef(i).defaultKey;
+            }
+
+            SaveShortcuts();
+
+            ApplyVoiceShortcuts();
+        }
+
+        if (shortcutActions.close)
+        {
+            g_keyCapture.Cancel();
+
+            g_captureRow = -1;
+
+            g_shortcutsOpen = false;
+        }
+    }
+
     DrawToasts(g_toasts);
 
 
@@ -6050,20 +6589,20 @@ void DrawReceiverUi()
             ? std::string()
             : code.substr(first, last - first + 1);
 
+        std::string roomCode;
+        std::string secret;
+
         if (code.empty())
         {
             g_homeError =
-                "Digite o código da sala (6 letras e números).";
+                "Digite o código da sala (ex.: RWRSAP-K7F9QM2X).";
         }
-        else if (LooksLikeSessionCode(code))
+        else if (ParseRoomInvite(code, roomCode, secret))
         {
-            for (char& c : code)
-            {
-                c = static_cast<char>(
-                    toupper(static_cast<unsigned char>(c)));
-            }
-
-            StartHomeWorker(false, code);
+            // Sala (com ou sem o segredo) ou codigo de sessao.
+            StartHomeWorker(
+                false,
+                secret.empty() ? roomCode : roomCode + "-" + secret);
         }
         else
         {
@@ -6107,20 +6646,12 @@ void DrawReceiverUi()
 
     if (roomActions.voiceJoin)
     {
-        g_voice.SetMuted(g_voiceMuted);
+        StartVoice();
+    }
 
-        g_voice.SetPushToTalkKey(
-            VoicePushToTalkKey(g_voicePushToTalk));
-
-        g_voice.SetMicrophone(g_voiceMicrophone);
-
-        g_voice.SetSpeaker(g_voiceSpeaker);
-
-        g_microphones = VoiceCapture::ListMicrophones();
-
-        g_speakers = VoiceCapture::ListSpeakers();
-
-        g_voice.Join();
+    if (roomActions.openShortcuts)
+    {
+        g_shortcutsOpen = true;
     }
 
     if (roomActions.voiceRefreshDevices)
@@ -6169,17 +6700,7 @@ void DrawReceiverUi()
 
     if (roomActions.voiceToggleMute)
     {
-        g_voiceMuted = !g_voiceMuted;
-
-        g_voice.SetMuted(g_voiceMuted);
-    }
-
-    if (roomActions.voicePushToTalk >= 0)
-    {
-        g_voicePushToTalk = roomActions.voicePushToTalk;
-
-        g_voice.SetPushToTalkKey(
-            VoicePushToTalkKey(g_voicePushToTalk));
+        g_voice.SetMuted(!g_voice.IsMuted());
     }
 
     if (roomActions.volumeMember >= 0 &&
@@ -6783,15 +7304,12 @@ LRESULT CALLBACK WindowProc(
 
     case WM_KEYDOWN:
     {
-        if (wParam == VK_F11)
-        {
-            ToggleFullscreen();
-
-            return 0;
-        }
+        // (Tela cheia: atalho configuravel, lido a cada frame -
+        // ver LocalShortcut.)
 
         if (wParam == VK_ESCAPE &&
-            g_fullscreen)
+            g_fullscreen &&
+            !g_shortcutsOpen)
         {
             ToggleFullscreen();
 
@@ -7069,6 +7587,8 @@ int AppMain(
     PowerDisableThrottling();
 
     LoadReceiverSettings();
+
+    ApplyVoiceShortcuts();
 
     LoadName();
 

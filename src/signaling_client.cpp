@@ -1,4 +1,5 @@
 #include "signaling_client.h"
+#include "room_crypto.h"
 #include "version.h"
 
 #include <winsock2.h>
@@ -362,6 +363,8 @@ bool HttpPostWaking(
                   std::string::npos) ||
              outStatus == 400 ||
              outStatus == 404 ||
+             outStatus == 409 ||
+             outStatus == 426 ||
              outStatus == 429);
 
         if (answered || isLocal)
@@ -1116,7 +1119,8 @@ void ParseRoomState(
                 parts[0],
                 parts[1],
                 UrlDecode(parts[2]),
-                UrlDecode(parts[3]) });
+                UrlDecode(parts[3]),
+                parts.size() > 4 ? parts[4] : std::string() });
     }
 }
 
@@ -1143,6 +1147,7 @@ std::string RoomPath(
 
 bool SignalingCreateRoom(
     const std::string& name,
+    const std::string& saltHex,
     RoomMembership& outMembership,
     RoomState& outState,
     std::string& outError)
@@ -1153,7 +1158,9 @@ bool SignalingCreateRoom(
 
     if (!HttpPostWaking(
             "/rooms",
-            "name=" + UrlEncode(name),
+            "name=" + UrlEncode(name) +
+                (saltHex.empty() ? std::string()
+                                 : "&e2e=1&salt=" + saltHex),
             "code",
             status,
             response,
@@ -1181,6 +1188,17 @@ bool SignalingCreateRoom(
     outMembership.memberId = fields["member_id"];
     outMembership.token = fields["token"];
 
+    // Servidor antigo ignora a criptografia de ponta a ponta:
+    // melhor nao criar a sala do que criar uma sem protecao.
+    if (!saltHex.empty() && fields["e2e"] != "1")
+    {
+        outError =
+            "o servidor de sinalizacao esta desatualizado (sem "
+            "criptografia de ponta a ponta)";
+
+        return false;
+    }
+
     if (outMembership.code.empty() ||
         outMembership.memberId.empty() ||
         outMembership.token.empty())
@@ -1197,9 +1215,57 @@ bool SignalingCreateRoom(
 }
 
 
+RoomJoinResult SignalingRoomInfo(
+    const std::string& code,
+    bool& outEncrypted,
+    std::string& outSaltHex,
+    std::string& outError)
+{
+    outEncrypted = false;
+    outSaltHex.clear();
+
+    DWORD status = 0;
+
+    std::string response;
+
+    if (!HttpPostWaking(
+            "/rooms/" + code + "/info",
+            std::string(),
+            "e2e",
+            status,
+            response,
+            outError))
+    {
+        return RoomJoinResult::Error;
+    }
+
+    // Sem sala (ou servidor antigo, sem esta rota): quem chama
+    // tenta como sessao.
+    if (status == 404)
+        return RoomJoinResult::NotFound;
+
+    if (status != 200)
+    {
+        outError =
+            "servidor de sinalizacao respondeu HTTP " +
+            std::to_string(status);
+
+        return RoomJoinResult::Error;
+    }
+
+    auto fields = ParseKeyValues(response);
+
+    outEncrypted = fields["e2e"] == "1";
+    outSaltHex = fields["salt"];
+
+    return RoomJoinResult::Joined;
+}
+
+
 RoomJoinResult SignalingJoinRoom(
     const std::string& code,
     const std::string& name,
+    bool encrypted,
     RoomMembership& outMembership,
     RoomState& outState,
     std::string& outError)
@@ -1210,7 +1276,8 @@ RoomJoinResult SignalingJoinRoom(
 
     if (!HttpPostWaking(
             "/rooms/" + code + "/join",
-            "name=" + UrlEncode(name),
+            "name=" + UrlEncode(name) +
+                (encrypted ? "&e2e=1" : ""),
             "member_id",
             status,
             response,
@@ -1227,6 +1294,9 @@ RoomJoinResult SignalingJoinRoom(
 
     if (status == 409)
         return RoomJoinResult::Full;
+
+    if (status == 426)
+        return RoomJoinResult::NeedsKey;
 
     if (status != 200)
     {
@@ -1396,6 +1466,99 @@ bool SignalingRoomPresent(
         outError =
             "servidor de sinalizacao respondeu HTTP " +
             std::to_string(status);
+
+        return false;
+    }
+
+    return true;
+}
+
+
+// (Base64UrlEncode/Decode: room_crypto.h)
+
+
+bool SignalingRoomThumb(
+    const RoomMembership& membership,
+    const std::vector<uint8_t>& jpeg,
+    std::string& outError)
+{
+    DWORD status = 0;
+
+    std::string response;
+
+    std::string body = MemberBody(membership);
+
+    if (!jpeg.empty())
+    {
+        // Base64 urlsafe nao precisa de escape no formulario
+        // (o '=' do fim e aceito no valor).
+        body += "&image=" + Base64UrlEncode(jpeg);
+    }
+
+    if (!HttpPost(
+            RoomPath(membership, "thumb"),
+            body,
+            status,
+            response,
+            outError))
+    {
+        return false;
+    }
+
+    if (status != 200)
+    {
+        outError =
+            "servidor de sinalizacao respondeu HTTP " +
+            std::to_string(status);
+
+        return false;
+    }
+
+    return true;
+}
+
+
+bool SignalingRoomGetThumb(
+    const RoomMembership& membership,
+    const std::string& targetMemberId,
+    std::vector<uint8_t>& outJpeg,
+    std::string& outVersion,
+    std::string& outError)
+{
+    outJpeg.clear();
+    outVersion.clear();
+
+    DWORD status = 0;
+
+    std::string response;
+
+    if (!HttpPost(
+            RoomPath(membership, "thumb_get"),
+            MemberBody(membership) + "&target=" + targetMemberId,
+            status,
+            response,
+            outError))
+    {
+        return false;
+    }
+
+    if (status != 200)
+    {
+        outError =
+            "servidor de sinalizacao respondeu HTTP " +
+            std::to_string(status);
+
+        return false;
+    }
+
+    auto fields = ParseKeyValues(response);
+
+    outVersion = fields["version"];
+
+    if (!Base64UrlDecode(fields["image"], outJpeg) ||
+        outJpeg.size() < 2)
+    {
+        outError = "previa invalida";
 
         return false;
     }

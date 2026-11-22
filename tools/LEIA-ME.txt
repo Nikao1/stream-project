@@ -15,19 +15,39 @@ SALA (o jeito normal de usar)
 -----------------------------
 1. Abra o StreamProject.exe e escreva seu nome.
 2. Uma pessoa clica em "Criar uma sala" e passa o código da
-   sala para os outros.
+   sala para os outros - o código INTEIRO, ex.: RWRSAP-K7F9QM2X.
 3. Os outros digitam o código e clicam em Entrar.
+
+PRIVACIDADE
+-----------
+A parte do código depois do traço é a chave da sala e nunca
+vai para o servidor. Nomes, chat, o que cada um transmite e as
+prévias são criptografados com ela antes de sair do seu
+computador: o servidor (e a hospedagem dele) só vê dados
+embaralhados. Transmissões e voz vão direto entre vocês,
+também criptografadas. O servidor só fica sabendo o que
+precisa para conectar as pessoas: que a sala existe, quantas
+pessoas estão nela e os endereços de internet.
 
 Dentro da sala:
 - "Transmitir minha tela": escolha a qualidade, o FPS e o que
   vai compartilhar (uma tela inteira ou uma janela - cada uma
   aparece com uma prévia).
-- Na lista "Transmitindo agora", clique em Assistir em quem
-  você quer ver. Para trocar, use "Trocar de tela" no painel
+- Quando alguém começa a transmitir, aparece um aviso - ninguém
+  é levado para a transmissão sem querer.
+- Na lista "Transmitindo agora" aparece uma prévia pequena do
+  que cada um mostra (atualizada a cada 15 s; passe o mouse
+  para ver maior). Quem transmite pode desligar a prévia no
+  painel da transmissão.
+- Clique em Assistir (ou na prévia) em quem você quer ver. Para trocar, use "Trocar de tela" no painel
   do vídeo (mexa o mouse para ele aparecer).
 - Dá para transmitir e assistir ao mesmo tempo.
 - Chat: no lado direito da sala, ou no botão Chat (ou tecla
-  Enter) durante o vídeo.
+  Enter) durante o vídeo e enquanto você transmite.
+- Pessoas: o botão Pessoas (ou tecla P) mostra quem está na
+  sala e na voz por cima do vídeo ou da sua transmissão.
+- Transmitindo, o painel da transmissão pode ser minimizado
+  (botão Minimizar) para ver melhor a prévia.
 - Se a conexão cair, o programa tenta voltar sozinho.
 - Cabem até 9 pessoas por sala; cada transmissão aceita até 8
   pessoas assistindo.
@@ -36,13 +56,15 @@ CANAL DE VOZ
 ------------
 Na sala, clique em "Entrar na voz" para conversar com quem
 também entrou. A voz vai direto entre vocês, criptografada.
-- "Falar": livre (o microfone fica aberto) ou segurando uma
-  tecla - Mouse 4, Mouse 5, Alt direito ou Ctrl direito.
-  Funciona com o jogo aberto.
+- Sem atalho, o microfone fica aberto. Em Atalhos dá para
+  escolher uma tecla de "segurar para falar" e outra de
+  ligar/desligar o microfone - qualquer tecla ou botão do
+  mouse, e funcionam com o jogo aberto.
 - "Microfone" e "Ouvir em": escolha o microfone e onde ouvir a
   voz dos outros (ex.: no fone, mesmo com a transmissão saindo
   nas caixas de som). A escolha fica salva.
-- Clique no nome de alguém na voz para ajustar o volume dele.
+- Clique no nome de alguém na voz para ajustar o volume dele
+  ou silenciar só essa pessoa.
 - Durante o vídeo, quem está falando aparece no canto superior
   esquerdo, e o painel de opções tem o botão do microfone.
 - Se aparecer o aviso de cancelamento de eco, use fone de
@@ -52,9 +74,15 @@ também entrou. A voz vai direto entre vocês, criptografada.
   trabalho acessem o microfone.
 
 Durante o vídeo, mexa o mouse para ver as opções (volume,
-preencher a janela, tela cheia, voltar para a sala). Atalhos:
-M liga e desliga o som, setas mudam o volume, F11 ou duplo
-clique é tela cheia.
+preencher a janela, tela cheia, voltar para a sala).
+
+ATALHOS
+-------
+Todos podem ser trocados no botão Atalhos (na sala ou no
+painel do vídeo). Padrões: M liga e desliga o som da
+transmissão, F11 é tela cheia, Enter abre o chat, P mostra as
+pessoas. Fixos: setas mudam o volume, duplo clique é tela
+cheia.
 
 
 UPLOAD DE QUEM TRANSMITE

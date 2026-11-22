@@ -197,7 +197,13 @@ add_executable(stream-project WIN32
     src/signaling_client.cpp
     src/signaling_client.h
     src/room_client.cpp
+    src/room_crypto.cpp
+    src/room_crypto.h
     src/room_client.h
+    src/image_codec.cpp
+    src/image_codec.h
+    src/shortcuts.cpp
+    src/shortcuts.h
     src/voice_channel.cpp
     src/voice_channel.h
     src/voice_capture.cpp

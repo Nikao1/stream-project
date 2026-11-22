@@ -691,6 +691,26 @@ void VoiceChannel::OnMicFrame(
     const float* samples,
     size_t count)
 {
+    // Ligar/desligar microfone pelo atalho (borda de descida).
+    int toggleKey = m_muteToggleKey;
+
+    if (toggleKey != 0)
+    {
+        bool down = (GetAsyncKeyState(toggleKey) & 0x8000) != 0;
+
+        if (down && !m_muteToggleWasDown)
+        {
+            m_muted = !m_muted;
+
+            std::cout
+                << "Voz: microfone "
+                << (m_muted ? "silenciado" : "ligado")
+                << " pelo atalho.\n";
+        }
+
+        m_muteToggleWasDown = down;
+    }
+
     // Segurar para falar: a tecla e lida aqui (a cada 20 ms),
     // funciona com o jogo em primeiro plano.
     int key = m_pushToTalkKey;

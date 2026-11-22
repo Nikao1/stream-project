@@ -117,13 +117,6 @@ void DrawToasts(
 );
 
 
-// Teclas de "segurar para falar" (indice salvo nas
-// configuracoes; 0 = desligado, fala livre).
-constexpr int VOICE_PTT_OPTION_COUNT = 5;
-
-extern const char* const VOICE_PTT_OPTION_NAMES[VOICE_PTT_OPTION_COUNT];
-
-
 // Estado de cada pessoa no canal de voz.
 enum class MemberVoice
 {
@@ -143,6 +136,12 @@ struct RoomPresenterEntry
 
     // Esta pessoa assiste (ou esta conectando a) este.
     bool watching = false;
+
+    // Previa do que esta sendo transmitido (ImTextureID; nullptr
+    // = sem previa - mostra a bolinha com a inicial).
+    void* thumbnail = nullptr;
+    float thumbWidth = 0.0f;
+    float thumbHeight = 0.0f;
 };
 
 struct RoomScreenModel
@@ -198,8 +197,10 @@ struct RoomScreenModel
 
     float voiceMicLevel = 0.0f;
 
-    // Indice em VOICE_PTT_OPTION_NAMES.
-    int voicePushToTalk = 0;
+    // Nome da tecla de "segurar para falar" (vazio = fala
+    // livre) e da de ligar/desligar o microfone (vazio = nenhuma).
+    std::string voicePttKey;
+    std::string voiceMuteKey;
 
     // Microfones disponiveis (nomes) e o escolhido: 0 = padrao
     // do Windows, i + 1 = microphones[i].
@@ -238,8 +239,8 @@ struct RoomScreenActions
     bool voiceLeave = false;
     bool voiceToggleMute = false;
 
-    // Novo indice de "segurar para falar" (-1 = sem mudanca).
-    int voicePushToTalk = -1;
+    // Abrir a tela de atalhos.
+    bool openShortcuts = false;
 
     // Microfone escolhido (mesmo esquema de
     // RoomScreenModel::microphone; -1 = sem mudanca).
@@ -280,7 +281,137 @@ bool DrawVideoChat(
     char* input,
     size_t inputSize,
     bool focusInput,
-    bool& outClose
+    bool& outClose,
+    bool rightSide = false
+);
+
+
+// ------------------------------------------------------------
+// Painel "Pessoas" (sobre o video ou a transmissao)
+// ------------------------------------------------------------
+
+struct PeopleEntry
+{
+    std::string name;
+
+    bool isMe = false;
+
+    // Transmitindo (anel vermelho).
+    bool live = false;
+
+    MemberVoice voice = MemberVoice::Out;
+
+    // 0 a 2 (1 = normal).
+    float volume = 1.0f;
+};
+
+struct PeoplePanelModel
+{
+    std::vector<PeopleEntry> people;
+
+    bool voiceJoined = false;
+    bool voiceJoining = false;
+    bool voiceMuted = false;
+    bool voiceTransmitting = false;
+
+    float micLevel = 0.0f;
+
+    // Teclas (vazio = nenhuma), pra lembrar a pessoa.
+    std::string pttKey;
+    std::string muteKey;
+
+    std::string voiceError;
+
+    // true = encostado na direita (transmitindo); false =
+    // esquerda (assistindo - o painel do video fica na direita).
+    bool rightSide = false;
+
+    // Distancia extra do topo (ex.: abaixo da barra de botoes).
+    float topOffset = 0.0f;
+};
+
+struct PeoplePanelActions
+{
+    bool close = false;
+
+    bool voiceJoin = false;
+    bool voiceLeave = false;
+    bool toggleMute = false;
+
+    // Indice em people (-1 = nada).
+    int volumeMember = -1;
+    float volumeValue = 1.0f;
+
+    bool openShortcuts = false;
+};
+
+void DrawPeoplePanel(
+    const PeoplePanelModel& model,
+    PeoplePanelActions& actions
+);
+
+
+// Barra de botoes da sala no canto superior direito enquanto
+// esta pessoa transmite (la nao ha o painel do video).
+// Devolve a altura ocupada (pra o painel de pessoas ficar
+// embaixo).
+struct ShareToolbarActions
+{
+    bool togglePeople = false;
+    bool toggleChat = false;
+    bool toggleMute = false;
+};
+
+float DrawShareRoomToolbar(
+    bool peopleOpen,
+    bool chatOpen,
+    int unreadChat,
+    bool voiceJoined,
+    bool voiceMuted,
+    ShareToolbarActions& actions
+);
+
+
+// ------------------------------------------------------------
+// Tela de atalhos
+// ------------------------------------------------------------
+
+struct ShortcutRow
+{
+    std::string label;
+    std::string help;
+    std::string keyName;
+
+    bool hasKey = false;
+    bool global = false;
+};
+
+struct ShortcutsModel
+{
+    std::vector<ShortcutRow> rows;
+
+    // Linha esperando a tecla (-1 = nenhuma).
+    int capturing = -1;
+};
+
+struct ShortcutsActions
+{
+    // Comecar a capturar a tecla desta linha.
+    int capture = -1;
+
+    // Remover o atalho desta linha.
+    int clear = -1;
+
+    bool cancelCapture = false;
+
+    bool restoreDefaults = false;
+
+    bool close = false;
+};
+
+void DrawShortcutsWindow(
+    const ShortcutsModel& model,
+    ShortcutsActions& actions
 );
 
 
@@ -376,6 +507,12 @@ struct StreamOverlayModel
     // Canal de voz (botao de microfone).
     bool voiceJoined = false;
     bool voiceMuted = false;
+
+    // Painel de pessoas aberto (botao destacado).
+    bool peopleOpen = false;
+
+    // Linha de atalhos no rodape (ex.: "M: som  ·  F11: ...").
+    std::string keyHint;
 };
 
 struct StreamOverlayActions
@@ -392,6 +529,10 @@ struct StreamOverlayActions
     bool toggleChat = false;
 
     bool toggleVoiceMute = false;
+
+    bool togglePeople = false;
+
+    bool openShortcuts = false;
 };
 
 // Desenha no canto superior direito. Devolve true se o mouse

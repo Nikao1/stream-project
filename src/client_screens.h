@@ -29,6 +29,8 @@ struct ClientScreenActions
     bool qualityChanged = false;
 
     // "Parar de transmitir" (volta pra tela de opcoes)
+    bool roomPreviewChanged = false;
+
     bool stopSharing = false;
 
     // Seletor: item clicado (indice na lista de telas ou de
@@ -134,6 +136,11 @@ struct ClientLiveModel
     // sala ve a transmissao na lista) e com "Voltar para a
     // sala" (actions.goHome).
     bool inRoom = false;
+
+    // Numa sala: mostrar uma previa pequena da transmissao na
+    // lista da sala (a tela altera direto e avisa em
+    // actions.roomPreviewChanged).
+    bool* roomPreview = nullptr;
 
     // Upload estimado (uma copia do video por pessoa), ex.:
     // "~26 Mbps de upload". Vazio = ninguem assistindo.

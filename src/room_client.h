@@ -3,11 +3,14 @@
 #include <atomic>
 #include <condition_variable>
 #include <deque>
+#include <functional>
+#include <map>
 #include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
 
+#include "room_crypto.h"
 #include "signaling_client.h"
 
 // ============================================================
@@ -95,6 +98,38 @@ public:
 
     // Chat: manda uma mensagem (sai na proxima volta da thread,
     // em instantes).
+    // Previa da transmissao desta pessoa: enabled() diz se a
+    // pessoa quer mostrar; capture() tira a imagem (JPEG) - true
+    // = conseguiu. Chamados na thread da sala, a cada ~15 s
+    // enquanto transmite. Chamar antes de Start().
+    void SetThumbnailSource(
+        std::function<bool()> enabled,
+        std::function<bool(std::vector<uint8_t>&)> capture)
+    {
+        m_thumbEnabled = std::move(enabled);
+        m_thumbCapture = std::move(capture);
+    }
+
+    // Baixar as previas de quem transmite (so quando a lista
+    // esta na tela - economiza internet).
+    void SetWantThumbnails(
+        bool want)
+    {
+        m_wantThumbs = want;
+    }
+
+    // Versao da previa guardada (vazio = nenhuma). Barato: pra
+    // conferir a cada frame se mudou.
+    std::string ThumbnailVersion(
+        const std::string& memberId
+    );
+
+    bool GetThumbnail(
+        const std::string& memberId,
+        std::string& outVersion,
+        std::vector<uint8_t>& outJpeg
+    );
+
     void SendChat(
         const std::string& text
     );
@@ -108,6 +143,17 @@ public:
 private:
     void Loop();
 
+    // Abre (descriptografa) nomes e descricoes do estado da sala.
+    void OpenState(
+        RoomState& state,
+        const RoomKey& key
+    );
+
+    void UpdateThumbnails(
+        const RoomMembership& membership,
+        const RoomState& state
+    );
+
     std::mutex m_mutex;
     std::condition_variable m_cv;
     std::thread m_thread;
@@ -119,7 +165,14 @@ private:
     std::atomic<uint64_t> m_heartbeats{ 0 };
 
     // Protegidos por m_mutex
+    // Nome desta pessoa como vai pro servidor (ja trancado).
     std::string m_name;
+
+    // Criptografia de ponta a ponta: chave da sala e o segredo
+    // (parte do codigo depois do traco). Sem chave = sala de
+    // versao antiga (texto puro).
+    RoomKey m_key;
+    std::string m_secret;
     RoomMembership m_membership;
     RoomState m_state;
 
@@ -150,4 +203,26 @@ private:
     std::deque<RoomChatMessage> m_chat;
     uint64_t m_chatTotal = 0;
     std::deque<std::string> m_outbox;
+
+    // Previas
+    std::function<bool()> m_thumbEnabled;
+    std::function<bool(std::vector<uint8_t>&)> m_thumbCapture;
+
+    std::atomic<bool> m_wantThumbs{ false };
+
+    // So a thread da sala mexe nestes tres.
+    std::string m_thumbSession;
+    unsigned long long m_thumbSentAt = 0;
+    bool m_thumbOnServer = false;
+
+    struct Thumb
+    {
+        std::string version;
+        std::vector<uint8_t> jpeg;
+    };
+
+    // memberId -> previa (inclusive a propria).
+    std::map<std::string, Thumb> m_thumbs;
+
+    uint64_t m_localThumbCount = 0;
 };

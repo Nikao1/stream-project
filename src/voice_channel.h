@@ -89,6 +89,14 @@ public:
         int virtualKey
     );
 
+    // Tecla que liga/desliga o microfone (0 = nenhuma). Funciona
+    // com o jogo em primeiro plano.
+    void SetMuteToggleKey(
+        int virtualKey)
+    {
+        m_muteToggleKey = virtualKey;
+    }
+
     // Microfone (id do Windows, ver VoiceCapture::
     // ListMicrophones; vazio = padrao). Na voz: troca na hora.
     void SetMicrophone(
@@ -153,6 +161,12 @@ private:
     std::atomic<bool> m_muted{ false };
     std::atomic<bool> m_transmitting{ false };
     std::atomic<int> m_pushToTalkKey{ 0 };
+
+    // Atalho global de ligar/desligar o microfone (lido na
+    // thread do microfone, como o de falar).
+    std::atomic<int> m_muteToggleKey{ 0 };
+
+    bool m_muteToggleWasDown = false;
 
     std::thread m_joinThread;
     std::thread m_serviceThread;

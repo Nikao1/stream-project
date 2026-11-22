@@ -20,10 +20,21 @@
 #include "app_settings.h"
 #include "power_mode.h"
 #include "sender.h"
+#include "image_codec.h"
+
+#include <atomic>
 
 
 namespace sender
 {
+
+// Previa da transmissao na lista da sala: g_roomPreviewUi e o
+// que a tela altera; g_roomPreview e lido pela thread da sala.
+bool g_roomPreviewUi = true;
+
+std::atomic<bool> g_roomPreview{ true };
+
+
 
 namespace
 {
@@ -801,6 +812,7 @@ void DrawUi(
     model.qualityIndex = &g_qualityIndex;
     model.fpsIndex = &g_fpsIndex;
     model.inRoom = g_roomMode;
+    model.roomPreview = g_roomMode ? &g_roomPreviewUi : nullptr;
     model.canStop = !g_sessionPending;
 
     // Upload estimado: uma copia do video por pessoa, mais ~8%
@@ -900,6 +912,11 @@ void LoadClientSettings()
         g_windowAudioOnly =
             settings.GetInt(L"SomSoDaJanela", 1) != 0;
     }
+
+    g_roomPreviewUi =
+        settings.GetInt(L"PreviaNaSala", 1) != 0;
+
+    g_roomPreview = g_roomPreviewUi;
 }
 
 
@@ -1226,6 +1243,14 @@ void ClientUiDrawFrame(
         BeginStreaming();
     }
 
+    if (actions.roomPreviewChanged)
+    {
+        g_roomPreview = g_roomPreviewUi;
+
+        ClientSettings().SetInt(
+            L"PreviaNaSala", g_roomPreviewUi ? 1 : 0);
+    }
+
     if (actions.qualityChanged)
     {
         ApplyQualitySelection();
@@ -1389,6 +1414,47 @@ void Draw(
 bool IsOpen()
 {
     return g_open;
+}
+
+
+bool RoomPreviewEnabled()
+{
+    return g_roomPreview;
+}
+
+
+bool CaptureRoomThumbnail(
+    std::vector<uint8_t>& outJpeg)
+{
+    outJpeg.clear();
+
+    std::vector<uint8_t> small;
+
+    int width = 0;
+    int height = 0;
+
+    {
+        std::lock_guard<std::mutex> lock(g_displayMutex);
+
+        size_t needed =
+            static_cast<size_t>(g_displayWidth) * g_displayHeight * 4;
+
+        if (needed == 0 || g_displayPixels.size() < needed)
+            return false;
+
+        ImageDownscaleBgra(
+            g_displayPixels.data(),
+            static_cast<int>(g_displayWidth),
+            static_cast<int>(g_displayHeight),
+            static_cast<int>(g_displayWidth * 4),
+            320,
+            180,
+            small,
+            width,
+            height);
+    }
+
+    return ImageEncodeJpeg(small.data(), width, height, 0.7f, outJpeg);
 }
 
 

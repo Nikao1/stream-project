@@ -36,12 +36,21 @@ escolhe quem ver). A sala so guarda quem esta nela e o codigo de
 SESSAO de cada um que transmite - quem assiste entra nessa
 sessao pelo fluxo normal acima ("join"/"announce"):
 
-    POST /rooms                       name
+    POST /rooms                       name, [e2e=1, salt]
                                       -> code, member_id, token,
                                          ttl + estado da sala
-    POST /rooms/<code>/join           name
+    POST /rooms/<code>/info           -> e2e (0|1), [salt]
+    POST /rooms/<code>/join           name, [e2e=1]
                                       -> member_id, token, ttl +
                                          estado da sala
+
+    Criptografia de ponta a ponta (e2e=1): o programa tranca
+    nomes, descricoes, chat e previas com uma chave que vem de
+    um segredo que NUNCA chega aqui (vai so no codigo que as
+    pessoas passam entre si). Este servidor guarda esses campos
+    como texto opaco ("e1.<base64>") e nao consegue le-los. So o
+    "sal" da chave fica aqui (nao e segredo). Sala e2e recusa
+    quem nao sabe criptografar (versoes antigas): HTTP 426.
     POST /rooms/<code>/heartbeat      member_id, token
                                       -> estado da sala
     POST /rooms/<code>/present        member_id, token,
@@ -57,6 +66,13 @@ sessao pelo fluxo normal acima ("join"/"announce"):
         Canal de voz: cada pessoa na voz abre uma sessao (so de
         audio) e publica aqui; as outras entram nela pelo fluxo
         normal de sessao. Sem session_code = saiu da voz.
+    POST /rooms/<code>/thumb          member_id, token, [image]
+                                      -> ok
+        Previa (JPEG pequeno, base64 "urlsafe") do que esta pessoa
+        transmite, pra lista da sala. Sem image = tira a previa.
+        So em memoria; some quando a transmissao para.
+    POST /rooms/<code>/thumb_get      member_id, token, target
+                                      -> image, version
 
     O heartbeat aceita chat_after=<id> e devolve tambem as
     mensagens de chat mais novas que esse id:
@@ -68,7 +84,8 @@ sessao pelo fluxo normal acima ("join"/"announce"):
         member_<i>=<member_id>|<nome>|<sessao de voz, ou vazio>
         presenter_count=N
         presenter_<i>=<member_id>|<codigo da sessao>|<nome>|<o que
-                      esta compartilhando>
+                      esta compartilhando>|<versao da previa,
+                      ou vazio>
     (nome e descricao com %XX, como em URL)
 
 Hole punching: o host registra seu endereco publico (descoberto
@@ -77,6 +94,8 @@ por STUN) ao criar a sessao; o receiver pega esse endereco no
 endereco do receiver na resposta do "keepalive".
 """
 
+import base64
+import binascii
 import ipaddress
 import os
 import secrets
@@ -92,7 +111,7 @@ from urllib.parse import parse_qs, quote
 
 SESSION_TTL_SECONDS = 60        # sessao some se o host parar de dar keepalive
 MAX_SESSIONS = 5000
-MAX_BODY_BYTES = 2048
+MAX_BODY_BYTES = 4096
 CODE_LENGTH = 6
 
 # Anuncio de espectador (endereco publico pro hole punching):
@@ -120,6 +139,15 @@ MAX_NAME_LENGTH = 32
 MAX_LABEL_LENGTH = 80
 MAX_CHAT_LENGTH = 300
 CHAT_HISTORY = 50               # mensagens guardadas por sala (memoria)
+MAX_THUMB_BYTES = 30000         # previa da transmissao (JPEG pequeno)
+
+# Campos criptografados (salas e2e): "e1." + base64url. O texto
+# original continua limitado pelo programa; aqui so o tamanho
+# do embrulho.
+MAX_SEALED_NAME = 400
+MAX_SEALED_LABEL = 800
+MAX_SEALED_CHAT = 2400
+MAX_THUMB_BODY_BYTES = 44000    # o JPEG em base64 + campos
 
 # So confie em X-Forwarded-For quando o servidor estiver atras
 # de um proxy da hospedagem (Render, Fly etc.): TRUST_PROXY=1
@@ -219,6 +247,26 @@ def _clean_text(text, limit):
     return " ".join(text.split())[:limit]
 
 
+_SEALED_CHARS = set("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+                    "0123456789-_=")
+
+
+def _sealed(text, limit):
+    """Campo criptografado (salas e2e) valido, ou None."""
+    if (text.startswith("e1.") and 3 < len(text) <= limit and
+            all(c in _SEALED_CHARS for c in text[3:])):
+        return text
+    return None
+
+
+def _field(room, text, plain_limit, sealed_limit):
+    """Nome/descricao/chat: sala e2e so aceita o campo trancado;
+    sala comum, texto limpo."""
+    if room.get("e2e"):
+        return _sealed(text, sealed_limit)
+    return _clean_text(text, plain_limit)
+
+
 def _new_code():
     """Chamar com _lock adquirido. Salas e sessoes dividem os
     codigos: um codigo digitado e de uma coisa so."""
@@ -263,6 +311,7 @@ def _room_state(room):
             presenting["session_code"],
             quote(name),
             quote(presenting["label"]),
+            str(presenting.get("thumb_version") or ""),
         ])
     return fields
 
@@ -294,11 +343,14 @@ class Handler(BaseHTTPRequestHandler):
         self._reply(status, {"error": message})
 
     def _read_form(self):
+        limit = (MAX_THUMB_BODY_BYTES
+                 if self.path.split("?")[0].endswith("/thumb")
+                 else MAX_BODY_BYTES)
         try:
             length = int(self.headers.get("Content-Length", "0"))
         except ValueError:
             return None
-        if length < 0 or length > MAX_BODY_BYTES:
+        if length < 0 or length > limit:
             return None
         raw = self.rfile.read(length).decode("utf-8", "replace") if length else ""
         parsed = parse_qs(raw, keep_blank_values=True)
@@ -359,6 +411,8 @@ class Handler(BaseHTTPRequestHandler):
             action = parts[2]
             if action == "join":
                 return self._room_join(code, form)
+            if action == "info":
+                return self._room_info(code)
             if action == "heartbeat":
                 return self._room_heartbeat(code, form)
             if action == "present":
@@ -371,6 +425,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self._room_chat_send(code, form)
             if action == "voice":
                 return self._room_voice(code, form)
+            if action == "thumb":
+                return self._room_thumb(code, form)
+            if action == "thumb_get":
+                return self._room_thumb_get(code, form)
 
         self._error(404, "not_found")
 
@@ -535,7 +593,9 @@ class Handler(BaseHTTPRequestHandler):
 
     # -------------------------- salas -------------------------
 
-    def _room_name(self, form):
+    def _room_name(self, form, e2e=False):
+        if e2e:
+            return _sealed(form.get("name", ""), MAX_SEALED_NAME)
         name = _clean_text(form.get("name", ""), MAX_NAME_LENGTH)
         return name or "Sem nome"
 
@@ -570,27 +630,54 @@ class Handler(BaseHTTPRequestHandler):
         return room, member
 
     def _room_create(self, form):
-        name = self._room_name(form)
+        e2e = form.get("e2e") == "1"
+        salt = form.get("salt", "")
+        if e2e and (len(salt) != 32 or
+                    any(c not in "0123456789abcdefABCDEF" for c in salt)):
+            return self._error(400, "invalid_fields")
+        name = self._room_name(form, e2e)
+        if name is None:
+            return self._error(400, "invalid_fields")
         with _lock:
             if len(_rooms) >= MAX_ROOMS:
                 return self._error(503, "server_full")
             code = _new_code()
-            room = {"members": {}, "chat": [], "next_chat_id": 1}
+            room = {"members": {}, "chat": [], "next_chat_id": 1,
+                    "next_thumb": 1, "e2e": e2e,
+                    "salt": salt.lower() if e2e else ""}
             _rooms[code] = room
             member_id, token = self._add_member(room, name)
             fields = {"code": code, "member_id": member_id,
-                      "token": token, "ttl": ROOM_MEMBER_TTL_SECONDS}
+                      "token": token, "ttl": ROOM_MEMBER_TTL_SECONDS,
+                      "e2e": 1 if e2e else 0}
             fields.update(_room_state(room))
         self._reply(200, fields)
 
+    def _room_info(self, code):
+        with _lock:
+            room = _rooms.get(code)
+            if room is None:
+                return self._error(404, "room_not_found")
+            fields = {"e2e": 1 if room.get("e2e") else 0}
+            if room.get("e2e"):
+                fields["salt"] = room["salt"]
+        self._reply(200, fields)
+
     def _room_join(self, code, form):
-        name = self._room_name(form)
         with _lock:
             room = _rooms.get(code)
             if room is None:
                 # Pode ser um codigo de SESSAO (versoes sem sala):
                 # quem chama tenta o "join" de sessao em seguida.
                 return self._error(404, "room_not_found")
+            e2e = bool(room.get("e2e"))
+            # Versao antiga numa sala criptografada: nao entende
+            # os nomes/chat - recusa com um codigo proprio.
+            if e2e and form.get("e2e") != "1":
+                return self._error(426, "upgrade_required")
+            name = self._room_name(form, e2e)
+            if name is None:
+                return self._error(400, "invalid_fields")
             if len(room["members"]) >= MAX_ROOM_MEMBERS:
                 return self._error(409, "room_full")
             member_id, token = self._add_member(room, name)
@@ -615,13 +702,14 @@ class Handler(BaseHTTPRequestHandler):
         self._reply(200, fields)
 
     def _room_chat_send(self, code, form):
-        text = _clean_text(form.get("text", ""), MAX_CHAT_LENGTH)
-        if not text:
-            return self._error(400, "invalid_fields")
         with _lock:
             room, member = self._room_member(code, form)
             if room is None:
                 return self._error(404, "not_in_room")
+            text = _field(room, form.get("text", ""),
+                          MAX_CHAT_LENGTH, MAX_SEALED_CHAT)
+            if not text:
+                return self._error(400, "invalid_fields")
             message_id = room["next_chat_id"]
             room["next_chat_id"] += 1
             room["chat"].append({
@@ -636,11 +724,16 @@ class Handler(BaseHTTPRequestHandler):
     def _room_present(self, code, form):
         session_code = form.get("session_code", "").upper()
         session_token = form.get("session_token", "")
-        label = _clean_text(form.get("label", ""), MAX_LABEL_LENGTH)
         with _lock:
             room, member = self._room_member(code, form)
             if room is None:
                 return self._error(404, "not_in_room")
+            label = _field(room, form.get("label", ""),
+                           MAX_LABEL_LENGTH, MAX_SEALED_LABEL)
+            if label is None:
+                # Descricao vazia/estranha numa sala e2e: sem
+                # descricao.
+                label = ""
             # So publica sessao que e DELE (prova: o token da
             # sessao) - ninguem anuncia a transmissao de outro.
             session = _sessions.get(session_code)
@@ -657,6 +750,14 @@ class Handler(BaseHTTPRequestHandler):
                           previous["session_code"] == session_code
                           else _now()),
             }
+            # Mesma transmissao (ex.: trocou so a descricao): a
+            # previa continua.
+            if (previous is not None and
+                    previous["session_code"] == session_code and
+                    "thumb" in previous):
+                member["presenting"]["thumb"] = previous["thumb"]
+                member["presenting"]["thumb_version"] = \
+                    previous["thumb_version"]
         self._reply(200, {"ok": 1})
 
     def _room_voice(self, code, form):
@@ -676,6 +777,52 @@ class Handler(BaseHTTPRequestHandler):
                     return self._error(404, "session_not_found")
                 member["voice"] = session_code
         self._reply(200, {"ok": 1})
+
+    def _room_thumb(self, code, form):
+        text = form.get("image", "")
+        image = None
+        if text:
+            try:
+                image = base64.urlsafe_b64decode(text.encode("ascii"))
+            except (binascii.Error, ValueError, UnicodeEncodeError):
+                return self._error(400, "invalid_fields")
+            # So JPEG (ou JPEG criptografado: "SPE1"), pequeno.
+            if (len(image) > MAX_THUMB_BYTES or
+                    not (image.startswith(b"\xff\xd8") or
+                         image.startswith(b"SPE1"))):
+                return self._error(400, "invalid_fields")
+        with _lock:
+            room, member = self._room_member(code, form)
+            if room is None:
+                return self._error(404, "not_in_room")
+            presenting = member["presenting"]
+            if presenting is None:
+                return self._error(409, "not_presenting")
+            if image is None:
+                presenting.pop("thumb", None)
+                presenting.pop("thumb_version", None)
+            else:
+                version = room.get("next_thumb", 1)
+                room["next_thumb"] = version + 1
+                presenting["thumb"] = image
+                presenting["thumb_version"] = version
+        self._reply(200, {"ok": 1})
+
+    def _room_thumb_get(self, code, form):
+        with _lock:
+            room, member = self._room_member(code, form)
+            if room is None:
+                return self._error(404, "not_in_room")
+            target = room["members"].get(form.get("target", ""))
+            presenting = target["presenting"] if target else None
+            if presenting is None or "thumb" not in presenting:
+                return self._error(404, "no_thumb")
+            image = presenting["thumb"]
+            version = presenting["thumb_version"]
+        self._reply(200, {
+            "image": base64.urlsafe_b64encode(image).decode("ascii"),
+            "version": version,
+        })
 
     def _room_stop(self, code, form):
         with _lock:

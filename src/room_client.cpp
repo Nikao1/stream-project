@@ -14,7 +14,75 @@ constexpr int HEARTBEAT_SECONDS = 2;
 // servidor tira da sala depois de 20 s sem sinal.)
 constexpr ULONGLONG OFFLINE_AFTER_MS = 8000;
 
+// Contextos da criptografia (cada campo so abre no lugar dele).
+const char CONTEXT_NAME[] = "nome";
+const char CONTEXT_LABEL[] = "descricao";
+
+std::string ChatContext(
+    const std::string& memberId)
+{
+    return "chat|" + memberId;
+}
+
+std::string ThumbContext(
+    const std::string& memberId)
+{
+    return "previa|" + memberId;
+}
+
+// Corta em "maxChars" caracteres sem partir um caractere UTF-8.
+std::string TruncateUtf8(
+    const std::string& text,
+    size_t maxChars)
+{
+    size_t chars = 0;
+
+    for (size_t i = 0; i < text.size(); ++i)
+    {
+        if ((static_cast<unsigned char>(text[i]) & 0xC0) != 0x80)
+        {
+            if (chars == maxChars)
+                return text.substr(0, i);
+
+            chars++;
+        }
+    }
+
+    return text;
+}
+
 } // namespace
+
+
+void RoomClient::OpenState(
+    RoomState& state,
+    const RoomKey& key)
+{
+    for (RoomMember& member : state.members)
+    {
+        std::string name;
+
+        member.name =
+            RoomOpenText(key, CONTEXT_NAME, member.name, name)
+            ? name
+            : std::string("?");
+    }
+
+    for (RoomPresenter& presenter : state.presenters)
+    {
+        std::string text;
+
+        presenter.name =
+            RoomOpenText(key, CONTEXT_NAME, presenter.name, text)
+            ? text
+            : std::string("?");
+
+        presenter.label =
+            RoomOpenText(key, CONTEXT_LABEL, presenter.label, text)
+            ? text
+            : std::string();
+    }
+}
 
 
 RoomClient::~RoomClient()
@@ -38,8 +106,27 @@ bool RoomClient::Create(
 
     RoomState state;
 
+    // Chave nova: segredo (vai no codigo, nunca pro servidor)
+    // + sal (guardado no servidor).
+    std::string secret = RoomSecretGenerate();
+    std::string salt = RoomSaltGenerate();
+
+    RoomKey key;
+
+    if (secret.empty() || salt.empty() ||
+        !RoomKeyDerive(secret, salt, key))
+    {
+        outError = "falha ao gerar a chave da sala";
+
+        return false;
+    }
+
+    std::string sealedName =
+        RoomSealText(key, CONTEXT_NAME, TruncateUtf8(name, 32));
+
     if (!SignalingCreateRoom(
-            name,
+            sealedName,
+            salt,
             membership,
             state,
             outError))
@@ -47,9 +134,13 @@ bool RoomClient::Create(
         return false;
     }
 
+    OpenState(state, key);
+
     std::lock_guard<std::mutex> lock(m_mutex);
 
-    m_name = name;
+    m_key = key;
+    m_secret = secret;
+    m_name = sealedName;
     m_membership = membership;
     m_state = state;
     m_wanted = Presenting{};
@@ -62,6 +153,8 @@ bool RoomClient::Create(
 
     m_wantedVoice.clear();
     m_publishedVoice.clear();
+
+    m_thumbs.clear();
 
     std::cout
         << "Sala criada: "
@@ -81,10 +174,51 @@ RoomJoinResult RoomClient::Join(
 
     RoomState state;
 
+    std::string roomCode;
+    std::string secret;
+
+    if (!ParseRoomInvite(code, roomCode, secret))
+        return RoomJoinResult::NotFound;
+
+    // A sala existe? Tem criptografia de ponta a ponta?
+    bool encrypted = false;
+
+    std::string salt;
+
     RoomJoinResult result =
+        SignalingRoomInfo(roomCode, encrypted, salt, outError);
+
+    if (result != RoomJoinResult::Joined)
+        return result;
+
+    RoomKey key;
+
+    if (encrypted)
+    {
+        if (secret.empty())
+            return RoomJoinResult::NeedsKey;
+
+        if (!RoomKeyDerive(secret, salt, key))
+        {
+            outError = "falha ao gerar a chave da sala";
+
+            return RoomJoinResult::Error;
+        }
+    }
+    else
+    {
+        // Sala criada por versao antiga: sem segredo.
+        secret.clear();
+    }
+
+    std::string sealedName =
+        RoomSealText(key, CONTEXT_NAME, TruncateUtf8(name, 32));
+
+    result =
         SignalingJoinRoom(
-            code,
-            name,
+            roomCode,
+            sealedName,
+            encrypted,
             membership,
             state,
             outError);
@@ -92,9 +226,45 @@ RoomJoinResult RoomClient::Join(
     if (result != RoomJoinResult::Joined)
         return result;
 
+    // Segredo errado: os nomes de quem ja esta na sala nao
+    // abrem. Sai e avisa.
+    if (encrypted)
+    {
+        bool anyOther = false;
+        bool anyOpened = false;
+
+        for (const RoomMember& member : state.members)
+        {
+            if (member.id == membership.memberId)
+                continue;
+
+            anyOther = true;
+
+            std::string plain;
+
+            if (RoomOpenText(key, CONTEXT_NAME, member.name, plain))
+            {
+                anyOpened = true;
+            }
+        }
+
+        if (anyOther && !anyOpened)
+        {
+            std::string ignored;
+
+            SignalingRoomLeave(membership, ignored);
+
+            return RoomJoinResult::WrongKey;
+        }
+    }
+
+    OpenState(state, key);
+
     std::lock_guard<std::mutex> lock(m_mutex);
 
-    m_name = name;
+    m_key = key;
+    m_secret = secret;
+    m_name = sealedName;
     m_membership = membership;
     m_state = state;
     m_wanted = Presenting{};
@@ -108,9 +278,12 @@ RoomJoinResult RoomClient::Join(
     m_wantedVoice.clear();
     m_publishedVoice.clear();
 
+    m_thumbs.clear();
+
     std::cout
         << "Entrou na sala "
-        << code
+        << roomCode
+        << (encrypted ? " (criptografada)" : "")
         << " ("
         << state.members.size()
         << " pessoas)\n";
@@ -206,7 +379,12 @@ std::string RoomClient::GetCode()
 {
     std::lock_guard<std::mutex> lock(m_mutex);
 
-    return m_membership.code;
+    // Codigo completo (com o segredo) - e o que se passa pros
+    // amigos.
+    return
+        m_secret.empty()
+        ? m_membership.code
+        : m_membership.code + "-" + m_secret;
 }
 
 
@@ -298,8 +476,12 @@ void RoomClient::Loop()
 
         Presenting published;
 
+        RoomKey key;
+
         {
             std::lock_guard<std::mutex> lock(m_mutex);
+
+            key = m_key;
 
             membership = m_membership;
             wanted = m_wanted;
@@ -322,7 +504,9 @@ void RoomClient::Loop()
                       membership,
                       wanted.sessionCode,
                       wanted.sessionToken,
-                      wanted.label,
+                      RoomSealText(
+                          key, CONTEXT_LABEL,
+                          TruncateUtf8(wanted.label, 80)),
                       error);
 
             if (ok)
@@ -403,7 +587,13 @@ void RoomClient::Loop()
                 text = m_outbox.front();
             }
 
-            if (!SignalingRoomChat(membership, text, error))
+            if (!SignalingRoomChat(
+                    membership,
+                    RoomSealText(
+                        key,
+                        ChatContext(membership.memberId),
+                        TruncateUtf8(text, 300)),
+                    error))
             {
                 std::cout
                     << "Sala: chat nao enviado: "
@@ -422,6 +612,13 @@ void RoomClient::Loop()
                 m_outbox.pop_front();
             }
         }
+
+
+        // ----------------------------------------------------
+        // Previa da propria transmissao (a cada ~15 s)
+        // ----------------------------------------------------
+
+        UpdateThumbnails(membership, RoomState{});
 
 
         // ----------------------------------------------------
@@ -454,6 +651,8 @@ void RoomClient::Loop()
 
             m_offline = false;
 
+            OpenState(state, key);
+
             std::lock_guard<std::mutex> lock(m_mutex);
 
             m_state = state;
@@ -465,7 +664,26 @@ void RoomClient::Loop()
 
                 m_chatAfter = message.id;
 
-                m_chat.push_back(message);
+                // Abre a mensagem; a que nao abre (nao foi
+                // trancada com a chave da sala) e descartada.
+                RoomChatMessage opened = message;
+
+                std::string text;
+
+                if (!RoomOpenText(
+                        key,
+                        ChatContext(message.memberId),
+                        message.text,
+                        text) ||
+                    !RoomOpenText(
+                        key, CONTEXT_NAME, message.name, opened.name))
+                {
+                    continue;
+                }
+
+                opened.text = text;
+
+                m_chat.push_back(opened);
 
                 m_chatTotal++;
             }
@@ -476,6 +694,12 @@ void RoomClient::Loop()
             }
 
             m_heartbeats++;
+        }
+
+        // Previas de quem transmite (fora da trava: rede).
+        if (!state.members.empty())
+        {
+            UpdateThumbnails(membership, state);
         }
         else if (gone)
         {
@@ -496,6 +720,7 @@ void RoomClient::Loop()
                 SignalingJoinRoom(
                     membership.code,
                     name,
+                    key.valid,
                     again,
                     state,
                     error);
@@ -510,6 +735,8 @@ void RoomClient::Loop()
                 m_offline = false;
 
                 std::lock_guard<std::mutex> lock(m_mutex);
+
+                OpenState(state, key);
 
                 m_membership = again;
                 m_state = state;
@@ -559,4 +786,246 @@ void RoomClient::Loop()
 
         m_wake = false;
     }
+}
+
+
+// ------------------------------------------------------------
+// Previas
+// ------------------------------------------------------------
+//
+// state vazio: so a parte de ENVIAR (a propria previa). Com
+// state: so a de BAIXAR as dos outros.
+// ------------------------------------------------------------
+
+namespace
+{
+
+constexpr unsigned long long THUMB_INTERVAL_MS = 15000;
+
+// Primeira previa: uns segundos depois de comecar (a captura
+// precisa de um frame).
+constexpr unsigned long long THUMB_FIRST_DELAY_MS = 3000;
+
+// Previas baixadas por volta (cada uma ~15 KB).
+constexpr int THUMB_FETCH_PER_LOOP = 3;
+
+} // namespace
+
+
+void RoomClient::UpdateThumbnails(
+    const RoomMembership& membership,
+    const RoomState& state)
+{
+    std::string error;
+
+    if (state.members.empty())
+    {
+        std::string session;
+
+        {
+            std::lock_guard<std::mutex> lock(m_mutex);
+
+            session = m_published.sessionCode;
+        }
+
+        ULONGLONG now = GetTickCount64();
+
+        if (session.empty() || !m_thumbEnabled || !m_thumbCapture)
+        {
+            // Nao transmite: o servidor apaga a previa sozinho.
+            m_thumbSession.clear();
+            m_thumbOnServer = false;
+
+            std::lock_guard<std::mutex> lock(m_mutex);
+
+            m_thumbs.erase(membership.memberId);
+
+            return;
+        }
+
+        if (session != m_thumbSession)
+        {
+            m_thumbSession = session;
+            m_thumbOnServer = false;
+            m_thumbSentAt =
+                now - THUMB_INTERVAL_MS + THUMB_FIRST_DELAY_MS;
+        }
+
+        bool enabled = m_thumbEnabled();
+
+        // Desligou a previa: tira do servidor na hora.
+        if (!enabled)
+        {
+            if (m_thumbOnServer &&
+                SignalingRoomThumb(membership, {}, error))
+            {
+                m_thumbOnServer = false;
+            }
+
+            std::lock_guard<std::mutex> lock(m_mutex);
+
+            m_thumbs.erase(membership.memberId);
+
+            return;
+        }
+
+        if (now - m_thumbSentAt < THUMB_INTERVAL_MS)
+            return;
+
+        std::vector<uint8_t> jpeg;
+
+        if (!m_thumbCapture(jpeg) || jpeg.empty())
+        {
+            // Sem imagem ainda: tenta de novo em poucos segundos.
+            m_thumbSentAt =
+                now - THUMB_INTERVAL_MS + THUMB_FIRST_DELAY_MS;
+
+            return;
+        }
+
+        m_thumbSentAt = now;
+
+        RoomKey key;
+
+        {
+            std::lock_guard<std::mutex> lock(m_mutex);
+
+            key = m_key;
+        }
+
+        if (SignalingRoomThumb(
+                membership,
+                RoomSealBytes(key, ThumbContext(membership.memberId), jpeg),
+                error))
+        {
+            m_thumbOnServer = true;
+
+            std::lock_guard<std::mutex> lock(m_mutex);
+
+            Thumb& own = m_thumbs[membership.memberId];
+
+            own.version = "local" + std::to_string(++m_localThumbCount);
+            own.jpeg = std::move(jpeg);
+        }
+        else
+        {
+            std::cout
+                << "Sala: previa nao enviada: " << error << "\n";
+        }
+
+        return;
+    }
+
+
+    // ---- Baixar as dos outros ----
+
+    std::vector<std::pair<std::string, std::string>> wanted;
+
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+
+        // Esquece previas de quem parou (ou desligou a previa).
+        for (auto it = m_thumbs.begin(); it != m_thumbs.end();)
+        {
+            bool keep = it->first == membership.memberId;
+
+            for (const RoomPresenter& presenter : state.presenters)
+            {
+                if (presenter.memberId == it->first &&
+                    !presenter.thumbVersion.empty())
+                {
+                    keep = true;
+                }
+            }
+
+            it = keep ? std::next(it) : m_thumbs.erase(it);
+        }
+
+        if (!m_wantThumbs)
+            return;
+
+        for (const RoomPresenter& presenter : state.presenters)
+        {
+            if (presenter.memberId == membership.memberId ||
+                presenter.thumbVersion.empty())
+            {
+                continue;
+            }
+
+            auto found = m_thumbs.find(presenter.memberId);
+
+            if (found == m_thumbs.end() ||
+                found->second.version != presenter.thumbVersion)
+            {
+                wanted.emplace_back(
+                    presenter.memberId, presenter.thumbVersion);
+            }
+        }
+    }
+
+    int fetched = 0;
+
+    for (const auto& item : wanted)
+    {
+        if (fetched++ >= THUMB_FETCH_PER_LOOP || !m_running)
+            break;
+
+        std::vector<uint8_t> sealed;
+
+        std::vector<uint8_t> jpeg;
+
+        std::string version;
+
+        if (!SignalingRoomGetThumb(
+                membership, item.first, sealed, version, error))
+        {
+            continue;
+        }
+
+        std::lock_guard<std::mutex> lock(m_mutex);
+
+        if (!RoomOpenBytes(
+                m_key, ThumbContext(item.first), sealed, jpeg))
+        {
+            // Nao abre: marca a versao pra nao baixar de novo.
+            m_thumbs[item.first] = Thumb{ item.second, {} };
+
+            continue;
+        }
+
+        Thumb& thumb = m_thumbs[item.first];
+
+        thumb.version = version.empty() ? item.second : version;
+        thumb.jpeg = std::move(jpeg);
+    }
+}
+
+
+std::string RoomClient::ThumbnailVersion(
+    const std::string& memberId)
+{
+    std::lock_guard<std::mutex> lock(m_mutex);
+
+    auto found = m_thumbs.find(memberId);
+
+    return found == m_thumbs.end() ? std::string() : found->second.version;
+}
+
+
+bool RoomClient::GetThumbnail(
+    const std::string& memberId,
+    std::string& outVersion,
+    std::vector<uint8_t>& outJpeg)
+{
+    std::lock_guard<std::mutex> lock(m_mutex);
+
+    auto found = m_thumbs.find(memberId);
+
+    if (found == m_thumbs.end())
+        return false;
+
+    outVersion = found->second.version;
+    outJpeg = found->second.jpeg;
+
+    return true;
 }

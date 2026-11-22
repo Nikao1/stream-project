@@ -1,0 +1,44 @@
+#pragma once
+
+#include <cstdint>
+#include <vector>
+
+// ============================================================
+// IMAGENS PEQUENAS (previa da transmissao na sala)
+// ============================================================
+//
+// JPEG pelo WIC (Windows Imaging Component, ja vem no Windows):
+// nada de biblioteca extra. Pixels sempre em BGRA 8 bits, sem
+// espaco entre as linhas.
+// ============================================================
+
+// Reduz (media de blocos) pra caber em maxWidth x maxHeight,
+// mantendo a proporcao. Imagem menor que isso: so copia.
+void ImageDownscaleBgra(
+    const uint8_t* pixels,
+    int width,
+    int height,
+    int strideBytes,
+    int maxWidth,
+    int maxHeight,
+    std::vector<uint8_t>& outPixels,
+    int& outWidth,
+    int& outHeight
+);
+
+// quality: 0..1. Chamar de qualquer thread (cuida do COM).
+bool ImageEncodeJpeg(
+    const uint8_t* bgraPixels,
+    int width,
+    int height,
+    float quality,
+    std::vector<uint8_t>& outJpeg
+);
+
+bool ImageDecodeToBgra(
+    const uint8_t* data,
+    size_t size,
+    std::vector<uint8_t>& outPixels,
+    int& outWidth,
+    int& outHeight
+);

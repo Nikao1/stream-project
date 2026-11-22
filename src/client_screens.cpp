@@ -229,10 +229,70 @@ void DrawClientLiveScreen(
     static double codeCopiedAt = 0.0;
     static double inviteCopiedAt = 0.0;
 
+    // Painel minimizado (so nesta execucao): uma barra pequena
+    // com o essencial, pra ver a previa (e o chat/pessoas da
+    // sala) sem o painel na frente.
+    static bool minimized = false;
+
+    if (minimized)
+    {
+        UiBeginCornerPanel("##aovivomin", 300.0f);
+
+        std::string line =
+            "Transmitindo  ·  " +
+            std::to_string(model.viewers) +
+            " assistindo";
+
+        UiWrappedColored(UiColorSuccess(), line.c_str());
+
+        float half =
+            (ImGui::GetContentRegionAvail().x -
+             ImGui::GetStyle().ItemSpacing.x) * 0.5f;
+
+        if (ImGui::Button("Mostrar painel", ImVec2(half, 0.0f)))
+        {
+            minimized = false;
+        }
+
+        ImGui::SameLine();
+
+        ImGui::BeginDisabled(!model.canStop);
+
+        if (ImGui::Button("Parar", ImVec2(half, 0.0f)))
+        {
+            actions.stopSharing = true;
+        }
+
+        ImGui::EndDisabled();
+
+        UiEndPanel();
+
+        return;
+    }
+
     // O painel fica no canto, pra previa aparecer atras.
     UiBeginCornerPanel("##aovivo", 380.0f);
 
     UiTitle("Transmitindo");
+
+    // Minimizar (canto direito do titulo)
+    {
+        const char* label = "Minimizar";
+
+        float width =
+            ImGui::CalcTextSize(label).x +
+            ImGui::GetStyle().FramePadding.x * 2.0f;
+
+        ImGui::SameLine(ImGui::GetContentRegionMax().x - width);
+
+        ImGui::SetCursorPosY(
+            ImGui::GetCursorPosY() + 4.0f * UiScale());
+
+        if (ImGui::Button(label))
+        {
+            minimized = true;
+        }
+    }
 
     if (!model.sharingLabel.empty())
     {
@@ -268,6 +328,24 @@ void DrawClientLiveScreen(
             "Quem está na sala vê sua transmissão na lista e "
             "escolhe assistir."
         );
+
+        if (model.roomPreview)
+        {
+            if (ImGui::Checkbox(
+                    "Mostrar prévia na lista da sala",
+                    model.roomPreview))
+            {
+                actions.roomPreviewChanged = true;
+            }
+
+            if (ImGui::IsItemHovered())
+            {
+                ImGui::SetTooltip(
+                    "Uma imagem pequena da sua transmissão, "
+                    "atualizada a cada 15 s,\npara a sala ver o "
+                    "que você mostra antes de assistir.");
+            }
+        }
 
         if (UiPrimaryButton("Voltar para a sala"))
         {

@@ -558,7 +558,8 @@ bool DrawVideoChat(
     char* input,
     size_t inputSize,
     bool focusInput,
-    bool& outClose)
+    bool& outClose,
+    bool rightSide)
 {
     const ImGuiViewport* viewport =
         ImGui::GetMainViewport();
@@ -567,10 +568,12 @@ bool DrawVideoChat(
 
     ImGui::SetNextWindowPos(
         ImVec2(
-            viewport->WorkPos.x + margin,
+            rightSide
+            ? viewport->WorkPos.x + viewport->WorkSize.x - margin
+            : viewport->WorkPos.x + margin,
             viewport->WorkPos.y + viewport->WorkSize.y - margin),
         ImGuiCond_Always,
-        ImVec2(0.0f, 1.0f));
+        ImVec2(rightSide ? 1.0f : 0.0f, 1.0f));
 
     ImGui::SetNextWindowSize(
         ImVec2(340.0f * UiScale(), 0.0f),
@@ -677,6 +680,115 @@ void PersonRow(
     ImGui::EndGroup();
 }
 
+// Pessoa na lista da sala / painel: bolinha (anel vermelho =
+// transmitindo, verde = falando), nome, situacao na voz. Com a
+// voz ligada, clicar abre o volume dessa pessoa. Devolve true
+// quando o volume mudou (em outVolume).
+bool MemberRow(
+    const std::string& name,
+    bool live,
+    MemberVoice voice,
+    bool isMe,
+    bool voiceJoined,
+    float volume,
+    float& outVolume)
+{
+    const char* detail = "";
+
+    switch (voice)
+    {
+    case MemberVoice::Connecting: detail = "conectando a voz..."; break;
+    case MemberVoice::In:         detail = "na voz"; break;
+    case MemberVoice::Speaking:   detail = "falando"; break;
+    default: break;
+    }
+
+    std::string shown = name;
+
+    std::string detailText = detail;
+
+    // Silenciada por esta pessoa.
+    if (!isMe && voice != MemberVoice::Out && volume <= 0.001f)
+    {
+        detailText = "silenciado por você";
+    }
+
+    ImGui::BeginGroup();
+
+    PersonRow(
+        shown,
+        detailText,
+        live,
+        0.0f,
+        voice == MemberVoice::Speaking);
+
+    ImGui::EndGroup();
+
+    bool adjustable =
+        !isMe &&
+        voiceJoined &&
+        voice != MemberVoice::Out;
+
+    if (!adjustable)
+        return false;
+
+    bool changed = false;
+
+    if (ImGui::IsItemHovered())
+    {
+        ImGui::SetTooltip("Clique para ajustar o volume");
+    }
+
+    if (ImGui::IsItemClicked(ImGuiMouseButton_Left) ||
+        ImGui::IsItemClicked(ImGuiMouseButton_Right))
+    {
+        ImGui::OpenPopup("##volume");
+    }
+
+    if (ImGui::BeginPopup("##volume"))
+    {
+        ImGui::TextUnformatted(name.c_str());
+
+        float percent = volume * 100.0f;
+
+        ImGui::SetNextItemWidth(220.0f * UiScale());
+
+        if (ImGui::SliderFloat(
+                "##vol", &percent, 0.0f, 200.0f, "%.0f%%"))
+        {
+            outVolume = percent / 100.0f;
+            changed = true;
+        }
+
+        bool silenced = volume <= 0.001f;
+
+        float half =
+            (220.0f * UiScale() -
+             ImGui::GetStyle().ItemSpacing.x) * 0.5f;
+
+        if (ImGui::Button(
+                silenced ? "Ativar som" : "Silenciar",
+                ImVec2(half, 0.0f)))
+        {
+            outVolume = silenced ? 1.0f : 0.0f;
+            changed = true;
+        }
+
+        ImGui::SameLine();
+
+        if (ImGui::Button("Volume normal", ImVec2(half, 0.0f)))
+        {
+            outVolume = 1.0f;
+            changed = true;
+        }
+
+        ImGui::EndPopup();
+    }
+
+    return changed;
+}
+
+
 // Secao "Voz" da sala.
 void DrawVoiceSection(
     const RoomScreenModel& model,
@@ -706,6 +818,11 @@ void DrawVoiceSection(
         UiMutedText(
             "Converse com a sala por aqui mesmo. A voz vai direto "
             "entre vocês, criptografada.");
+
+        if (ImGui::SmallButton("Atalhos"))
+        {
+            actions.openShortcuts = true;
+        }
     }
     else
     {
@@ -846,7 +963,7 @@ void DrawVoiceSection(
             model.speakers, model.speaker,
             actions.voiceSpeaker);
 
-        // Modo de falar
+        // Atalhos de voz (configurados na tela de atalhos)
         ImGui::AlignTextToFramePadding();
 
         UiMutedText("Falar:");
@@ -855,40 +972,46 @@ void DrawVoiceSection(
 
         ImGui::SetCursorPosX(fieldX);
 
-        ImGui::SetNextItemWidth(-1.0f);
+        std::string talk =
+            model.voicePttKey.empty()
+            ? std::string("livre (microfone aberto)")
+            : "segurando " + model.voicePttKey;
 
-        int ptt = model.voicePushToTalk;
+        const char* shortcutsLabel = "Atalhos";
 
-        if (ptt < 0 || ptt >= VOICE_PTT_OPTION_COUNT)
+        float shortcutsWidth =
+            ImGui::CalcTextSize(shortcutsLabel).x +
+            style.FramePadding.x * 2.0f;
+
+        ImGui::TextUnformatted(talk.c_str());
+
+        // (dentro da tabela, SameLine(x) nao conta a coluna)
+        ImGui::SameLine();
+
+        ImGui::SetCursorPosX(
+            ImGui::GetCursorPosX() +
+            ImGui::GetContentRegionAvail().x - shortcutsWidth);
+
+        if (ImGui::Button(shortcutsLabel))
         {
-            ptt = 0;
+            actions.openShortcuts = true;
         }
 
-        if (ImGui::Combo(
-                "##ptt",
-                &ptt,
-                VOICE_PTT_OPTION_NAMES,
-                VOICE_PTT_OPTION_COUNT))
+        if (!model.voiceMuteKey.empty())
         {
-            actions.voicePushToTalk = ptt;
+            UiMutedText(
+                (model.voiceMuteKey +
+                 " liga e desliga o microfone.").c_str());
         }
 
         if (model.voiceMuted)
         {
             UiMutedText("Seu microfone está desligado.");
         }
-        else if (ptt != 0 && !model.voiceTransmitting)
+        else if (!model.voicePttKey.empty() && !model.voiceTransmitting)
         {
-            // "Segurar Mouse 4" -> "Mouse 4"
-            std::string key = VOICE_PTT_OPTION_NAMES[ptt];
-
-            if (key.rfind("Segurar ", 0) == 0)
-            {
-                key = key.substr(8);
-            }
-
             UiMutedText(
-                ("Segure " + key +
+                ("Segure " + model.voicePttKey +
                  " para falar (funciona com o jogo aberto).").c_str());
         }
 
@@ -909,16 +1032,6 @@ void DrawVoiceSection(
 }
 
 } // namespace
-
-
-const char* const VOICE_PTT_OPTION_NAMES[VOICE_PTT_OPTION_COUNT] =
-{
-    "Falar livre",
-    "Segurar Mouse 4",
-    "Segurar Mouse 5",
-    "Segurar Alt direito",
-    "Segurar Ctrl direito"
-};
 
 
 void DrawRoomScreen(
@@ -971,8 +1084,16 @@ void DrawRoomScreen(
     }
 
     UiMutedText(
-        ("Passe o código para quem vai entrar  ·  cabem até " +
-         std::to_string(model.maxMembers) + " pessoas").c_str());
+        ("Passe o código inteiro para quem vai entrar  ·  cabem "
+         "até " + std::to_string(model.maxMembers) + " pessoas").c_str());
+
+    if (model.code.find('-') != std::string::npos)
+    {
+        UiMutedText(
+            "A parte depois do traço é a chave da sala: nomes, chat "
+            "e prévias são criptografados com ela, e o servidor não "
+            "a conhece.");
+    }
 
     if (model.offline)
     {
@@ -1029,11 +1150,121 @@ void DrawRoomScreen(
 
         float rowTop = ImGui::GetCursorPosY();
 
-        PersonRow(
-            entry.isMe ? entry.name + " (você)" : entry.name,
-            entry.label,
-            true,
-            buttonWidth + style.ItemSpacing.x);
+        if (entry.thumbnail &&
+            entry.thumbWidth > 0.0f &&
+            entry.thumbHeight > 0.0f)
+        {
+            // Previa no lugar da bolinha (clicar = assistir).
+            float maxW = 136.0f * UiScale();
+            float maxH = 77.0f * UiScale();
+
+            float scale =
+                (std::min)(maxW / entry.thumbWidth,
+                           maxH / entry.thumbHeight);
+
+            ImVec2 size(entry.thumbWidth * scale,
+                        entry.thumbHeight * scale);
+
+            ImVec2 pos = ImGui::GetCursorScreenPos();
+
+            // Centraliza numa caixa fixa (linhas alinhadas).
+            ImGui::InvisibleButton("##previa", ImVec2(maxW, maxH));
+
+            bool hovered = ImGui::IsItemHovered();
+
+            if (ImGui::IsItemClicked() &&
+                !entry.isMe && !entry.watching && !model.connecting)
+            {
+                actions.watch = static_cast<int>(i);
+            }
+
+            ImDrawList* draw = ImGui::GetWindowDrawList();
+
+            ImVec2 min(pos.x + (maxW - size.x) * 0.5f,
+                       pos.y + (maxH - size.y) * 0.5f);
+
+            ImVec2 max(min.x + size.x, min.y + size.y);
+
+            draw->AddRectFilled(
+                pos, ImVec2(pos.x + maxW, pos.y + maxH),
+                IM_COL32(0, 0, 0, 255), 6.0f * UiScale());
+
+            draw->AddImageRounded(
+                reinterpret_cast<ImTextureID>(entry.thumbnail),
+                min, max, ImVec2(0, 0), ImVec2(1, 1),
+                IM_COL32(255, 255, 255, 255),
+                6.0f * UiScale());
+
+            draw->AddRect(
+                pos, ImVec2(pos.x + maxW, pos.y + maxH),
+                hovered
+                    ? ImGui::GetColorU32(UiColorAccent())
+                    : IM_COL32(239, 68, 68, 200),
+                6.0f * UiScale(), 0, 1.5f * UiScale());
+
+            if (hovered)
+            {
+                // Maior ao passar o mouse.
+                ImGui::BeginTooltip();
+
+                float big =
+                    (std::min)(360.0f * UiScale() / entry.thumbWidth,
+                               203.0f * UiScale() / entry.thumbHeight);
+
+                ImGui::Image(
+                    reinterpret_cast<ImTextureID>(entry.thumbnail),
+                    ImVec2(entry.thumbWidth * big,
+                           entry.thumbHeight * big));
+
+                ImGui::EndTooltip();
+            }
+
+            ImGui::SameLine();
+
+            ImGui::BeginGroup();
+
+            float textWidth =
+                ImGui::GetContentRegionAvail().x -
+                buttonWidth - style.ItemSpacing.x;
+
+            ImGui::PushTextWrapPos(
+                ImGui::GetCursorPosX() + (std::max)(40.0f, textWidth));
+
+            ImGui::SetCursorPosY(
+                ImGui::GetCursorPosY() + maxH * 0.18f);
+
+            ImGui::TextUnformatted(
+                (entry.isMe ? entry.name + " (você)" : entry.name).c_str());
+
+            if (!entry.label.empty())
+            {
+                ImGui::PushStyleColor(ImGuiCol_Text, UiColorMuted());
+
+                ImGui::TextUnformatted(entry.label.c_str());
+
+                ImGui::PopStyleColor();
+            }
+
+            ImGui::PopTextWrapPos();
+
+            ImGui::EndGroup();
+
+            // A linha tem pelo menos a altura da previa.
+            float bottom = rowTop + maxH + style.ItemSpacing.y;
+
+            if (ImGui::GetCursorPosY() < bottom)
+            {
+                ImGui::SetCursorPosY(bottom);
+            }
+        }
+        else
+        {
+            PersonRow(
+                entry.isMe ? entry.name + " (você)" : entry.name,
+                entry.label,
+                true,
+                buttonWidth + style.ItemSpacing.x);
+        }
 
         float rowBottom = ImGui::GetCursorPosY();
 
@@ -1200,72 +1431,26 @@ void DrawRoomScreen(
             i < model.memberIsMe.size() &&
             model.memberIsMe[i];
 
-        const char* detail = "";
-
-        switch (voice)
-        {
-        case MemberVoice::Connecting: detail = "conectando a voz..."; break;
-        case MemberVoice::In:         detail = "na voz"; break;
-        case MemberVoice::Speaking:   detail = "falando"; break;
-        default: break;
-        }
-
         ImGui::PushID(static_cast<int>(1000 + i));
 
-        ImGui::BeginGroup();
+        float volume =
+            i < model.memberVolume.size()
+            ? model.memberVolume[i]
+            : 1.0f;
 
-        PersonRow(
-            model.members[i],
-            detail,
-            live,
-            0.0f,
-            voice == MemberVoice::Speaking);
+        float newVolume = volume;
 
-        ImGui::EndGroup();
-
-        // Volume de cada pessoa: clique na linha.
-        bool adjustable =
-            !isMe &&
-            model.voiceJoined &&
-            voice != MemberVoice::Out &&
-            i < model.memberVolume.size();
-
-        if (adjustable)
+        if (MemberRow(
+                model.members[i],
+                live,
+                voice,
+                isMe,
+                model.voiceJoined,
+                volume,
+                newVolume))
         {
-            if (ImGui::IsItemHovered())
-            {
-                ImGui::SetTooltip("Clique para ajustar o volume");
-            }
-
-            if (ImGui::IsItemClicked(ImGuiMouseButton_Left) ||
-                ImGui::IsItemClicked(ImGuiMouseButton_Right))
-            {
-                ImGui::OpenPopup("##volume");
-            }
-
-            if (ImGui::BeginPopup("##volume"))
-            {
-                ImGui::TextUnformatted(model.members[i].c_str());
-
-                float percent = model.memberVolume[i] * 100.0f;
-
-                ImGui::SetNextItemWidth(200.0f * UiScale());
-
-                if (ImGui::SliderFloat(
-                        "##vol", &percent, 0.0f, 200.0f, "%.0f%%"))
-                {
-                    actions.volumeMember = static_cast<int>(i);
-                    actions.volumeValue = percent / 100.0f;
-                }
-
-                if (ImGui::Button("Volume normal"))
-                {
-                    actions.volumeMember = static_cast<int>(i);
-                    actions.volumeValue = 1.0f;
-                }
-
-                ImGui::EndPopup();
-            }
+            actions.volumeMember = static_cast<int>(i);
+            actions.volumeValue = newVolume;
         }
 
         ImGui::PopID();
@@ -1753,8 +1938,27 @@ bool DrawStreamOverlay(
             actions.backToRoom = true;
         }
 
+        if (model.peopleOpen)
+        {
+            ImGui::PushStyleColor(ImGuiCol_Text, UiColorAccent());
+        }
+
+        if (ImGui::Button(
+                "Pessoas##pessoasov",
+                ImVec2(model.voiceJoined ? half : rowWidth, 0.0f)))
+        {
+            actions.togglePeople = true;
+        }
+
+        if (model.peopleOpen)
+        {
+            ImGui::PopStyleColor();
+        }
+
         if (model.voiceJoined)
         {
+            ImGui::SameLine();
+
             if (model.voiceMuted)
             {
                 ImGui::PushStyleColor(ImGuiCol_Text, UiColorError());
@@ -1762,9 +1966,9 @@ bool DrawStreamOverlay(
 
             if (ImGui::Button(
                     model.voiceMuted
-                    ? "Microfone mudo  ·  ligar##vozov"
-                    : "Silenciar microfone##vozov",
-                    ImVec2(rowWidth, 0.0f)))
+                    ? "Ligar microfone##vozov"
+                    : "Silenciar mic.##vozov",
+                    ImVec2(half, 0.0f)))
             {
                 actions.toggleVoiceMute = true;
             }
@@ -1773,6 +1977,11 @@ bool DrawStreamOverlay(
             {
                 ImGui::PopStyleColor();
             }
+        }
+
+        if (ImGui::Button("Atalhos##atalhosov", ImVec2(rowWidth, 0.0f)))
+        {
+            actions.openShortcuts = true;
         }
 
         if (!model.otherPresenters.empty())
@@ -1852,9 +2061,514 @@ bool DrawStreamOverlay(
     ImGui::TextUnformatted(stats.c_str());
 
     ImGui::TextUnformatted(
-        "M: som  ·  setas: volume  ·  F11: tela cheia");
+        model.keyHint.empty()
+        ? "setas: volume"
+        : model.keyHint.c_str());
 
     ImGui::PopStyleColor();
 
     return EndTopRightWindow();
+}
+
+
+// ============================================================
+// Painel "Pessoas" (sobre o video ou a transmissao)
+// ============================================================
+
+void DrawPeoplePanel(
+    const PeoplePanelModel& model,
+    PeoplePanelActions& actions)
+{
+    const ImGuiViewport* viewport =
+        ImGui::GetMainViewport();
+
+    const ImGuiStyle& style = ImGui::GetStyle();
+
+    float margin = 16.0f * UiScale();
+
+    float width = 290.0f * UiScale();
+
+    ImGui::SetNextWindowPos(
+        ImVec2(
+            model.rightSide
+            ? viewport->WorkPos.x + viewport->WorkSize.x - margin
+            : viewport->WorkPos.x + margin,
+            viewport->WorkPos.y + margin + model.topOffset),
+        ImGuiCond_Always,
+        ImVec2(model.rightSide ? 1.0f : 0.0f, 0.0f));
+
+    ImGui::SetNextWindowSize(ImVec2(width, 0.0f), ImGuiCond_Always);
+
+    ImGui::SetNextWindowBgAlpha(0.92f);
+
+    ImGui::Begin(
+        "##pessoas",
+        nullptr,
+        ImGuiWindowFlags_NoTitleBar |
+        ImGuiWindowFlags_NoResize |
+        ImGuiWindowFlags_NoMove |
+        ImGuiWindowFlags_NoCollapse |
+        ImGuiWindowFlags_NoSavedSettings |
+        ImGuiWindowFlags_NoFocusOnAppearing);
+
+    // Cabecalho + fechar
+    ImGui::PushStyleColor(ImGuiCol_Text, UiColorMuted());
+
+    ImGui::AlignTextToFramePadding();
+
+    ImGui::TextUnformatted(
+        ("Na sala (" + std::to_string(model.people.size()) +
+         ")").c_str());
+
+    ImGui::PopStyleColor();
+
+    float closeSize = ImGui::GetFrameHeight();
+
+    ImGui::SameLine(ImGui::GetContentRegionMax().x - closeSize);
+
+    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
+
+    if (ImGui::Button("×##fecharpessoas", ImVec2(closeSize, closeSize)))
+    {
+        actions.close = true;
+    }
+
+    ImGui::PopStyleColor();
+
+    // Lista (rola se a sala estiver cheia)
+    float rowHeight = ImGui::GetFrameHeight() * 1.15f + style.ItemSpacing.y;
+
+    float listHeight =
+        (std::min)(
+            static_cast<float>(model.people.size()) * rowHeight +
+                style.ItemSpacing.y,
+            viewport->WorkSize.y * 0.45f);
+
+    ImGui::BeginChild(
+        "##listapessoas",
+        ImVec2(0.0f, listHeight),
+        false);
+
+    for (size_t i = 0; i < model.people.size(); ++i)
+    {
+        const PeopleEntry& person = model.people[i];
+
+        ImGui::PushID(static_cast<int>(i));
+
+        float newVolume = person.volume;
+
+        if (MemberRow(
+                person.isMe ? person.name + " (você)" : person.name,
+                person.live,
+                person.voice,
+                person.isMe,
+                model.voiceJoined,
+                person.volume,
+                newVolume))
+        {
+            actions.volumeMember = static_cast<int>(i);
+            actions.volumeValue = newVolume;
+        }
+
+        ImGui::PopID();
+    }
+
+    ImGui::EndChild();
+
+    ImGui::Separator();
+
+    // Voz
+    if (model.voiceJoining)
+    {
+        UiSpinner(7.0f * UiScale());
+
+        ImGui::SameLine();
+
+        UiMutedText((std::string("Entrando na voz") + UiBusyDots()).c_str());
+    }
+    else if (!model.voiceJoined)
+    {
+        if (UiPrimaryButton("Entrar na voz"))
+        {
+            actions.voiceJoin = true;
+        }
+    }
+    else
+    {
+        float half =
+            (ImGui::GetContentRegionAvail().x -
+             style.ItemSpacing.x) * 0.5f;
+
+        ImVec4 micColor =
+            model.voiceMuted
+            ? UiColorError()
+            : ImGui::GetStyleColorVec4(ImGuiCol_Text);
+
+        ImGui::PushStyleColor(ImGuiCol_Text, micColor);
+
+        if (ImGui::Button(
+                model.voiceMuted
+                ? "      Ligar mic.##micp"
+                : "      Silenciar##micp",
+                ImVec2(half, 0.0f)))
+        {
+            actions.toggleMute = true;
+        }
+
+        ImGui::PopStyleColor();
+
+        ImVec2 buttonMin = ImGui::GetItemRectMin();
+
+        UiMicIconAt(
+            ImVec2(
+                buttonMin.x + style.FramePadding.x * 1.5f,
+                buttonMin.y + style.FramePadding.y),
+            ImGui::GetTextLineHeight(),
+            ImGui::GetColorU32(micColor),
+            model.voiceMuted);
+
+        ImGui::SameLine();
+
+        if (ImGui::Button("Sair da voz", ImVec2(half, 0.0f)))
+        {
+            actions.voiceLeave = true;
+        }
+
+        ImGui::PushStyleColor(
+            ImGuiCol_PlotHistogram,
+            model.voiceTransmitting ? UiColorSuccess() : UiColorMuted());
+
+        ImGui::ProgressBar(
+            (std::min)(1.0f, model.micLevel * 4.0f),
+            ImVec2(-1.0f, 4.0f * UiScale()),
+            "");
+
+        ImGui::PopStyleColor();
+
+        std::string hint;
+
+        if (!model.pttKey.empty())
+        {
+            hint = "Segure " + model.pttKey + " para falar";
+        }
+
+        if (!model.muteKey.empty())
+        {
+            hint +=
+                (hint.empty() ? "" : "  ·  ") +
+                model.muteKey + ": microfone";
+        }
+
+        if (!hint.empty())
+        {
+            UiMutedText(hint.c_str());
+        }
+    }
+
+    if (!model.voiceError.empty())
+    {
+        UiWrappedColored(UiColorError(), model.voiceError.c_str());
+    }
+
+    if (ImGui::SmallButton("Atalhos"))
+    {
+        actions.openShortcuts = true;
+    }
+
+    ImGui::End();
+}
+
+
+// ============================================================
+// Barra da sala enquanto transmite
+// ============================================================
+
+float DrawShareRoomToolbar(
+    bool peopleOpen,
+    bool chatOpen,
+    int unreadChat,
+    bool voiceJoined,
+    bool voiceMuted,
+    ShareToolbarActions& actions)
+{
+    const ImGuiViewport* viewport =
+        ImGui::GetMainViewport();
+
+    float margin = 16.0f * UiScale();
+
+    ImGui::SetNextWindowPos(
+        ImVec2(
+            viewport->WorkPos.x + viewport->WorkSize.x - margin,
+            viewport->WorkPos.y + margin),
+        ImGuiCond_Always,
+        ImVec2(1.0f, 0.0f));
+
+    ImGui::SetNextWindowBgAlpha(0.92f);
+
+    ImGui::Begin(
+        "##barrasala",
+        nullptr,
+        ImGuiWindowFlags_NoTitleBar |
+        ImGuiWindowFlags_NoResize |
+        ImGuiWindowFlags_NoMove |
+        ImGuiWindowFlags_NoCollapse |
+        ImGuiWindowFlags_NoSavedSettings |
+        ImGuiWindowFlags_AlwaysAutoResize |
+        ImGuiWindowFlags_NoFocusOnAppearing);
+
+    auto toggle =
+        [](const char* label, bool on, bool& out)
+        {
+            if (on)
+            {
+                ImGui::PushStyleColor(ImGuiCol_Text, UiColorAccent());
+            }
+
+            if (ImGui::Button(label))
+            {
+                out = true;
+            }
+
+            if (on)
+            {
+                ImGui::PopStyleColor();
+            }
+        };
+
+    toggle("Pessoas", peopleOpen, actions.togglePeople);
+
+    ImGui::SameLine();
+
+    std::string chat =
+        unreadChat > 0
+        ? "Chat (" + std::to_string(unreadChat) + ")##chatbarra"
+        : std::string("Chat##chatbarra");
+
+    toggle(chat.c_str(), chatOpen || unreadChat > 0, actions.toggleChat);
+
+    if (voiceJoined)
+    {
+        ImGui::SameLine();
+
+        if (voiceMuted)
+        {
+            ImGui::PushStyleColor(ImGuiCol_Text, UiColorError());
+        }
+
+        if (ImGui::Button(
+                voiceMuted
+                ? "Ligar microfone##micbarra"
+                : "Silenciar mic.##micbarra"))
+        {
+            actions.toggleMute = true;
+        }
+
+        if (voiceMuted)
+        {
+            ImGui::PopStyleColor();
+        }
+    }
+
+    float height = ImGui::GetWindowHeight();
+
+    ImGui::End();
+
+    return height + 8.0f * UiScale();
+}
+
+
+// ============================================================
+// Tela de atalhos
+// ============================================================
+
+void DrawShortcutsWindow(
+    const ShortcutsModel& model,
+    ShortcutsActions& actions)
+{
+    const ImGuiViewport* viewport =
+        ImGui::GetMainViewport();
+
+    const ImGuiStyle& style = ImGui::GetStyle();
+
+    float width =
+        (std::min)(680.0f * UiScale(), viewport->WorkSize.x - 32.0f);
+
+    ImGui::SetNextWindowPos(
+        ImVec2(
+            viewport->WorkPos.x + viewport->WorkSize.x * 0.5f,
+            viewport->WorkPos.y + viewport->WorkSize.y * 0.5f),
+        ImGuiCond_Always,
+        ImVec2(0.5f, 0.5f));
+
+    ImGui::SetNextWindowSize(ImVec2(width, 0.0f), ImGuiCond_Always);
+
+    // Janela pequena: rola em vez de passar da tela.
+    ImGui::SetNextWindowSizeConstraints(
+        ImVec2(0.0f, 0.0f),
+        ImVec2(width, viewport->WorkSize.y - 24.0f * UiScale()));
+
+    ImGui::SetNextWindowFocus();
+
+    ImGui::Begin(
+        "##atalhos",
+        nullptr,
+        ImGuiWindowFlags_NoTitleBar |
+        ImGuiWindowFlags_NoResize |
+        ImGuiWindowFlags_NoMove |
+        ImGuiWindowFlags_NoCollapse |
+        ImGuiWindowFlags_NoSavedSettings);
+
+    UiTitle("Atalhos");
+
+    {
+        const char* label = "Fechar";
+
+        float width =
+            ImGui::CalcTextSize(label).x + style.FramePadding.x * 4.0f;
+
+        ImGui::SameLine(ImGui::GetContentRegionMax().x - width);
+
+        ImGui::SetCursorPosY(
+            ImGui::GetCursorPosY() + 4.0f * UiScale());
+
+        if (UiPrimaryButtonSized(label, ImVec2(width, 0.0f)))
+        {
+            actions.close = true;
+        }
+    }
+
+    UiMutedText(
+        "Clique na tecla de um atalho e aperte a nova (vale "
+        "botão lateral do mouse). Esc cancela, Backspace remove.");
+
+    ImGui::Spacing();
+
+    float keyWidth = 200.0f * UiScale();
+
+    float clearWidth = ImGui::GetFrameHeight();
+
+    for (size_t i = 0; i < model.rows.size(); ++i)
+    {
+        const ShortcutRow& row = model.rows[i];
+
+        ImGui::PushID(static_cast<int>(i));
+
+        ImGui::Separator();
+
+        float rowTop = ImGui::GetCursorPosY();
+
+        float textWidth =
+            ImGui::GetContentRegionAvail().x -
+            keyWidth - clearWidth - style.ItemSpacing.x * 3.0f;
+
+        ImGui::BeginGroup();
+
+        ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + textWidth);
+
+        ImGui::TextUnformatted(row.label.c_str());
+
+        ImGui::PushStyleColor(ImGuiCol_Text, UiColorMuted());
+
+        ImGui::TextWrapped("%s", row.help.c_str());
+
+        ImGui::PopStyleColor();
+
+        if (row.global)
+        {
+            ImGui::PushStyleColor(ImGuiCol_Text, UiColorAccent());
+
+            ImGui::TextWrapped("Funciona com o jogo aberto.");
+
+            ImGui::PopStyleColor();
+        }
+
+        ImGui::PopTextWrapPos();
+
+        ImGui::EndGroup();
+
+        float rowBottom = ImGui::GetCursorPosY();
+
+        // Botao da tecla, centralizado na altura da linha
+        float buttonY =
+            rowTop +
+            ((rowBottom - rowTop) - style.ItemSpacing.y -
+             ImGui::GetFrameHeight()) * 0.5f;
+
+        ImGui::SameLine(
+            ImGui::GetContentRegionMax().x - keyWidth -
+            clearWidth - style.ItemSpacing.x);
+
+        ImGui::SetCursorPosY(buttonY);
+
+        bool capturing = model.capturing == static_cast<int>(i);
+
+        if (capturing)
+        {
+            ImGui::PushStyleColor(ImGuiCol_Text, UiColorAccent());
+
+            if (ImGui::Button(
+                    "Aperte uma tecla...##tecla",
+                    ImVec2(keyWidth, 0.0f)))
+            {
+                actions.cancelCapture = true;
+            }
+
+            ImGui::PopStyleColor();
+        }
+        else
+        {
+            if (!row.hasKey)
+            {
+                ImGui::PushStyleColor(ImGuiCol_Text, UiColorMuted());
+            }
+
+            if (ImGui::Button(
+                    (row.keyName + "##tecla").c_str(),
+                    ImVec2(keyWidth, 0.0f)))
+            {
+                actions.capture = static_cast<int>(i);
+            }
+
+            if (!row.hasKey)
+            {
+                ImGui::PopStyleColor();
+            }
+        }
+
+        ImGui::SameLine();
+
+        ImGui::SetCursorPosY(buttonY);
+
+        ImGui::BeginDisabled(!row.hasKey || capturing);
+
+        if (ImGui::Button("×##limpar", ImVec2(clearWidth, 0.0f)))
+        {
+            actions.clear = static_cast<int>(i);
+        }
+
+        ImGui::EndDisabled();
+
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled) &&
+            row.hasKey)
+        {
+            ImGui::SetTooltip("Remover este atalho");
+        }
+
+        ImGui::SetCursorPosY(rowBottom);
+
+        ImGui::PopID();
+    }
+
+    ImGui::Separator();
+
+    UiMutedText(
+        "Fixos: setas para cima/baixo mudam o volume da "
+        "transmissão; duplo clique no vídeo é tela cheia.");
+
+    if (ImGui::Button("Restaurar padrões"))
+    {
+        actions.restoreDefaults = true;
+    }
+
+    ImGui::End();
 }

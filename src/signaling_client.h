@@ -219,6 +219,10 @@ struct RoomPresenter
 
     // O que esta sendo compartilhado (ex.: "Tela 1").
     std::string label;
+
+    // Versao da previa (imagem pequena) dessa transmissao; vazio
+    // = sem previa (desligada, ou versao antiga do programa).
+    std::string thumbVersion;
 };
 
 struct RoomState
@@ -250,19 +254,41 @@ enum class RoomJoinResult
     Joined,
     NotFound,   // nao ha sala com esse codigo (pode ser de sessao)
     Full,
+
+    // Sala com criptografia de ponta a ponta e o codigo veio
+    // sem o segredo (so as 6 primeiras letras).
+    NeedsKey,
+
+    // O segredo do codigo nao confere (digitado errado).
+    WrongKey,
+
     Error
 };
 
+// saltHex: sal da chave da sala (vazio = sala sem criptografia
+// de ponta a ponta - nao usado mais por esta versao).
 bool SignalingCreateRoom(
     const std::string& name,
+    const std::string& saltHex,
     RoomMembership& outMembership,
     RoomState& outState,
     std::string& outError
 );
 
+// Antes de entrar: a sala existe? tem criptografia de ponta a
+// ponta (e o sal da chave)?
+RoomJoinResult SignalingRoomInfo(
+    const std::string& code,
+    bool& outEncrypted,
+    std::string& outSaltHex,
+    std::string& outError
+);
+
+// encrypted: esta pessoa tem a chave da sala (nome ja trancado).
 RoomJoinResult SignalingJoinRoom(
     const std::string& code,
     const std::string& name,
+    bool encrypted,
     RoomMembership& outMembership,
     RoomState& outState,
     std::string& outError
@@ -297,6 +323,23 @@ bool SignalingRoomPresent(
 
 bool SignalingRoomStop(
     const RoomMembership& membership,
+    std::string& outError
+);
+
+// Previa da transmissao desta pessoa (JPEG pequeno). Vazio =
+// tirar a previa.
+bool SignalingRoomThumb(
+    const RoomMembership& membership,
+    const std::vector<uint8_t>& jpeg,
+    std::string& outError
+);
+
+// Baixa a previa de quem transmite (targetMemberId).
+bool SignalingRoomGetThumb(
+    const RoomMembership& membership,
+    const std::string& targetMemberId,
+    std::vector<uint8_t>& outJpeg,
+    std::string& outVersion,
     std::string& outError
 );
 
