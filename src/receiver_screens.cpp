@@ -767,12 +767,79 @@ void DrawVoiceSection(
 
         ImGui::PopStyleColor();
 
+        // Rotulos alinhados ("Microfone:" / "Falar:")
+        float labelWidth =
+            ImGui::CalcTextSize("Microfone:").x +
+            style.ItemSpacing.x;
+
+        float fieldX = ImGui::GetCursorPosX() + labelWidth;
+
+        // Microfone
+        ImGui::AlignTextToFramePadding();
+
+        UiMutedText("Microfone:");
+
+        ImGui::SameLine();
+
+        ImGui::SetCursorPosX(fieldX);
+
+        ImGui::SetNextItemWidth(-1.0f);
+
+        {
+            int mic = model.microphone;
+
+            if (mic < 0 ||
+                mic > static_cast<int>(model.microphones.size()))
+            {
+                mic = 0;
+            }
+
+            const char* preview =
+                mic == 0
+                ? "Padrão do Windows"
+                : model.microphones[mic - 1].c_str();
+
+            if (ImGui::BeginCombo("##mic", preview))
+            {
+                // Acabou de abrir: atualiza a lista (alguem
+                // pode ter ligado um fone agora).
+                if (ImGui::IsWindowAppearing())
+                {
+                    actions.voiceRefreshMicrophones = true;
+                }
+
+                if (ImGui::Selectable("Padrão do Windows", mic == 0))
+                {
+                    actions.voiceMicrophone = 0;
+                }
+
+                for (size_t i = 0; i < model.microphones.size(); ++i)
+                {
+                    ImGui::PushID(static_cast<int>(i));
+
+                    if (ImGui::Selectable(
+                            model.microphones[i].c_str(),
+                            mic == static_cast<int>(i) + 1))
+                    {
+                        actions.voiceMicrophone =
+                            static_cast<int>(i) + 1;
+                    }
+
+                    ImGui::PopID();
+                }
+
+                ImGui::EndCombo();
+            }
+        }
+
         // Modo de falar
         ImGui::AlignTextToFramePadding();
 
         UiMutedText("Falar:");
 
         ImGui::SameLine();
+
+        ImGui::SetCursorPosX(fieldX);
 
         ImGui::SetNextItemWidth(-1.0f);
 

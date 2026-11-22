@@ -201,6 +201,11 @@ struct RoomScreenModel
     // Indice em VOICE_PTT_OPTION_NAMES.
     int voicePushToTalk = 0;
 
+    // Microfones disponiveis (nomes) e o escolhido: 0 = padrao
+    // do Windows, i + 1 = microphones[i].
+    std::vector<std::string> microphones;
+    int microphone = 0;
+
     std::string voiceError;
 
     // Chat da sala
@@ -231,6 +236,13 @@ struct RoomScreenActions
 
     // Novo indice de "segurar para falar" (-1 = sem mudanca).
     int voicePushToTalk = -1;
+
+    // Microfone escolhido (mesmo esquema de
+    // RoomScreenModel::microphone; -1 = sem mudanca).
+    int voiceMicrophone = -1;
+
+    // A lista de microfones acabou de ser aberta: atualizar.
+    bool voiceRefreshMicrophones = false;
 
     // Volume de uma pessoa mudou (indice em members, -1 = nada).
     int volumeMember = -1;

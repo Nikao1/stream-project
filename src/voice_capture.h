@@ -20,7 +20,8 @@
 //     caixas de som (a voz dos outros e o som da transmissao),
 //     pra quem esta sem fone nao devolver tudo em eco;
 //   - reducao de ruido e ganho automatico.
-// Ele usa o microfone e a saida de som PADRAO do Windows.
+// Usa o microfone escolhido (ou o padrao do Windows) e a saida
+// de som padrao (onde o programa toca o som).
 //
 // Se nao der (driver estranho, Windows sem o componente), cai
 // pro microfone simples - ai a recomendacao e usar fone.
@@ -37,6 +38,24 @@ public:
     static constexpr int FRAME_SAMPLES = SAMPLE_RATE / 50;
 
     ~VoiceCapture();
+
+    struct Device
+    {
+        std::wstring id;   // identificador do Windows
+        std::string name;  // nome amigavel (UTF-8)
+    };
+
+    // Microfones ativos agora (pode demorar alguns ms - nao
+    // chamar a cada frame).
+    static std::vector<Device> ListMicrophones();
+
+    // Microfone a usar no proximo Start (vazio = padrao do
+    // Windows).
+    void SetDevice(
+        const std::wstring& deviceId)
+    {
+        m_deviceId = deviceId;
+    }
 
     // Comeca a capturar (thread propria). O resultado de abrir o
     // microfone so se sabe um pouco depois: ver HasError().
@@ -80,6 +99,8 @@ private:
     );
 
     FrameFn m_onFrame;
+
+    std::wstring m_deviceId;
 
     std::thread m_thread;
 

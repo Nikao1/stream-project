@@ -89,6 +89,12 @@ public:
         int virtualKey
     );
 
+    // Microfone (id do Windows, ver VoiceCapture::
+    // ListMicrophones; vazio = padrao). Na voz: troca na hora.
+    void SetMicrophone(
+        const std::wstring& deviceId
+    );
+
     // A voz desta pessoa esta saindo agora (nao mudo e, com
     // segurar-para-falar, tecla apertada).
     bool IsTransmitting() const { return m_transmitting; }
@@ -149,6 +155,8 @@ private:
 
     // Protegidos por m_mutex
     std::string m_error;
+    std::wstring m_microphone;
+
     std::map<std::string, std::unique_ptr<VoicePeer>> m_peers;
 
     // Conexoes parando (destruidas quando a thread termina).

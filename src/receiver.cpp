@@ -3357,6 +3357,13 @@ int g_voicePushToTalk = 0;
 
 bool g_voiceMuted = false;
 
+// Microfone da voz (id do Windows, salvo; vazio = padrao) e a
+// lista mostrada na tela (atualizada ao entrar na voz e ao
+// abrir a lista - enumerar a cada frame seria caro).
+std::wstring g_voiceMicrophone;
+
+std::vector<VoiceCapture::Device> g_microphones;
+
 // Indice da opcao -> tecla virtual (0 = fala livre).
 int VoicePushToTalkKey(
     int option)
@@ -3419,6 +3426,9 @@ void LoadReceiverSettings()
 
     g_voicePushToTalk =
         settings.GetInt(L"VozTecla", 0);
+
+    g_voiceMicrophone =
+        settings.GetString(L"VozMicrofone", L"");
 
     if (g_voicePushToTalk < 0 ||
         g_voicePushToTalk >= VOICE_PTT_OPTION_COUNT)
@@ -5868,6 +5878,16 @@ void DrawReceiverUi()
                 !room.voiceJoined || g_voice.EchoCancellation();
             room.voiceMicLevel = g_voice.MicLevel();
             room.voicePushToTalk = g_voicePushToTalk;
+
+            for (size_t i = 0; i < g_microphones.size(); ++i)
+            {
+                room.microphones.push_back(g_microphones[i].name);
+
+                if (g_microphones[i].id == g_voiceMicrophone)
+                {
+                    room.microphone = static_cast<int>(i) + 1;
+                }
+            }
             room.voiceError = g_voice.ErrorText();
 
             int unread = 0;
@@ -6074,7 +6094,32 @@ void DrawReceiverUi()
         g_voice.SetPushToTalkKey(
             VoicePushToTalkKey(g_voicePushToTalk));
 
+        g_voice.SetMicrophone(g_voiceMicrophone);
+
+        g_microphones = VoiceCapture::ListMicrophones();
+
         g_voice.Join();
+    }
+
+    if (roomActions.voiceRefreshMicrophones)
+    {
+        g_microphones = VoiceCapture::ListMicrophones();
+    }
+
+    if (roomActions.voiceMicrophone >= 0)
+    {
+        int choice = roomActions.voiceMicrophone;
+
+        g_voiceMicrophone =
+            choice > 0 &&
+            choice <= static_cast<int>(g_microphones.size())
+            ? g_microphones[choice - 1].id
+            : std::wstring();
+
+        ReceiverSettings().SetString(
+            L"VozMicrofone", g_voiceMicrophone);
+
+        g_voice.SetMicrophone(g_voiceMicrophone);
     }
 
     if (roomActions.voiceLeave)

@@ -624,6 +624,12 @@ void VoiceChannel::JoinWorker()
     {
         m_startMs = GetTickCount64();
 
+        {
+            std::lock_guard<std::mutex> lock(m_mutex);
+
+            m_capture.SetDevice(m_microphone);
+        }
+
         m_capture.Start(
             [this](const float* samples, size_t count)
             {
@@ -919,6 +925,35 @@ void VoiceChannel::SetPushToTalkKey(
     int virtualKey)
 {
     m_pushToTalkKey = virtualKey;
+}
+
+
+void VoiceChannel::SetMicrophone(
+    const std::wstring& deviceId)
+{
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+
+        if (deviceId == m_microphone)
+            return;
+
+        m_microphone = deviceId;
+    }
+
+    if (!m_joined)
+        return;
+
+    // Reabre a captura no microfone novo (a conexao com os
+    // outros continua).
+    m_capture.Stop();
+
+    m_capture.SetDevice(deviceId);
+
+    m_capture.Start(
+        [this](const float* samples, size_t count)
+        {
+            OnMicFrame(samples, count);
+        });
 }
 
 

@@ -54,6 +54,117 @@ const PROPERTYKEY PKEY_AecSystemMode =
         { 0x96, 0x17, 0xcc, 0xbf, 0x14, 0x21, 0xc9, 0x39 } },
       2 };
 
+// MFPKEY_WMAAECMA_DEVICE_INDEXES (mesmo GUID, PID_FIRST_USABLE+2):
+// (indice da saida << 16) | indice do microfone, na ordem do
+// EnumAudioEndpoints(..., DEVICE_STATE_ACTIVE).
+const PROPERTYKEY PKEY_AecDeviceIndexes =
+    { { 0x6f52c567, 0x0360, 0x4bd2,
+        { 0x96, 0x17, 0xcc, 0xbf, 0x14, 0x21, 0xc9, 0x39 } },
+      4 };
+
+// PKEY_Device_FriendlyName (functiondiscoverykeys_devpkey.h)
+const PROPERTYKEY PKEY_DeviceFriendlyName =
+    { { 0xa45c254e, 0xdf1c, 0x4efd,
+        { 0x80, 0x20, 0x67, 0xd1, 0x46, 0xa8, 0x50, 0xe0 } },
+      14 };
+
+std::string WideToUtf8Local(
+    const std::wstring& text)
+{
+    if (text.empty())
+        return std::string();
+
+    int size =
+        WideCharToMultiByte(
+            CP_UTF8, 0, text.c_str(),
+            static_cast<int>(text.size()),
+            nullptr, 0, nullptr, nullptr);
+
+    std::string out(size > 0 ? size : 0, '\0');
+
+    if (size > 0)
+    {
+        WideCharToMultiByte(
+            CP_UTF8, 0, text.c_str(),
+            static_cast<int>(text.size()),
+            out.data(), size, nullptr, nullptr);
+    }
+
+    return out;
+}
+
+// Posicao de um dispositivo na lista de ativos (-1 = nao achou).
+// deviceId vazio = o padrao do Windows desse tipo.
+int DeviceIndex(
+    IMMDeviceEnumerator* enumerator,
+    EDataFlow flow,
+    const std::wstring& deviceId)
+{
+    std::wstring wanted = deviceId;
+
+    if (wanted.empty())
+    {
+        IMMDevice* device = nullptr;
+
+        if (FAILED(enumerator->GetDefaultAudioEndpoint(
+                flow, eConsole, &device)))
+        {
+            return -1;
+        }
+
+        LPWSTR id = nullptr;
+
+        if (SUCCEEDED(device->GetId(&id)) && id)
+        {
+            wanted = id;
+
+            CoTaskMemFree(id);
+        }
+
+        device->Release();
+    }
+
+    IMMDeviceCollection* devices = nullptr;
+
+    if (FAILED(enumerator->EnumAudioEndpoints(
+            flow, DEVICE_STATE_ACTIVE, &devices)))
+    {
+        return -1;
+    }
+
+    int found = -1;
+
+    UINT count = 0;
+
+    devices->GetCount(&count);
+
+    for (UINT i = 0; i < count && found < 0; ++i)
+    {
+        IMMDevice* device = nullptr;
+
+        if (FAILED(devices->Item(i, &device)))
+            continue;
+
+        LPWSTR id = nullptr;
+
+        if (SUCCEEDED(device->GetId(&id)) && id)
+        {
+            if (wanted == id)
+            {
+                found = static_cast<int>(i);
+            }
+
+            CoTaskMemFree(id);
+        }
+
+        device->Release();
+    }
+
+    devices->Release();
+
+    return found;
+}
+
 // AEC_SYSTEM_MODE::SINGLE_CHANNEL_AEC
 constexpr LONG AEC_MODE_SINGLE_CHANNEL = 0;
 
@@ -159,6 +270,102 @@ private:
 VoiceCapture::~VoiceCapture()
 {
     Stop();
+}
+
+
+std::vector<VoiceCapture::Device> VoiceCapture::ListMicrophones()
+{
+    std::vector<Device> result;
+
+    HRESULT com =
+        CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+
+    IMMDeviceEnumerator* enumerator = nullptr;
+
+    IMMDeviceCollection* devices = nullptr;
+
+    if (SUCCEEDED(CoCreateInstance(
+            __uuidof(MMDeviceEnumerator),
+            nullptr,
+            CLSCTX_ALL,
+            __uuidof(IMMDeviceEnumerator),
+            reinterpret_cast<void**>(&enumerator))) &&
+        SUCCEEDED(enumerator->EnumAudioEndpoints(
+            eCapture, DEVICE_STATE_ACTIVE, &devices)))
+    {
+        UINT count = 0;
+
+        devices->GetCount(&count);
+
+        for (UINT i = 0; i < count; ++i)
+        {
+            IMMDevice* device = nullptr;
+
+            if (FAILED(devices->Item(i, &device)))
+                continue;
+
+            Device entry;
+
+            LPWSTR id = nullptr;
+
+            if (SUCCEEDED(device->GetId(&id)) && id)
+            {
+                entry.id = id;
+
+                CoTaskMemFree(id);
+            }
+
+            IPropertyStore* store = nullptr;
+
+            if (SUCCEEDED(device->OpenPropertyStore(STGM_READ, &store)))
+            {
+                PROPVARIANT name;
+
+                PropVariantInit(&name);
+
+                if (SUCCEEDED(store->GetValue(
+                        PKEY_DeviceFriendlyName, &name)) &&
+                    name.vt == VT_LPWSTR &&
+                    name.pwszVal)
+                {
+                    entry.name = WideToUtf8Local(name.pwszVal);
+                }
+
+                PropVariantClear(&name);
+
+                store->Release();
+            }
+
+            if (entry.name.empty())
+            {
+                entry.name = "Microfone " + std::to_string(i + 1);
+            }
+
+            if (!entry.id.empty())
+            {
+                result.push_back(std::move(entry));
+            }
+
+            device->Release();
+        }
+    }
+
+    if (devices)
+    {
+        devices->Release();
+    }
+
+    if (enumerator)
+    {
+        enumerator->Release();
+    }
+
+    if (SUCCEEDED(com))
+    {
+        CoUninitialize();
+    }
+
+    return result;
 }
 
 
@@ -339,6 +546,54 @@ bool VoiceCapture::RunEchoCancelled()
         hr = properties->SetValue(PKEY_AecSystemMode, value);
 
         PropVariantClear(&value);
+
+        // Microfone escolhido: diz ao DSP qual usar (e a saida
+        // padrao, que e onde a voz dos outros toca - a
+        // referencia do eco).
+        if (SUCCEEDED(hr) && !m_deviceId.empty())
+        {
+            IMMDeviceEnumerator* enumerator = nullptr;
+
+            if (SUCCEEDED(CoCreateInstance(
+                    __uuidof(MMDeviceEnumerator),
+                    nullptr,
+                    CLSCTX_ALL,
+                    __uuidof(IMMDeviceEnumerator),
+                    reinterpret_cast<void**>(&enumerator))))
+            {
+                int mic =
+                    DeviceIndex(enumerator, eCapture, m_deviceId);
+
+                int speaker =
+                    DeviceIndex(enumerator, eRender, std::wstring());
+
+                enumerator->Release();
+
+                if (mic >= 0 && speaker >= 0)
+                {
+                    PROPVARIANT indexes;
+
+                    PropVariantInit(&indexes);
+
+                    indexes.vt = VT_I4;
+                    indexes.lVal =
+                        static_cast<LONG>(
+                            (static_cast<unsigned long>(speaker) << 16) |
+                            (static_cast<unsigned long>(mic) & 0xFFFF));
+
+                    hr = properties->SetValue(
+                        PKEY_AecDeviceIndexes, indexes);
+
+                    PropVariantClear(&indexes);
+                }
+                else
+                {
+                    std::cout
+                        << "Voz: microfone escolhido nao encontrado - "
+                        << "usando o padrao.\n";
+                }
+            }
+        }
 
         properties->Release();
     }
@@ -526,11 +781,21 @@ bool VoiceCapture::RunPlain()
 
     if (SUCCEEDED(hr))
     {
-        hr =
-            enumerator->GetDefaultAudioEndpoint(
-                eCapture,
-                eCommunications,
-                &device);
+        hr = E_FAIL;
+
+        if (!m_deviceId.empty())
+        {
+            hr = enumerator->GetDevice(m_deviceId.c_str(), &device);
+        }
+
+        if (FAILED(hr))
+        {
+            hr =
+                enumerator->GetDefaultAudioEndpoint(
+                    eCapture,
+                    eCommunications,
+                    &device);
+        }
 
         if (FAILED(hr))
         {
