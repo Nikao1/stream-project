@@ -1428,7 +1428,7 @@ bool CaptureRoomThumbnail(
 {
     outJpeg.clear();
 
-    std::vector<uint8_t> small;
+    std::vector<uint8_t> reduced;
 
     int width = 0;
     int height = 0;
@@ -1449,12 +1449,12 @@ bool CaptureRoomThumbnail(
             static_cast<int>(g_displayWidth * 4),
             320,
             180,
-            small,
+            reduced,
             width,
             height);
     }
 
-    return ImageEncodeJpeg(small.data(), width, height, 0.7f, outJpeg);
+    return ImageEncodeJpeg(reduced.data(), width, height, 0.7f, outJpeg);
 }
 
 
