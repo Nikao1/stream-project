@@ -60,6 +60,9 @@ bool RoomClient::Create(
     m_chatTotal = 0;
     m_outbox.clear();
 
+    m_wantedVoice.clear();
+    m_publishedVoice.clear();
+
     std::cout
         << "Sala criada: "
         << membership.code
@@ -101,6 +104,9 @@ RoomJoinResult RoomClient::Join(
     m_chat.clear();
     m_chatTotal = 0;
     m_outbox.clear();
+
+    m_wantedVoice.clear();
+    m_publishedVoice.clear();
 
     std::cout
         << "Entrou na sala "
@@ -220,6 +226,30 @@ RoomState RoomClient::GetState()
 }
 
 
+void RoomClient::SetVoice(
+    const std::string& sessionCode,
+    const std::string& sessionToken)
+{
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+
+        std::string wanted =
+            sessionCode.empty()
+            ? std::string()
+            : sessionCode + "|" + sessionToken;
+
+        if (wanted == m_wantedVoice)
+            return;
+
+        m_wantedVoice = wanted;
+
+        m_wake = true;
+    }
+
+    m_cv.notify_all();
+}
+
+
 void RoomClient::SendChat(
     const std::string& text)
 {
@@ -306,6 +336,50 @@ void RoomClient::Loop()
                 std::cout
                     << "Sala: nao deu pra atualizar a "
                     << "transmissao: "
+                    << error
+                    << "\n";
+            }
+        }
+
+
+        // ----------------------------------------------------
+        // Voz: publicar / retirar a sessao de voz
+        // ----------------------------------------------------
+
+        std::string wantedVoice;
+        std::string publishedVoice;
+
+        {
+            std::lock_guard<std::mutex> lock(m_mutex);
+
+            wantedVoice = m_wantedVoice;
+            publishedVoice = m_publishedVoice;
+        }
+
+        if (wantedVoice != publishedVoice)
+        {
+            size_t bar = wantedVoice.find('|');
+
+            std::string code =
+                bar == std::string::npos
+                ? std::string()
+                : wantedVoice.substr(0, bar);
+
+            std::string token =
+                bar == std::string::npos
+                ? std::string()
+                : wantedVoice.substr(bar + 1);
+
+            if (SignalingRoomVoice(membership, code, token, error))
+            {
+                std::lock_guard<std::mutex> lock(m_mutex);
+
+                m_publishedVoice = wantedVoice;
+            }
+            else
+            {
+                std::cout
+                    << "Sala: nao deu pra atualizar a voz: "
                     << error
                     << "\n";
             }
@@ -440,9 +514,11 @@ void RoomClient::Loop()
                 m_membership = again;
                 m_state = state;
 
-                // A transmissao precisa ser publicada de novo
-                // pelo membro novo.
+                // A transmissao e a voz precisam ser publicadas
+                // de novo pelo membro novo.
                 m_published = Presenting{};
+
+                m_publishedVoice.clear();
 
                 continue;
             }

@@ -40,6 +40,7 @@
 #include "power_mode.h"
 #include "sender.h"
 #include "room_client.h"
+#include "voice_channel.h"
 #include "version.h"
 
 #pragma comment(lib, "ws2_32.lib")
@@ -3349,6 +3350,27 @@ float g_volume = 1.0f;
 
 bool g_muted = false;
 
+// Canal de voz: tecla de "segurar para falar" (indice em
+// VOICE_PTT_OPTION_NAMES, salvo) e microfone mudo (so nesta
+// execucao).
+int g_voicePushToTalk = 0;
+
+bool g_voiceMuted = false;
+
+// Indice da opcao -> tecla virtual (0 = fala livre).
+int VoicePushToTalkKey(
+    int option)
+{
+    switch (option)
+    {
+    case 1: return VK_XBUTTON1;
+    case 2: return VK_XBUTTON2;
+    case 3: return VK_RMENU;
+    case 4: return VK_RCONTROL;
+    default: return 0;
+    }
+}
+
 // Exibicao do video (ver StreamOverlayModel).
 bool g_fillWindow = false;
 
@@ -3394,6 +3416,15 @@ void LoadReceiverSettings()
 
     g_overlayCollapsed =
         settings.GetInt(L"PainelFechado", 0) != 0;
+
+    g_voicePushToTalk =
+        settings.GetInt(L"VozTecla", 0);
+
+    if (g_voicePushToTalk < 0 ||
+        g_voicePushToTalk >= VOICE_PTT_OPTION_COUNT)
+    {
+        g_voicePushToTalk = 0;
+    }
 }
 
 
@@ -3408,13 +3439,15 @@ void SaveReceiverSettingsIfChanged()
         bool muted;
         bool fill;
         bool collapsed;
+        int voiceKey;
 
         bool operator==(const Saved& other) const
         {
             return volume == other.volume &&
                    muted == other.muted &&
                    fill == other.fill &&
-                   collapsed == other.collapsed;
+                   collapsed == other.collapsed &&
+                   voiceKey == other.voiceKey;
         }
     };
 
@@ -3427,7 +3460,8 @@ void SaveReceiverSettingsIfChanged()
         static_cast<int>(g_volume * 100.0f + 0.5f),
         g_muted,
         g_fillWindow,
-        g_overlayCollapsed
+        g_overlayCollapsed,
+        g_voicePushToTalk
     };
 
     if (!haveSaved)
@@ -3464,6 +3498,7 @@ void SaveReceiverSettingsIfChanged()
     settings.SetInt(L"Mudo", pending.muted ? 1 : 0);
     settings.SetInt(L"PreencherJanela", pending.fill ? 1 : 0);
     settings.SetInt(L"PainelFechado", pending.collapsed ? 1 : 0);
+    settings.SetInt(L"VozTecla", pending.voiceKey);
 
     saved = pending;
 }
@@ -4372,6 +4407,9 @@ enum class RoomView
 
 RoomClient g_room;
 
+// Canal de voz da sala (ver voice_channel.h).
+VoiceChannel g_voice;
+
 RoomView g_roomView = RoomView::Lobby;
 
 // Quem esta sendo assistido (vazio = ninguem). So a thread da
@@ -4737,6 +4775,8 @@ void LeaveRoom(
 
     sender::SetRoomMode(false);
 
+    g_voice.Leave();
+
     g_room.Leave();
 
     g_homeError = message;
@@ -4849,6 +4889,22 @@ void RoomSync(
         g_room.SetPresenting("", "", "");
     }
 
+    // Canal de voz: publica a sessao de voz desta pessoa e
+    // conecta/desconecta de quem entrou/saiu da voz.
+    {
+        std::string voiceCode;
+        std::string voiceToken;
+
+        if (g_voice.GetPublishInfo(voiceCode, voiceToken))
+        {
+            g_room.SetVoice(voiceCode, voiceToken);
+        }
+        else
+        {
+            g_room.SetVoice("", "");
+        }
+    }
+
     if (g_room.IsLost())
     {
         LeaveRoom(
@@ -4857,6 +4913,8 @@ void RoomSync(
 
         return;
     }
+
+    g_voice.Sync(state, g_room.GetMemberId());
 
 
     // --------------------------------------------------------
@@ -5376,6 +5434,8 @@ void DrawVideoOverlay(
     overlay.presenterName = presenterName;
     overlay.otherPresenters = otherPresenters;
     overlay.unreadChat = unreadChat;
+    overlay.voiceJoined = inRoom && g_voice.IsJoined();
+    overlay.voiceMuted = g_voiceMuted;
 
     StreamOverlayActions overlayActions;
 
@@ -5392,6 +5452,13 @@ void DrawVideoOverlay(
     if (overlayActions.backToRoom)
     {
         outBackToRoom = true;
+    }
+
+    if (overlayActions.toggleVoiceMute)
+    {
+        g_voiceMuted = !g_voiceMuted;
+
+        g_voice.SetMuted(g_voiceMuted);
     }
 
     if (outSwitchTo && overlayActions.switchTo >= 0)
@@ -5597,6 +5664,22 @@ void DrawReceiverUi()
 
             chatHandled = true;
 
+            if (g_voice.IsJoined())
+            {
+                std::vector<std::string> speaking;
+
+                for (const RoomMember& member : roomState.members)
+                {
+                    if (member.id != myId &&
+                        g_voice.IsSpeaking(member.id))
+                    {
+                        speaking.push_back(member.name);
+                    }
+                }
+
+                DrawVoiceSpeakers(speaking, g_voiceMuted);
+            }
+
             if (g_streamReceived)
             {
                 DrawVideoOverlay(
@@ -5736,7 +5819,56 @@ void DrawReceiverUi()
                 }
 
                 room.memberLive.push_back(live);
+
+                bool isMe = member.id == myId;
+
+                MemberVoice voice = MemberVoice::Out;
+
+                if (isMe)
+                {
+                    if (g_voice.IsJoined())
+                    {
+                        voice =
+                            g_voice.IsTransmitting() &&
+                            g_voice.MicLevel() > 0.02f
+                            ? MemberVoice::Speaking
+                            : MemberVoice::In;
+                    }
+                }
+                else if (!member.voiceSession.empty())
+                {
+                    if (!g_voice.IsJoined())
+                    {
+                        voice = MemberVoice::In;
+                    }
+                    else if (!g_voice.IsConnected(member.id))
+                    {
+                        voice = MemberVoice::Connecting;
+                    }
+                    else
+                    {
+                        voice =
+                            g_voice.IsSpeaking(member.id)
+                            ? MemberVoice::Speaking
+                            : MemberVoice::In;
+                    }
+                }
+
+                room.memberIsMe.push_back(isMe);
+                room.memberVoice.push_back(voice);
+                room.memberVolume.push_back(
+                    g_voice.PeerVolume(member.id));
             }
+
+            room.voiceJoined = g_voice.IsJoined();
+            room.voiceJoining = g_voice.IsJoining();
+            room.voiceMuted = g_voiceMuted;
+            room.voiceTransmitting = g_voice.IsTransmitting();
+            room.voiceEchoCancel =
+                !room.voiceJoined || g_voice.EchoCancellation();
+            room.voiceMicLevel = g_voice.MicLevel();
+            room.voicePushToTalk = g_voicePushToTalk;
+            room.voiceError = g_voice.ErrorText();
 
             int unread = 0;
 
@@ -5854,7 +5986,8 @@ void DrawReceiverUi()
     // mexe no mouse).
     PowerSetActive(
         g_uiState == UiState::Connected ||
-        sender::IsLive());
+        sender::IsLive() ||
+        g_voice.IsJoined());
 
 
     // --------------------------------------------------------
@@ -5932,6 +6065,45 @@ void DrawReceiverUi()
     if (roomActions.stopShare)
     {
         sender::StopSharing();
+    }
+
+    if (roomActions.voiceJoin)
+    {
+        g_voice.SetMuted(g_voiceMuted);
+
+        g_voice.SetPushToTalkKey(
+            VoicePushToTalkKey(g_voicePushToTalk));
+
+        g_voice.Join();
+    }
+
+    if (roomActions.voiceLeave)
+    {
+        g_voice.Leave();
+    }
+
+    if (roomActions.voiceToggleMute)
+    {
+        g_voiceMuted = !g_voiceMuted;
+
+        g_voice.SetMuted(g_voiceMuted);
+    }
+
+    if (roomActions.voicePushToTalk >= 0)
+    {
+        g_voicePushToTalk = roomActions.voicePushToTalk;
+
+        g_voice.SetPushToTalkKey(
+            VoicePushToTalkKey(g_voicePushToTalk));
+    }
+
+    if (roomActions.volumeMember >= 0 &&
+        roomActions.volumeMember <
+            static_cast<int>(roomState.members.size()))
+    {
+        g_voice.SetPeerVolume(
+            roomState.members[roomActions.volumeMember].id,
+            roomActions.volumeValue);
     }
 
     if (backToRoom)
@@ -7077,6 +7249,8 @@ int AppMain(
 
     // Sala: avisa que saiu (senao os outros continuam vendo
     // esta pessoa por ~20 s).
+    g_voice.Leave();
+
     if (g_room.IsActive())
     {
         g_room.Leave();

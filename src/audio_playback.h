@@ -56,6 +56,15 @@ public:
         m_muted = muted;
     }
 
+    // Modo de baixo atraso (voz): ~20 ms na placa de som em vez
+    // de ~200 ms, e no maximo ~120 ms na fila. Chamar antes de
+    // Start().
+    void SetLowLatency(
+        bool lowLatency)
+    {
+        m_lowLatency = lowLatency;
+    }
+
 private:
     void RenderThread();
 
@@ -79,4 +88,6 @@ private:
     std::atomic<bool> m_muted{ false };
 
     bool m_comInitialized;
+
+    bool m_lowLatency = false;
 };

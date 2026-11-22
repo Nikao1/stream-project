@@ -1094,7 +1094,10 @@ void ParseRoomState(
             continue;
 
         outState.members.push_back(
-            RoomMember{ parts[0], UrlDecode(parts[1]) });
+            RoomMember{
+                parts[0],
+                UrlDecode(parts[1]),
+                parts.size() >= 3 ? parts[2] : std::string() });
     }
 
     int presenters =
@@ -1381,6 +1384,49 @@ bool SignalingRoomPresent(
                 "&session_code=" + sessionCode +
                 "&session_token=" + sessionToken +
                 "&label=" + UrlEncode(label),
+            status,
+            response,
+            outError))
+    {
+        return false;
+    }
+
+    if (status != 200)
+    {
+        outError =
+            "servidor de sinalizacao respondeu HTTP " +
+            std::to_string(status);
+
+        return false;
+    }
+
+    return true;
+}
+
+
+bool SignalingRoomVoice(
+    const RoomMembership& membership,
+    const std::string& sessionCode,
+    const std::string& sessionToken,
+    std::string& outError)
+{
+    DWORD status = 0;
+
+    std::string response;
+
+    std::string body =
+        MemberBody(membership);
+
+    if (!sessionCode.empty())
+    {
+        body +=
+            "&session_code=" + sessionCode +
+            "&session_token=" + sessionToken;
+    }
+
+    if (!HttpPost(
+            RoomPath(membership, "voice"),
+            body,
             status,
             response,
             outError))

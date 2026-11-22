@@ -51,6 +51,12 @@ sessao pelo fluxo normal acima ("join"/"announce"):
     POST /rooms/<code>/leave          member_id, token -> ok
     POST /rooms/<code>/chat           member_id, token, text
                                       -> ok, id
+    POST /rooms/<code>/voice          member_id, token,
+                                      [session_code, session_token]
+                                      -> ok
+        Canal de voz: cada pessoa na voz abre uma sessao (so de
+        audio) e publica aqui; as outras entram nela pelo fluxo
+        normal de sessao. Sem session_code = saiu da voz.
 
     O heartbeat aceita chat_after=<id> e devolve tambem as
     mensagens de chat mais novas que esse id:
@@ -59,7 +65,7 @@ sessao pelo fluxo normal acima ("join"/"announce"):
 
     Estado da sala:
         member_count=N
-        member_<i>=<member_id>|<nome>
+        member_<i>=<member_id>|<nome>|<sessao de voz, ou vazio>
         presenter_count=N
         presenter_<i>=<member_id>|<codigo da sessao>|<nome>|<o que
                       esta compartilhando>
@@ -149,9 +155,14 @@ def _purge_expired():
             member = members[member_id]
             if now - member["last_seen"] > ROOM_MEMBER_TTL_SECONDS:
                 del members[member_id]
-            elif (member["presenting"] is not None and
-                  member["presenting"]["session_code"] not in _sessions):
-                member["presenting"] = None
+            else:
+                if (member["presenting"] is not None and
+                        member["presenting"]["session_code"]
+                        not in _sessions):
+                    member["presenting"] = None
+                if (member.get("voice") and
+                        member["voice"] not in _sessions):
+                    member["voice"] = None
         if not members:
             del _rooms[code]
 
@@ -238,7 +249,8 @@ def _room_state(room):
     fields["member_count"] = len(members)
     presenters = []
     for i, (member_id, member) in enumerate(members):
-        fields[f"member_{i}"] = f"{member_id}|{quote(member['name'])}"
+        fields[f"member_{i}"] = "|".join([
+            member_id, quote(member["name"]), member.get("voice") or ""])
         presenting = member["presenting"]
         if presenting is not None:
             presenters.append((presenting["since"], member_id,
@@ -357,6 +369,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._room_leave(code, form)
             if action == "chat":
                 return self._room_chat_send(code, form)
+            if action == "voice":
+                return self._room_voice(code, form)
 
         self._error(404, "not_found")
 
@@ -538,6 +552,7 @@ class Handler(BaseHTTPRequestHandler):
             "joined": now,
             "last_seen": now,
             "presenting": None,
+            "voice": None,
         }
         return member_id, token
 
@@ -642,6 +657,24 @@ class Handler(BaseHTTPRequestHandler):
                           previous["session_code"] == session_code
                           else _now()),
             }
+        self._reply(200, {"ok": 1})
+
+    def _room_voice(self, code, form):
+        session_code = form.get("session_code", "").upper()
+        session_token = form.get("session_token", "")
+        with _lock:
+            room, member = self._room_member(code, form)
+            if room is None:
+                return self._error(404, "not_in_room")
+            if not session_code:
+                member["voice"] = None
+            else:
+                # Mesma prova do "present": so publica sessao sua.
+                session = _sessions.get(session_code)
+                if session is None or not secrets.compare_digest(
+                        session["token"], session_token):
+                    return self._error(404, "session_not_found")
+                member["voice"] = session_code
         self._reply(200, {"ok": 1})
 
     def _room_stop(self, code, form):

@@ -573,7 +573,8 @@ std::string Initial(
 void UiAvatar(
     const char* name,
     float diameter,
-    bool live)
+    bool live,
+    bool speaking)
 {
     // Paleta: cores medias, legiveis com texto branco.
     static const ImU32 palette[] =
@@ -622,6 +623,16 @@ void UiAvatar(
             2.0f * g_uiScale);
     }
 
+    if (speaking)
+    {
+        draw->AddCircle(
+            center,
+            radius + (live ? 4.5f : 1.5f) * g_uiScale,
+            IM_COL32(34, 197, 94, 255),
+            32,
+            2.0f * g_uiScale);
+    }
+
     std::string initial = Initial(name);
 
     ImVec2 textSize =
@@ -633,6 +644,78 @@ void UiAvatar(
             center.y - textSize.y * 0.5f),
         IM_COL32(255, 255, 255, 255),
         initial.c_str());
+}
+
+
+// ============================================================
+// UiMicIcon
+// ============================================================
+
+void UiMicIcon(
+    float size,
+    ImU32 color,
+    bool slashed)
+{
+    ImVec2 pos = ImGui::GetCursorScreenPos();
+
+    ImGui::Dummy(ImVec2(size, size));
+
+    UiMicIconAt(pos, size, color, slashed);
+}
+
+
+void UiMicIconAt(
+    ImVec2 pos,
+    float size,
+    ImU32 color,
+    bool slashed)
+{
+    ImDrawList* draw = ImGui::GetWindowDrawList();
+
+    float cx = pos.x + size * 0.5f;
+
+    float thick = (std::max)(1.0f, size * 0.09f);
+
+    // Capsula
+    float capW = size * 0.36f;
+
+    draw->AddRectFilled(
+        ImVec2(cx - capW * 0.5f, pos.y + size * 0.08f),
+        ImVec2(cx + capW * 0.5f, pos.y + size * 0.58f),
+        color,
+        capW * 0.5f);
+
+    // Suporte em U
+    draw->PathArcTo(
+        ImVec2(cx, pos.y + size * 0.42f),
+        size * 0.30f,
+        0.0f,
+        3.14159265f,
+        12);
+
+    draw->PathStroke(color, 0, thick);
+
+    // Haste + base
+    draw->AddLine(
+        ImVec2(cx, pos.y + size * 0.72f),
+        ImVec2(cx, pos.y + size * 0.88f),
+        color,
+        thick);
+
+    draw->AddLine(
+        ImVec2(cx - size * 0.18f, pos.y + size * 0.90f),
+        ImVec2(cx + size * 0.18f, pos.y + size * 0.90f),
+        color,
+        thick);
+
+    if (slashed)
+    {
+        draw->AddLine(
+            ImVec2(pos.x + size * 0.12f, pos.y + size * 0.10f),
+            ImVec2(pos.x + size * 0.88f, pos.y + size * 0.90f),
+            IM_COL32(239, 68, 68, 255),
+            thick * 1.3f);
+    }
 }
 
 

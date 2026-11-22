@@ -117,6 +117,23 @@ void DrawToasts(
 );
 
 
+// Teclas de "segurar para falar" (indice salvo nas
+// configuracoes; 0 = desligado, fala livre).
+constexpr int VOICE_PTT_OPTION_COUNT = 5;
+
+extern const char* const VOICE_PTT_OPTION_NAMES[VOICE_PTT_OPTION_COUNT];
+
+
+// Estado de cada pessoa no canal de voz.
+enum class MemberVoice
+{
+    Out,        // fora da voz
+    Connecting, // na voz, ainda sem som chegando
+    In,         // na voz
+    Speaking    // falando agora
+};
+
+
 struct RoomPresenterEntry
 {
     std::string name;
@@ -161,6 +178,31 @@ struct RoomScreenModel
     // members) - bolinha com anel vermelho.
     std::vector<bool> memberLive;
 
+    // Mesma ordem de members.
+    std::vector<bool> memberIsMe;
+    std::vector<MemberVoice> memberVoice;
+
+    // Volume de cada pessoa na voz (0 a 2; 1 = normal).
+    std::vector<float> memberVolume;
+
+    // Canal de voz desta pessoa
+    bool voiceJoined = false;
+    bool voiceJoining = false;
+    bool voiceMuted = false;
+
+    // Microfone abrindo agora (falando, ou fala livre ligada).
+    bool voiceTransmitting = false;
+
+    // false = Windows sem cancelamento de eco (pedir fone).
+    bool voiceEchoCancel = true;
+
+    float voiceMicLevel = 0.0f;
+
+    // Indice em VOICE_PTT_OPTION_NAMES.
+    int voicePushToTalk = 0;
+
+    std::string voiceError;
+
     // Chat da sala
     std::vector<ChatLine> chat;
     char* chatInput = nullptr;
@@ -181,6 +223,18 @@ struct RoomScreenActions
 
     // Enviar o que esta em chatInput.
     bool sendChat = false;
+
+    // Canal de voz
+    bool voiceJoin = false;
+    bool voiceLeave = false;
+    bool voiceToggleMute = false;
+
+    // Novo indice de "segurar para falar" (-1 = sem mudanca).
+    int voicePushToTalk = -1;
+
+    // Volume de uma pessoa mudou (indice em members, -1 = nada).
+    int volumeMember = -1;
+    float volumeValue = 1.0f;
 };
 
 void DrawRoomScreen(
@@ -207,6 +261,15 @@ bool DrawVideoChat(
     size_t inputSize,
     bool focusInput,
     bool& outClose
+);
+
+
+// Quem esta falando no canal de voz, discreto no canto
+// superior esquerdo (sobre o video ou a tela de transmitir).
+// Nao desenha nada com a lista vazia.
+void DrawVoiceSpeakers(
+    const std::vector<std::string>& names,
+    bool myMicMuted
 );
 
 
@@ -289,6 +352,10 @@ struct StreamOverlayModel
 
     // Mensagens de chat nao lidas (botao "Chat (N)").
     int unreadChat = 0;
+
+    // Canal de voz (botao de microfone).
+    bool voiceJoined = false;
+    bool voiceMuted = false;
 };
 
 struct StreamOverlayActions
@@ -303,6 +370,8 @@ struct StreamOverlayActions
 
     // Abrir/fechar o chat sobre o video.
     bool toggleChat = false;
+
+    bool toggleVoiceMute = false;
 };
 
 // Desenha no canto superior direito. Devolve true se o mouse

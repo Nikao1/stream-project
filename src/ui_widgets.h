@@ -97,11 +97,31 @@ void UiSpinner(
 
 // Bolinha com a inicial do nome, numa cor que depende do nome
 // (a mesma pessoa tem sempre a mesma cor). "live" = anel
-// vermelho (esta transmitindo).
+// vermelho (esta transmitindo). "speaking" = anel verde por
+// fora (falando no canal de voz).
 void UiAvatar(
     const char* name,
     float diameter,
-    bool live = false
+    bool live = false,
+    bool speaking = false
+);
+
+// Icone de microfone desenhado (sem fonte de icones), num
+// quadrado de "size" na posicao do cursor. slashed = riscado
+// (mudo).
+void UiMicIcon(
+    float size,
+    ImU32 color,
+    bool slashed
+);
+
+// Mesmo icone numa posicao da tela, sem ocupar espaco (ex.: por
+// cima de um botao).
+void UiMicIconAt(
+    ImVec2 screenPos,
+    float size,
+    ImU32 color,
+    bool slashed
 );
 
 // Logo do programa (monitor com o simbolo de transmitir), num

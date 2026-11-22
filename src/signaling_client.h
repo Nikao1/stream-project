@@ -202,6 +202,10 @@ struct RoomMember
 {
     std::string id;
     std::string name;
+
+    // Sessao do canal de voz desta pessoa (vazio = fora da
+    // voz). Pra ouvir, entra-se nela como numa transmissao.
+    std::string voiceSession;
 };
 
 struct RoomPresenter
@@ -293,6 +297,15 @@ bool SignalingRoomPresent(
 
 bool SignalingRoomStop(
     const RoomMembership& membership,
+    std::string& outError
+);
+
+// Publica (ou, com codigo vazio, retira) a sessao de voz desta
+// pessoa na sala.
+bool SignalingRoomVoice(
+    const RoomMembership& membership,
+    const std::string& sessionCode,
+    const std::string& sessionToken,
     std::string& outError
 );
 

@@ -49,6 +49,26 @@ public:
         return m_viewers.Count();
     }
 
+    // Porta local em uso (Start(0) deixa o Windows escolher uma
+    // livre - ex.: canal de voz). 0 se nao iniciado.
+    uint16_t GetLocalPort() const
+    {
+        sockaddr_in bound{};
+
+        int size = sizeof(bound);
+
+        if (m_socket == INVALID_SOCKET ||
+            getsockname(
+                m_socket,
+                reinterpret_cast<sockaddr*>(&bound),
+                &size) != 0)
+        {
+            return 0;
+        }
+
+        return ntohs(bound.sin_port);
+    }
+
     // Esquece todos os espectadores (ver UdpServer).
     void ClearViewers()
     {

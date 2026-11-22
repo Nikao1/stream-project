@@ -32,6 +32,22 @@ Dentro da sala:
 - Cabem até 9 pessoas por sala; cada transmissão aceita até 8
   pessoas assistindo.
 
+CANAL DE VOZ
+------------
+Na sala, clique em "Entrar na voz" para conversar com quem
+também entrou. A voz vai direto entre vocês, criptografada.
+- "Falar": livre (o microfone fica aberto) ou segurando uma
+  tecla - Mouse 4, Mouse 5, Alt direito ou Ctrl direito.
+  Funciona com o jogo aberto.
+- Clique no nome de alguém na voz para ajustar o volume dele.
+- Durante o vídeo, quem está falando aparece no canto superior
+  esquerdo, e o painel de opções tem o botão do microfone.
+- Se aparecer o aviso de cancelamento de eco, use fone de
+  ouvido (senão os outros ouvem a própria voz de volta).
+- Se o microfone não funcionar: Configurações do Windows >
+  Privacidade > Microfone > permitir que aplicativos da área de
+  trabalho acessem o microfone.
+
 Durante o vídeo, mexa o mouse para ver as opções (volume,
 preencher a janela, tela cheia, voltar para a sala). Atalhos:
 M liga e desliga o som, setas mudam o volume, F11 ou duplo

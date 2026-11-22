@@ -86,6 +86,13 @@ public:
 
     RoomState GetState();
 
+    // Canal de voz: codigo e prova da sessao de voz desta
+    // pessoa. Codigo vazio = fora da voz.
+    void SetVoice(
+        const std::string& sessionCode,
+        const std::string& sessionToken
+    );
+
     // Chat: manda uma mensagem (sai na proxima volta da thread,
     // em instantes).
     void SendChat(
@@ -133,6 +140,10 @@ private:
     Presenting m_wanted;
     Presenting m_published;
     bool m_wake = false;
+
+    // Voz: desejado x publicado (codigo|token)
+    std::string m_wantedVoice;
+    std::string m_publishedVoice;
 
     // Chat (protegido por m_mutex)
     int m_chatAfter = 0;

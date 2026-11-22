@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.20)
 
 project(stream-project
-    VERSION 0.6.0
+    VERSION 0.7.0
     LANGUAGES C CXX
 )
 
@@ -198,6 +198,12 @@ add_executable(stream-project WIN32
     src/signaling_client.h
     src/room_client.cpp
     src/room_client.h
+    src/voice_channel.cpp
+    src/voice_channel.h
+    src/voice_capture.cpp
+    src/voice_capture.h
+    src/voice_mixer.cpp
+    src/voice_mixer.h
     src/nat_traversal.cpp
     src/nat_traversal.h
     src/stun_message.h

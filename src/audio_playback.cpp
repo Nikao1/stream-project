@@ -1,4 +1,6 @@
 #include "audio_playback.h"
+
+#include <algorithm>
 #include "audio_protocol.h"
 
 #include <mmdeviceapi.h>
@@ -143,9 +145,9 @@ void AudioPlayback::PushSamples(
     // acumular atraso crescente.
     // ------------------------------------------------------
 
-    constexpr size_t MAX_QUEUED_SAMPLES =
+    const size_t MAX_QUEUED_SAMPLES =
         (AUDIO_SAMPLE_RATE * AUDIO_CHANNELS) *
-        300 / 1000;
+        (m_lowLatency ? 120 : 300) / 1000;
 
 
     while (m_pcmQueue.size() >
@@ -312,9 +314,11 @@ void AudioPlayback::RenderThread()
             kSubformatIeeeFloat;
 
 
-        constexpr REFERENCE_TIME bufferDuration =
-            200 *
-            10000; // 200ms
+        // Voz: buffer curto (o atraso numa conversa incomoda
+        // muito mais que num video).
+        const REFERENCE_TIME bufferDuration =
+            (m_lowLatency ? 40 : 200) *
+            10000;
 
 
         hr =
@@ -437,6 +441,19 @@ void AudioPlayback::RenderThread()
         UINT32 framesAvailable =
             bufferFrameCount -
             padding;
+
+        // Voz: mantem so ~20 ms na placa de som (o resto espera
+        // na fila, onde ainda da pra descartar se acumular).
+        if (m_lowLatency)
+        {
+            const UINT32 target =
+                AUDIO_SAMPLE_RATE / 50;
+
+            framesAvailable =
+                padding >= target
+                ? 0
+                : (std::min)(framesAvailable, target - padding);
+        }
 
 
         if (framesAvailable > 0)
