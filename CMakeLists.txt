@@ -114,6 +114,7 @@ FetchContent_Declare(
     rnnoise
     URL      https://github.com/xiph/rnnoise/releases/download/v0.2/rnnoise-0.2.tar.gz
     URL_HASH SHA256=90fce4b00b9ff24c08dbfe31b82ffd43bae383d85c5535676d28b0a2b11c0d37
+    DOWNLOAD_EXTRACT_TIMESTAMP TRUE
 )
 
 FetchContent_MakeAvailable(rnnoise)
@@ -140,9 +141,14 @@ target_include_directories(rnnoise
 )
 
 if(MSVC)
-    # Avisos do proprio RNNoise (conversoes de tipo) e o aviso
-    # de "so SSE2" - nao sao problemas.
-    target_compile_options(rnnoise PRIVATE /w)
+    # O MSVC nao define __SSE2__ (o GCC/Clang sim): sem isto o
+    # RNNoise cai num caminho generico que pede um arquivo que
+    # nao vem no pacote (os_support.h). Todo PC x64 tem SSE2; o
+    # proprio RNNoise usa estas macros pra isso no MSVC.
+    target_compile_definitions(rnnoise PRIVATE
+        OPUS_X86_MAY_HAVE_SSE
+        OPUS_X86_MAY_HAVE_SSE2
+    )
 endif()
 
 
