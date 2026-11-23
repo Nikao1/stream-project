@@ -5550,7 +5550,8 @@ void UpdateWindowTitle()
 
 // Painel "Pessoas" (sobre o video ou a transmissao): monta o
 // modelo a partir da sala e aplica o que a pessoa fez.
-void DrawRoomPeoplePanel(
+// Devolve a altura ocupada.
+float DrawRoomPeoplePanel(
     const RoomState& state,
     bool rightSide,
     float topOffset)
@@ -5623,7 +5624,7 @@ void DrawRoomPeoplePanel(
 
     PeoplePanelActions actions;
 
-    DrawPeoplePanel(model, actions);
+    float height = DrawPeoplePanel(model, actions);
 
     if (actions.close)
     {
@@ -5657,7 +5658,20 @@ void DrawRoomPeoplePanel(
     {
         g_shortcutsOpen = true;
     }
+
+    return height;
 }
+
+
+// Painel do video: visibilidade do ultimo frame (a barra da
+// sala some junto) e se o mouse esta na barra (mantem os dois).
+float g_overlayAlpha = 1.0f;
+
+// Altura do painel de pessoas neste frame (o do video vai pra
+// baixo dele em janelas estreitas).
+float g_peoplePanelHeight = 0.0f;
+
+bool g_roomBarHovered = false;
 
 
 void DrawVideoOverlay(
@@ -5669,7 +5683,8 @@ void DrawVideoOverlay(
         std::vector<std::string>(),
     int unreadChat = 0,
     int* outSwitchTo = nullptr,
-    bool* outToggleChat = nullptr)
+    bool* outToggleChat = nullptr,
+    float topOffset = 0.0f)
 {
     // ----------------------------------------------------
     // Painel sobre o video: aparece quando o mouse mexe e
@@ -5688,7 +5703,8 @@ void DrawVideoOverlay(
 
     if (io.MouseDelta.x != 0.0f ||
         io.MouseDelta.y != 0.0f ||
-        overlayHovered)
+        overlayHovered ||
+        g_roomBarHovered)
     {
         lastActivity = now;
     }
@@ -5746,6 +5762,11 @@ void DrawVideoOverlay(
     overlay.recovered = g_statRecovered.load();
     overlay.late = g_statLate.load();
     overlay.alpha = alpha;
+    overlay.topOffset = topOffset;
+    overlay.besidePeoplePanel = inRoom && g_peopleOpen;
+    overlay.peoplePanelHeight = g_peoplePanelHeight;
+
+    g_overlayAlpha = alpha;
 
     overlay.inRoom = inRoom;
     overlay.presenterName = presenterName;
@@ -6039,9 +6060,11 @@ void DrawReceiverUi()
                 g_voice.SetMuted(!g_voice.IsMuted());
             }
 
+            float rightTop = barHeight;
+
             if (g_peopleOpen)
             {
-                DrawRoomPeoplePanel(roomState, true, barHeight);
+                rightTop += DrawRoomPeoplePanel(roomState, true, barHeight);
             }
 
             if (chatShortcut && !g_videoChatOpen)
@@ -6059,7 +6082,8 @@ void DrawReceiverUi()
                         sizeof(g_chatInput),
                         g_chatFocus,
                         close,
-                        true))
+                        true,
+                        rightTop))
                 {
                     sendChat = true;
                 }
@@ -6103,9 +6127,56 @@ void DrawReceiverUi()
 
             chatHandled = true;
 
+            // Barra da sala (Pessoas / Chat / microfone) no canto
+            // direito, como transmitindo; some junto com o painel
+            // do video, a nao ser que algo esteja aberto.
+            float barAlpha =
+                !g_streamReceived || g_peopleOpen || g_videoChatOpen
+                ? 1.0f
+                : g_overlayAlpha;
+
+            ShareToolbarActions bar;
+
+            float rightTop =
+                DrawShareRoomToolbar(
+                    g_peopleOpen,
+                    g_videoChatOpen,
+                    unread,
+                    g_voice.IsJoined(),
+                    g_voice.IsMuted(),
+                    bar,
+                    barAlpha);
+
+            g_roomBarHovered = bar.hovered && barAlpha > 0.05f;
+
+            if (barAlpha > 0.05f)
+            {
+                if (bar.togglePeople)
+                {
+                    g_peopleOpen = !g_peopleOpen;
+                }
+
+                if (bar.toggleChat)
+                {
+                    toggleChat = true;
+                }
+
+                if (bar.toggleMute)
+                {
+                    g_voice.SetMuted(!g_voice.IsMuted());
+                }
+            }
+
+            // O painel do video fica logo abaixo da barra (ao lado
+            // do de pessoas); o chat, embaixo de tudo.
+            float barTop = rightTop;
+
             if (g_peopleOpen)
             {
-                DrawRoomPeoplePanel(roomState, false, 0.0f);
+                g_peoplePanelHeight =
+                    DrawRoomPeoplePanel(roomState, true, rightTop);
+
+                rightTop += g_peoplePanelHeight;
             }
             else if (g_voice.IsJoined())
             {
@@ -6133,7 +6204,8 @@ void DrawReceiverUi()
                     others,
                     unread,
                     &switchTo,
-                    &toggleChat);
+                    &toggleChat,
+                    barTop);
             }
             else
             {
@@ -6173,7 +6245,9 @@ void DrawReceiverUi()
                         g_chatInput,
                         sizeof(g_chatInput),
                         g_chatFocus,
-                        close))
+                        close,
+                        true,
+                        rightTop))
                 {
                     sendChat = true;
                 }

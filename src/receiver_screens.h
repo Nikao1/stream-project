@@ -274,15 +274,18 @@ void DrawRoomWaitingScreen(
 );
 
 
-// Chat sobre o video (canto inferior esquerdo). outClose = a
-// pessoa fechou. Devolve true quando envia (texto em input).
+// Chat sobre o video (canto inferior esquerdo, ou direito com
+// rightSide). outClose = a pessoa fechou. Devolve true quando
+// envia (texto em input). occupiedTop: altura ja ocupada no
+// topo do mesmo lado (o chat encolhe pra nao ficar por cima).
 bool DrawVideoChat(
     const std::vector<ChatLine>& lines,
     char* input,
     size_t inputSize,
     bool focusInput,
     bool& outClose,
-    bool rightSide = false
+    bool rightSide = false,
+    float occupiedTop = 0.0f
 );
 
 
@@ -345,7 +348,8 @@ struct PeoplePanelActions
     bool openShortcuts = false;
 };
 
-void DrawPeoplePanel(
+// Devolve a altura ocupada (pra empilhar o que vem embaixo).
+float DrawPeoplePanel(
     const PeoplePanelModel& model,
     PeoplePanelActions& actions
 );
@@ -360,15 +364,21 @@ struct ShareToolbarActions
     bool togglePeople = false;
     bool toggleChat = false;
     bool toggleMute = false;
+
+    // Mouse em cima (mantem a barra visivel).
+    bool hovered = false;
 };
 
+// alpha: some junto com o painel do video quando o mouse fica
+// parado (assistindo); 1 = sempre visivel.
 float DrawShareRoomToolbar(
     bool peopleOpen,
     bool chatOpen,
     int unreadChat,
     bool voiceJoined,
     bool voiceMuted,
-    ShareToolbarActions& actions
+    ShareToolbarActions& actions,
+    float alpha = 1.0f
 );
 
 
@@ -513,6 +523,17 @@ struct StreamOverlayModel
 
     // Linha de atalhos no rodape (ex.: "M: som  ·  F11: ...").
     std::string keyHint;
+
+    // Distancia extra do topo (abaixo da barra da sala).
+    float topOffset = 0.0f;
+
+    // Painel de pessoas aberto no canto direito: este painel
+    // fica ao lado dele (a esquerda), nao embaixo.
+    bool besidePeoplePanel = false;
+
+    // Altura do painel de pessoas: janela estreita demais pra
+    // ficar ao lado -> fica embaixo dele.
+    float peoplePanelHeight = 0.0f;
 };
 
 struct StreamOverlayActions

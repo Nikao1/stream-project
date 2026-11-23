@@ -448,7 +448,7 @@ bool DrawChatBox(
     bool submitted =
         ImGui::InputTextWithHint(
             "##escrever",
-            "Escreva uma mensagem",
+            "Mensagem",
             input,
             inputSize,
             ImGuiInputTextFlags_EnterReturnsTrue);
@@ -553,18 +553,66 @@ void DrawToasts(
 }
 
 
+// Paineis flutuantes (chat, pessoas, barra da sala): margem
+// interna menor que a das telas - o X fica perto da borda e nao
+// sobra espaco vazio.
+// Largura do painel de pessoas (o do video fica ao lado dele).
+constexpr float PEOPLE_PANEL_WIDTH = 290.0f;
+
+
+void PushFloatingPanelStyle()
+{
+    ImGui::PushStyleVar(
+        ImGuiStyleVar_WindowPadding,
+        ImVec2(14.0f * UiScale(), 12.0f * UiScale()));
+}
+
+
+void PopFloatingPanelStyle()
+{
+    ImGui::PopStyleVar();
+}
+
+
 bool DrawVideoChat(
     const std::vector<ChatLine>& lines,
     char* input,
     size_t inputSize,
     bool focusInput,
     bool& outClose,
-    bool rightSide)
+    bool rightSide,
+    float occupiedTop)
 {
     const ImGuiViewport* viewport =
         ImGui::GetMainViewport();
 
     float margin = 16.0f * UiScale();
+
+    // Altura da conversa: 190 (escala), menos se o painel de
+    // cima ocupa o espaco. Sem espaco nem pra umas 3 linhas: o
+    // chat vai pro lado esquerdo (livre).
+    float chatHeight = 190.0f * UiScale();
+
+    if (rightSide && occupiedTop > 0.0f)
+    {
+        // Cabecalho + campo + margens do painel (aprox.).
+        float chrome =
+            ImGui::GetFrameHeight() * 2.0f +
+            ImGui::GetStyle().ItemSpacing.y * 2.0f +
+            24.0f * UiScale();
+
+        float available =
+            viewport->WorkSize.y - occupiedTop - margin * 2.0f - chrome;
+
+        if (available < 110.0f * UiScale())
+        {
+            rightSide = false;
+        }
+        else
+        {
+            chatHeight = (std::min)(chatHeight, available);
+        }
+    }
 
     ImGui::SetNextWindowPos(
         ImVec2(
@@ -576,10 +624,12 @@ bool DrawVideoChat(
         ImVec2(rightSide ? 1.0f : 0.0f, 1.0f));
 
     ImGui::SetNextWindowSize(
-        ImVec2(340.0f * UiScale(), 0.0f),
+        ImVec2(PEOPLE_PANEL_WIDTH * UiScale(), 0.0f),
         ImGuiCond_Always);
 
-    ImGui::SetNextWindowBgAlpha(0.90f);
+    ImGui::SetNextWindowBgAlpha(0.92f);
+
+    PushFloatingPanelStyle();
 
     ImGui::Begin(
         "##chatvideo",
@@ -618,10 +668,12 @@ bool DrawVideoChat(
             lines,
             input,
             inputSize,
-            220.0f * UiScale(),
+            chatHeight,
             focusInput);
 
     ImGui::End();
+
+    PopFloatingPanelStyle();
 
     return send;
 }
@@ -1087,13 +1139,6 @@ void DrawRoomScreen(
         ("Passe o código inteiro para quem vai entrar  ·  cabem "
          "até " + std::to_string(model.maxMembers) + " pessoas").c_str());
 
-    if (model.code.find('-') != std::string::npos)
-    {
-        UiMutedText(
-            "A parte depois do traço é a chave da sala: nomes, chat "
-            "e prévias são criptografados com ela, e o servidor não "
-            "a conhece.");
-    }
 
     if (model.offline)
     {
@@ -1365,8 +1410,14 @@ void DrawRoomScreen(
             (ImGui::GetContentRegionAvail().x -
              style.ItemSpacing.x) * 0.5f;
 
+        // Coluna estreita: textos curtos (nada cortado).
+        bool narrow =
+            ImGui::CalcTextSize("Opções da transmissão").x +
+                style.FramePadding.x * 2.0f > half;
+
         if (ImGui::Button(
-                "Opções da transmissão",
+                narrow ? "Opções##opcoestransm"
+                       : "Opções da transmissão",
                 ImVec2(half, 0.0f)))
         {
             actions.openShare = true;
@@ -1375,7 +1426,8 @@ void DrawRoomScreen(
         ImGui::SameLine();
 
         if (ImGui::Button(
-                "Parar de transmitir",
+                narrow ? "Parar##parartransm"
+                       : "Parar de transmitir",
                 ImVec2(half, 0.0f)))
         {
             actions.stopShare = true;
@@ -1617,7 +1669,9 @@ namespace
 // direito, com a transparencia dada.
 void BeginTopRightWindow(
     const char* id,
-    float alpha)
+    float alpha,
+    float topOffset = 0.0f,
+    float rightOffset = 0.0f)
 {
     const ImGuiViewport* viewport =
         ImGui::GetMainViewport();
@@ -1626,8 +1680,9 @@ void BeginTopRightWindow(
 
     ImGui::SetNextWindowPos(
         ImVec2(
-            viewport->WorkPos.x + viewport->WorkSize.x - margin,
-            viewport->WorkPos.y + margin),
+            viewport->WorkPos.x + viewport->WorkSize.x - margin -
+                rightOffset,
+            viewport->WorkPos.y + margin + topOffset),
         ImGuiCond_Always,
         ImVec2(1.0f, 0.0f)
     );
@@ -1740,6 +1795,25 @@ bool DrawStreamOverlay(
     StreamOverlayModel& model,
     StreamOverlayActions& actions)
 {
+    // Ao lado do painel de pessoas so se couber; senao, embaixo.
+    float sideOffset = 0.0f;
+    float topOffset = model.topOffset;
+
+    if (model.besidePeoplePanel)
+    {
+        float needed =
+            (PEOPLE_PANEL_WIDTH + 8.0f + 330.0f + 32.0f) * UiScale();
+
+        if (ImGui::GetMainViewport()->WorkSize.x >= needed)
+        {
+            sideOffset = (PEOPLE_PANEL_WIDTH + 8.0f) * UiScale();
+        }
+        else
+        {
+            topOffset += model.peoplePanelHeight;
+        }
+    }
+
     if (model.alpha <= 0.0f)
         return false;
 
@@ -1752,7 +1826,8 @@ bool DrawStreamOverlay(
 
     if (collapsed)
     {
-        BeginTopRightWindow("##opcoesfechado", model.alpha);
+        BeginTopRightWindow(
+            "##opcoesfechado", model.alpha, topOffset, sideOffset);
 
         if (ImGui::Button("Opções"))
         {
@@ -1763,7 +1838,8 @@ bool DrawStreamOverlay(
     }
 
 
-    BeginTopRightWindow("##sobrevideo", model.alpha);
+    BeginTopRightWindow(
+        "##sobrevideo", model.alpha, topOffset, sideOffset);
 
     const ImGuiStyle& style = ImGui::GetStyle();
 
@@ -1907,30 +1983,8 @@ bool DrawStreamOverlay(
     // Na sala: chat, trocar de tela e voltar pra lista
     if (model.inRoom)
     {
-        std::string chatLabel =
-            model.unreadChat > 0
-            ? "Chat (" + std::to_string(model.unreadChat) + ")"
-            : std::string("Chat");
-
-        if (model.unreadChat > 0)
-        {
-            ImGui::PushStyleColor(ImGuiCol_Text, UiColorAccent());
-        }
-
-        if (ImGui::Button(
-                (chatLabel + "##chat").c_str(),
-                ImVec2(half, 0.0f)))
-        {
-            actions.toggleChat = true;
-        }
-
-        if (model.unreadChat > 0)
-        {
-            ImGui::PopStyleColor();
-        }
-
-        ImGui::SameLine();
-
+        // (Pessoas, chat e microfone ficam na barra da sala,
+        // acima deste painel.)
         if (ImGui::Button(
                 "Voltar à sala",
                 ImVec2(half, 0.0f)))
@@ -1938,48 +1992,9 @@ bool DrawStreamOverlay(
             actions.backToRoom = true;
         }
 
-        if (model.peopleOpen)
-        {
-            ImGui::PushStyleColor(ImGuiCol_Text, UiColorAccent());
-        }
+        ImGui::SameLine();
 
-        if (ImGui::Button(
-                "Pessoas##pessoasov",
-                ImVec2(model.voiceJoined ? half : rowWidth, 0.0f)))
-        {
-            actions.togglePeople = true;
-        }
-
-        if (model.peopleOpen)
-        {
-            ImGui::PopStyleColor();
-        }
-
-        if (model.voiceJoined)
-        {
-            ImGui::SameLine();
-
-            if (model.voiceMuted)
-            {
-                ImGui::PushStyleColor(ImGuiCol_Text, UiColorError());
-            }
-
-            if (ImGui::Button(
-                    model.voiceMuted
-                    ? "Ligar microfone##vozov"
-                    : "Silenciar mic.##vozov",
-                    ImVec2(half, 0.0f)))
-            {
-                actions.toggleVoiceMute = true;
-            }
-
-            if (model.voiceMuted)
-            {
-                ImGui::PopStyleColor();
-            }
-        }
-
-        if (ImGui::Button("Atalhos##atalhosov", ImVec2(rowWidth, 0.0f)))
+        if (ImGui::Button("Atalhos##atalhosov", ImVec2(half, 0.0f)))
         {
             actions.openShortcuts = true;
         }
@@ -2075,7 +2090,7 @@ bool DrawStreamOverlay(
 // Painel "Pessoas" (sobre o video ou a transmissao)
 // ============================================================
 
-void DrawPeoplePanel(
+float DrawPeoplePanel(
     const PeoplePanelModel& model,
     PeoplePanelActions& actions)
 {
@@ -2086,7 +2101,7 @@ void DrawPeoplePanel(
 
     float margin = 16.0f * UiScale();
 
-    float width = 290.0f * UiScale();
+    float width = PEOPLE_PANEL_WIDTH * UiScale();
 
     ImGui::SetNextWindowPos(
         ImVec2(
@@ -2100,6 +2115,8 @@ void DrawPeoplePanel(
     ImGui::SetNextWindowSize(ImVec2(width, 0.0f), ImGuiCond_Always);
 
     ImGui::SetNextWindowBgAlpha(0.92f);
+
+    PushFloatingPanelStyle();
 
     ImGui::Begin(
         "##pessoas",
@@ -2275,7 +2292,13 @@ void DrawPeoplePanel(
         actions.openShortcuts = true;
     }
 
+    float height = ImGui::GetWindowHeight();
+
     ImGui::End();
+
+    PopFloatingPanelStyle();
+
+    return height + 8.0f * UiScale();
 }
 
 
@@ -2289,7 +2312,8 @@ float DrawShareRoomToolbar(
     int unreadChat,
     bool voiceJoined,
     bool voiceMuted,
-    ShareToolbarActions& actions)
+    ShareToolbarActions& actions,
+    float alpha)
 {
     const ImGuiViewport* viewport =
         ImGui::GetMainViewport();
@@ -2304,6 +2328,10 @@ float DrawShareRoomToolbar(
         ImVec2(1.0f, 0.0f));
 
     ImGui::SetNextWindowBgAlpha(0.92f);
+
+    PushFloatingPanelStyle();
+
+    ImGui::PushStyleVar(ImGuiStyleVar_Alpha, alpha);
 
     ImGui::Begin(
         "##barrasala",
@@ -2371,7 +2399,14 @@ float DrawShareRoomToolbar(
 
     float height = ImGui::GetWindowHeight();
 
+    actions.hovered =
+        ImGui::IsWindowHovered(ImGuiHoveredFlags_ChildWindows);
+
     ImGui::End();
+
+    ImGui::PopStyleVar();
+
+    PopFloatingPanelStyle();
 
     return height + 8.0f * UiScale();
 }
