@@ -7,6 +7,7 @@
 #include <opus.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <iostream>
 
@@ -464,6 +465,19 @@ VoiceChannel::~VoiceChannel()
 {
     Leave();
 
+    {
+        std::lock_guard<std::mutex> lock(m_deviceMutex);
+
+        m_deviceRunning = false;
+    }
+
+    m_deviceCv.notify_one();
+
+    if (m_deviceThread.joinable())
+    {
+        m_deviceThread.join();
+    }
+
     // Aqui sim espera (fim do programa).
     std::vector<std::unique_ptr<VoicePeer>> dying;
 
@@ -519,6 +533,8 @@ void VoiceChannel::JoinWorker()
             std::lock_guard<std::mutex> lock(m_mutex);
 
             m_playback.SetDevice(m_speaker);
+
+            m_appliedSpeaker = m_speaker;
         }
 
         ok = m_playback.Start();
@@ -635,6 +651,8 @@ void VoiceChannel::JoinWorker()
 
             m_capture.SetDevice(m_microphone);
             m_capture.SetSpeaker(m_speaker);
+
+            m_appliedMic = m_microphone;
         }
 
         if (!m_denoiser)
@@ -649,6 +667,9 @@ void VoiceChannel::JoinWorker()
             });
 
         m_joined = true;
+
+        // Microfone/saida trocados enquanto entrava: aplica.
+        QueueDeviceChange();
 
         std::cout
             << "Voz: entrou (sessao "
@@ -728,6 +749,45 @@ void VoiceChannel::OnMicFrame(
         std::memcpy(cleaned, samples, sizeof(cleaned));
 
         m_voiceActivity = m_denoiser->Process(cleaned);
+
+        // Eco que o cancelamento do Windows deixou passar (ex.:
+        // notebook com caixa de som): enquanto os outros falam,
+        // o que chega bem mais fraco que a voz deles no
+        // microfone e o proprio eco - abaixa (~-14 dB). Voz de
+        // verdade, perto do microfone, e mais forte e passa.
+        double energy = 0.0;
+
+        for (float value : cleaned)
+        {
+            energy += static_cast<double>(value) * value;
+        }
+
+        float micRms =
+            static_cast<float>(
+                std::sqrt(energy / NoiseSuppressor::FRAME_SAMPLES));
+
+        float farLevel = m_mixer.OutputLevel();
+
+        float target =
+            farLevel > 0.01f && micRms < farLevel * 0.3f ? 0.2f : 1.0f;
+
+        // Rampa pelo bloco (abre na hora, fecha em ~3 blocos).
+        float start = m_echoGain;
+
+        float end =
+            target > start
+            ? target
+            : start + (target - start) * 0.35f;
+
+        for (size_t i = 0; i < NoiseSuppressor::FRAME_SAMPLES; ++i)
+        {
+            float t =
+                static_cast<float>(i) / NoiseSuppressor::FRAME_SAMPLES;
+
+            cleaned[i] *= start + (end - start) * t;
+        }
+
+        m_echoGain = end;
 
         samples = cleaned;
     }
@@ -831,6 +891,9 @@ void VoiceChannel::Leave()
         return;
 
     std::cout << "Voz: saindo.\n";
+
+    // (espera uma troca de microfone/saida em andamento)
+    std::lock_guard<std::mutex> restart(m_restartMutex);
 
     m_capture.Stop();
 
@@ -992,20 +1055,7 @@ void VoiceChannel::SetMicrophone(
         m_microphone = deviceId;
     }
 
-    if (!m_joined)
-        return;
-
-    // Reabre a captura no microfone novo (a conexao com os
-    // outros continua).
-    m_capture.Stop();
-
-    m_capture.SetDevice(deviceId);
-
-    m_capture.Start(
-        [this](const float* samples, size_t count)
-        {
-            OnMicFrame(samples, count);
-        });
+    QueueDeviceChange();
 }
 
 
@@ -1021,28 +1071,95 @@ void VoiceChannel::SetSpeaker(
         m_speaker = deviceId;
     }
 
-    if (!m_joined)
-        return;
+    QueueDeviceChange();
+}
 
-    // Reabre a saida no dispositivo novo (o mixador continua
-    // mandando; o que chegar no meio da troca se perde)...
-    m_playback.Stop();
 
-    m_playback.SetDevice(deviceId);
+// Trocar microfone/saida reabre a captura e a placa de som -
+// leva alguns centesimos de segundo. Numa thread propria, pra a
+// janela nao travar (a tela "piscava").
+void VoiceChannel::QueueDeviceChange()
+{
+    {
+        std::lock_guard<std::mutex> lock(m_deviceMutex);
 
-    m_playback.Start();
+        m_deviceDirty = true;
 
-    // ...e o microfone, pro cancelamento de eco olhar a saida
-    // nova.
-    m_capture.Stop();
-
-    m_capture.SetSpeaker(deviceId);
-
-    m_capture.Start(
-        [this](const float* samples, size_t count)
+        if (!m_deviceThread.joinable())
         {
-            OnMicFrame(samples, count);
-        });
+            m_deviceRunning = true;
+
+            m_deviceThread =
+                std::thread(&VoiceChannel::DeviceLoop, this);
+        }
+    }
+
+    m_deviceCv.notify_one();
+}
+
+
+void VoiceChannel::DeviceLoop()
+{
+    while (true)
+    {
+        {
+            std::unique_lock<std::mutex> lock(m_deviceMutex);
+
+            m_deviceCv.wait(
+                lock,
+                [this] { return m_deviceDirty || !m_deviceRunning; });
+
+            if (!m_deviceRunning)
+                return;
+
+            m_deviceDirty = false;
+        }
+
+        std::wstring mic;
+        std::wstring speaker;
+
+        {
+            std::lock_guard<std::mutex> lock(m_mutex);
+
+            mic = m_microphone;
+            speaker = m_speaker;
+        }
+
+        std::lock_guard<std::mutex> restart(m_restartMutex);
+
+        // Fora da voz: vale na proxima entrada.
+        if (!m_joined)
+            continue;
+
+        bool speakerChanged = speaker != m_appliedSpeaker;
+        bool micChanged = mic != m_appliedMic;
+
+        // Saida nova: a voz dos outros toca nela...
+        if (speakerChanged)
+        {
+            m_playback.Stop();
+            m_playback.SetDevice(speaker);
+            m_playback.Start();
+        }
+
+        // ...e o microfone reabre (o cancelamento de eco olha a
+        // saida nova).
+        if (speakerChanged || micChanged)
+        {
+            m_capture.Stop();
+            m_capture.SetDevice(mic);
+            m_capture.SetSpeaker(speaker);
+
+            m_capture.Start(
+                [this](const float* samples, size_t count)
+                {
+                    OnMicFrame(samples, count);
+                });
+        }
+
+        m_appliedMic = mic;
+        m_appliedSpeaker = speaker;
+    }
 }
 
 

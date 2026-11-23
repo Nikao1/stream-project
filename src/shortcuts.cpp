@@ -51,6 +51,14 @@ const ShortcutDef DEFS[SHORTCUT_COUNT] =
         'P',
         false
     },
+    {
+        L"AtalhoInterface",
+        "Mostrar/esconder controles",
+        "Esconde (ou mostra) a barra de botões e o painel lateral "
+        "sobre o vídeo, pra ver só a transmissão.",
+        VK_TAB,
+        false
+    },
 };
 
 

@@ -35,6 +35,7 @@
 #include "invite_code.h"
 #include "ui_common.h"
 #include "receiver_screens.h"
+#include "ui_widgets.h"
 #include "crash_report.h"
 #include "app_settings.h"
 #include "power_mode.h"
@@ -45,7 +46,11 @@
 #include <map>
 #include "shortcuts.h"
 #include "ui_sounds.h"
+#include "mic_tester.h"
+#include <commdlg.h>
+#include <dwmapi.h>
 #include <set>
+#include <future>
 #include "image_codec.h"
 #include "version.h"
 
@@ -3406,11 +3411,43 @@ float g_soundsVolume = 0.6f;
 // Reducao de ruido do microfone (RNNoise), salva.
 bool g_noiseSuppression = true;
 
+// Teste do microfone nas configuracoes (fora da voz).
+MicTester g_micTester;
+
+bool g_micTestOn = false;
+
+bool g_micTestLoopback = false;
+
+// Tema claro (salvo; aplicado depois que a interface abre).
+bool g_lightThemeSetting = false;
+
+// Painel lateral da sala (Pessoas/Chat) fixado: nao fecha ao
+// clicar no video. Salvo.
+bool g_sidePinned = false;
+
+// Foto de perfil: JPEG 96x96 (salvo em foto.jpg) e a textura
+// pra mostrar nas configuracoes. Erro ao escolher (vazio = ok).
+std::vector<uint8_t> g_myAvatarJpeg;
+
+// Sobe a cada troca da foto (a textura e refeita).
+size_t g_myAvatarSerial = 1;
+
+std::string g_avatarError;
+
 // Atalhos (tecla virtual por atalho, 0 = nenhum; salvos - ver
 // shortcuts.h). Tela de atalhos aberta + linha esperando tecla.
 int g_shortcutKeys[SHORTCUT_COUNT]{};
 
-bool g_shortcutsOpen = false;
+bool g_settingsOpen = false;
+
+// Aba a mostrar quando as configuracoes abrem (-1 = nenhuma
+// escolha; ver SETTINGS_TAB_*).
+int g_settingsOpenTab = -1;
+
+
+// Abre as configuracoes na aba pedida.
+void OpenSettings(
+    int tab);
 
 KeyCapture g_keyCapture;
 
@@ -3430,6 +3467,50 @@ std::vector<VoiceCapture::Device> g_microphones;
 std::wstring g_voiceSpeaker;
 
 std::vector<VoiceCapture::Device> g_speakers;
+
+// As listas sao montadas numa thread (o Windows demora uns
+// centesimos de segundo - a janela travava ao abrir a lista).
+using DeviceLists =
+    std::pair<std::vector<VoiceCapture::Device>,
+              std::vector<VoiceCapture::Device>>;
+
+std::future<DeviceLists> g_deviceLists;
+
+
+void RequestDeviceLists()
+{
+    if (g_deviceLists.valid() &&
+        g_deviceLists.wait_for(std::chrono::seconds(0)) !=
+            std::future_status::ready)
+    {
+        return; // ja buscando
+    }
+
+    g_deviceLists =
+        std::async(
+            std::launch::async,
+            []()
+            {
+                return DeviceLists(
+                    VoiceCapture::ListMicrophones(),
+                    VoiceCapture::ListSpeakers());
+            });
+}
+
+
+// A cada frame: pega o resultado quando ficar pronto.
+void PollDeviceLists()
+{
+    if (g_deviceLists.valid() &&
+        g_deviceLists.wait_for(std::chrono::seconds(0)) ==
+            std::future_status::ready)
+    {
+        DeviceLists lists = g_deviceLists.get();
+
+        g_microphones = std::move(lists.first);
+        g_speakers = std::move(lists.second);
+    }
+}
 
 // Exibicao do video (ver StreamOverlayModel).
 bool g_fillWindow = false;
@@ -3518,6 +3599,32 @@ void LoadReceiverSettings()
     g_sounds.SetVolume(g_soundsVolume);
 
     g_noiseSuppression = settings.GetInt(L"VozReduzirRuido", 1) != 0;
+
+    g_lightThemeSetting = settings.GetInt(L"TemaClaro", 0) != 0;
+
+    g_sidePinned = settings.GetInt(L"PainelFixo", 0) != 0;
+
+    // Foto de perfil salva.
+    {
+        std::wstring path = settings.SiblingPath(L"foto.jpg");
+
+        FILE* file = nullptr;
+
+        if (!path.empty() &&
+            _wfopen_s(&file, path.c_str(), L"rb") == 0 && file)
+        {
+            uint8_t buffer[16384];
+
+            size_t size = fread(buffer, 1, sizeof(buffer), file);
+
+            fclose(file);
+
+            if (size > 2 && size < sizeof(buffer))
+            {
+                g_myAvatarJpeg.assign(buffer, buffer + size);
+            }
+        }
+    }
 }
 
 
@@ -3567,7 +3674,7 @@ bool LocalShortcut(
 
     return
         pressed &&
-        !g_shortcutsOpen &&
+        !g_settingsOpen &&
         !ImGui::GetIO().WantTextInput;
 }
 
@@ -5262,6 +5369,143 @@ void UpdateVoiceSounds(
 }
 
 
+// Barra de titulo da janela (a do Windows) acompanhando o tema
+// do programa. Windows 10 (2004+) e 11; nos antigos nao faz nada.
+void ApplyTitleBarTheme(
+    bool light)
+{
+    if (!g_hwnd)
+        return;
+
+    BOOL dark = light ? FALSE : TRUE;
+
+    // DWMWA_USE_IMMERSIVE_DARK_MODE (20; no SDK antigo nao tem o
+    // nome)
+    DwmSetWindowAttribute(g_hwnd, 20, &dark, sizeof(dark));
+
+    // Redesenha a moldura agora (senao so muda ao trocar de
+    // janela).
+    SetWindowPos(
+        g_hwnd, nullptr, 0, 0, 0, 0,
+        SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE |
+        SWP_FRAMECHANGED);
+}
+
+
+// "Escolher imagem...": o seletor de arquivos do Windows roda
+// numa thread propria (ele precisa de COM "STA", e a janela do
+// programa continua desenhando enquanto ele esta aberto).
+std::future<std::wstring> g_avatarDialog;
+
+
+void ChooseAvatar()
+{
+    if (g_avatarDialog.valid())
+        return; // ja aberto
+
+    g_avatarDialog =
+        std::async(
+            std::launch::async,
+            []()
+            {
+                HRESULT com =
+                    CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+
+                wchar_t path[MAX_PATH]{};
+
+                OPENFILENAMEW dialog{};
+
+                dialog.lStructSize = sizeof(dialog);
+                dialog.hwndOwner = nullptr;
+                dialog.lpstrFilter =
+                    L"Imagens (JPG, PNG, BMP, GIF)\0*.jpg;*.jpeg;*.png;*.bmp;*.gif\0"
+                    L"Todos os arquivos\0*.*\0";
+                dialog.lpstrFile = path;
+                dialog.nMaxFile = MAX_PATH;
+                dialog.lpstrTitle = L"Escolher sua foto";
+                dialog.Flags =
+                    OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
+
+                std::wstring chosen;
+
+                if (GetOpenFileNameW(&dialog))
+                {
+                    chosen = path;
+                }
+
+                if (SUCCEEDED(com))
+                {
+                    CoUninitialize();
+                }
+
+                return chosen;
+            });
+}
+
+
+// A cada frame: o seletor fechou? Recorta, reduz pra 96x96,
+// salva e envia.
+void PollAvatarDialog()
+{
+    if (!g_avatarDialog.valid() ||
+        g_avatarDialog.wait_for(std::chrono::seconds(0)) !=
+            std::future_status::ready)
+    {
+        return;
+    }
+
+    std::wstring path = g_avatarDialog.get();
+
+    if (path.empty())
+        return; // cancelou
+
+    std::vector<uint8_t> pixels;
+
+    std::vector<uint8_t> jpeg;
+
+    if (!ImageLoadSquareFile(path.c_str(), 96, pixels) ||
+        !ImageEncodeJpeg(pixels.data(), 96, 96, 0.85f, jpeg) ||
+        jpeg.size() > 11000)
+    {
+        g_avatarError =
+            "Não foi possível abrir essa imagem. Tente outra (JPG ou PNG).";
+
+        return;
+    }
+
+    g_avatarError.clear();
+
+    g_myAvatarJpeg = jpeg;
+    g_myAvatarSerial++;
+
+    std::wstring file = ReceiverSettings().SiblingPath(L"foto.jpg");
+
+    FILE* out = nullptr;
+
+    if (!file.empty() &&
+        _wfopen_s(&out, file.c_str(), L"wb") == 0 && out)
+    {
+        fwrite(jpeg.data(), 1, jpeg.size(), out);
+
+        fclose(out);
+    }
+
+    g_room.SetAvatar(g_myAvatarJpeg);
+}
+
+
+void OpenSettings(
+    int tab)
+{
+    g_settingsOpen = true;
+
+    g_settingsOpenTab = tab;
+
+    // Listas de microfone/saida atualizadas (em segundo plano).
+    RequestDeviceLists();
+}
+
+
 // Entrar na voz (botao na sala ou no painel de pessoas).
 void StartVoice()
 {
@@ -5273,9 +5517,7 @@ void StartVoice()
 
     g_voice.SetNoiseSuppression(g_noiseSuppression);
 
-    g_microphones = VoiceCapture::ListMicrophones();
-
-    g_speakers = VoiceCapture::ListSpeakers();
+    RequestDeviceLists();
 
     g_voice.Join();
 }
@@ -5304,6 +5546,58 @@ std::map<std::string, RoomThumbTexture> g_roomThumbs;
 
 // Textura da previa de memberId (atualiza se mudou). nullptr =
 // sem previa.
+// JPEG -> textura (nullptr se nao der).
+ComPtr<ID3D11ShaderResourceView> TextureFromJpeg(
+    const std::vector<uint8_t>& jpeg,
+    int& outWidth,
+    int& outHeight)
+{
+    std::vector<uint8_t> pixels;
+
+    outWidth = 0;
+    outHeight = 0;
+
+    if (!g_rendererDevice ||
+        jpeg.empty() ||
+        !ImageDecodeToBgra(
+            jpeg.data(), jpeg.size(), pixels, outWidth, outHeight))
+    {
+        return nullptr;
+    }
+
+    D3D11_TEXTURE2D_DESC desc{};
+
+    desc.Width = static_cast<UINT>(outWidth);
+    desc.Height = static_cast<UINT>(outHeight);
+    desc.MipLevels = 1;
+    desc.ArraySize = 1;
+    desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+    desc.SampleDesc.Count = 1;
+    desc.Usage = D3D11_USAGE_IMMUTABLE;
+    desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+
+    D3D11_SUBRESOURCE_DATA data{};
+
+    data.pSysMem = pixels.data();
+    data.SysMemPitch = static_cast<UINT>(outWidth) * 4;
+
+    ComPtr<ID3D11Texture2D> texture;
+
+    ComPtr<ID3D11ShaderResourceView> view;
+
+    if (FAILED(g_rendererDevice->CreateTexture2D(&desc, &data, &texture)) ||
+        FAILED(g_rendererDevice->CreateShaderResourceView(
+            texture.Get(), nullptr, &view)))
+    {
+        return nullptr;
+    }
+
+    return view;
+}
+
+
+// Textura da previa de memberId (atualiza se mudou). nullptr =
+// sem previa.
 const RoomThumbTexture* RoomThumbnail(
     const std::string& memberId)
 {
@@ -5326,49 +5620,71 @@ const RoomThumbTexture* RoomThumbnail(
 
         std::vector<uint8_t> jpeg;
 
-        std::vector<uint8_t> pixels;
-
-        int width = 0;
-        int height = 0;
-
-        if (g_rendererDevice &&
-            g_room.GetThumbnail(memberId, version, jpeg) &&
-            ImageDecodeToBgra(
-                jpeg.data(), jpeg.size(), pixels, width, height))
+        if (g_room.GetThumbnail(memberId, version, jpeg))
         {
-            D3D11_TEXTURE2D_DESC desc{};
-
-            desc.Width = static_cast<UINT>(width);
-            desc.Height = static_cast<UINT>(height);
-            desc.MipLevels = 1;
-            desc.ArraySize = 1;
-            desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
-            desc.SampleDesc.Count = 1;
-            desc.Usage = D3D11_USAGE_IMMUTABLE;
-            desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
-
-            D3D11_SUBRESOURCE_DATA data{};
-
-            data.pSysMem = pixels.data();
-            data.SysMemPitch = static_cast<UINT>(width) * 4;
-
-            ComPtr<ID3D11Texture2D> texture;
-
-            ComPtr<ID3D11ShaderResourceView> view;
-
-            if (SUCCEEDED(g_rendererDevice->CreateTexture2D(
-                    &desc, &data, &texture)) &&
-                SUCCEEDED(g_rendererDevice->CreateShaderResourceView(
-                    texture.Get(), nullptr, &view)))
-            {
-                entry.view = view;
-                entry.width = width;
-                entry.height = height;
-            }
+            entry.view = TextureFromJpeg(jpeg, entry.width, entry.height);
         }
     }
 
     return entry.view ? &entry : nullptr;
+}
+
+
+// Fotos de perfil das pessoas da sala (mesmo esquema).
+std::map<std::string, RoomThumbTexture> g_avatarTextures;
+
+
+void* MemberAvatar(
+    const std::string& memberId)
+{
+    std::string version = g_room.AvatarVersion(memberId);
+
+    if (version.empty())
+    {
+        g_avatarTextures.erase(memberId);
+
+        return nullptr;
+    }
+
+    RoomThumbTexture& entry = g_avatarTextures[memberId];
+
+    if (entry.version != version)
+    {
+        entry.version = version;
+
+        std::vector<uint8_t> jpeg;
+
+        entry.view = nullptr;
+
+        if (g_room.GetAvatar(memberId, version, jpeg))
+        {
+            entry.view = TextureFromJpeg(jpeg, entry.width, entry.height);
+        }
+    }
+
+    return entry.view.Get();
+}
+
+
+// A propria foto (configuracoes), refeita quando muda.
+ComPtr<ID3D11ShaderResourceView> g_myAvatarTexture;
+
+size_t g_myAvatarTextureFor = 0;
+
+
+void* MyAvatarTexture()
+{
+    if (g_myAvatarSerial != g_myAvatarTextureFor)
+    {
+        g_myAvatarTextureFor = g_myAvatarSerial;
+
+        int width = 0;
+        int height = 0;
+
+        g_myAvatarTexture = TextureFromJpeg(g_myAvatarJpeg, width, height);
+    }
+
+    return g_myAvatarTexture.Get();
 }
 
 
@@ -5429,6 +5745,8 @@ void LeaveRoom(
     g_room.Leave();
 
     g_roomThumbs.clear();
+
+    g_avatarTextures.clear();
 
     g_homeError = message;
 
@@ -5971,20 +6289,167 @@ void UpdateWindowTitle()
 // "Voltar para a sala".
 // ============================================================
 
-// Painel "Pessoas" (sobre o video ou a transmissao): monta o
-// modelo a partir da sala e aplica o que a pessoa fez.
-// Devolve a altura ocupada.
-float DrawRoomPeoplePanel(
-    const RoomState& state,
-    bool rightSide,
-    float topOffset)
+// ------------------------------------------------------------
+// Sala sobre o video (ou transmitindo): painel lateral com
+// abas Pessoas/Chat (empurra o video) e barra de icones
+// embaixo que aparece com o mouse perto da borda (fade).
+// ------------------------------------------------------------
+
+// Animacoes (0..1): painel abrindo/fechando e barra.
+float g_sideProgress = 0.0f;
+float g_barAlpha = 0.0f;
+
+// Mouse na barra / popover aberto no ultimo frame (mantem
+// visivel).
+bool g_barHovered = false;
+
+// Tab: esconde barra e painel pra ver so a transmissao.
+bool g_controlsHidden = false;
+
+// Largura (pixels) do video ocupada pelo painel lateral: o
+// video encolhe pra esquerda em vez de ficar por baixo.
+float g_videoRightInset = 0.0f;
+
+// Ultima aba mostrada (o painel fecha animando com ela).
+int g_sideTab = 0;
+
+
+void OpenSidePanel(int tab)
 {
+    g_peopleOpen = tab == 0;
+    g_videoChatOpen = tab == 1;
+
+    g_chatFocus = tab == 1;
+
+    g_controlsHidden = false;
+}
+
+
+void CloseSidePanel()
+{
+    g_peopleOpen = false;
+    g_videoChatOpen = false;
+}
+
+
+// Anda value ate target: inTime segundos pra subir, outTime
+// pra descer (linear; quem usa suaviza).
+float Approach(float value, float target, float dt, float inTime, float outTime)
+{
+    if (value < target)
+    {
+        return (std::min)(target, value + dt / inTime);
+    }
+
+    return (std::max)(target, value - dt / outTime);
+}
+
+
+float SmoothStep01(float x)
+{
+    x = (std::max)(0.0f, (std::min)(1.0f, x));
+
+    return x * x * (3.0f - 2.0f * x);
+}
+
+
+struct RoomControlsResult
+{
+    bool backToRoom = false;
+    int switchTo = -1;
+    bool sendChat = false;
+    bool toggleFullscreen = false;
+};
+
+
+// watching: vendo uma transmissao (false = esta pessoa
+// transmite). others: outras telas pra trocar.
+void DrawRoomControls(
+    const RoomState& state,
+    bool watching,
+    const std::vector<std::string>& others,
+    const std::vector<ChatLine>& chat,
+    int unread,
+    bool chatShortcut,
+    bool peopleShortcut,
+    RoomControlsResult& out)
+{
+    ImGuiIO& io = ImGui::GetIO();
+
+    float dt = (std::min)(io.DeltaTime, 0.1f);
+
+    // ---------------- Atalhos ----------------
+
+    if (LocalShortcut(SHORTCUT_TOGGLE_UI))
+    {
+        g_controlsHidden = !g_controlsHidden;
+    }
+
+    if (peopleShortcut)
+    {
+        if (g_peopleOpen && !g_controlsHidden)
+            CloseSidePanel();
+        else
+            OpenSidePanel(0);
+    }
+
+    // Atalho do chat (Enter por padrao) abre o chat.
+    if (chatShortcut && (!g_videoChatOpen || g_controlsHidden))
+    {
+        OpenSidePanel(1);
+    }
+
+    bool sideOpen = g_peopleOpen || g_videoChatOpen;
+
+    if (g_peopleOpen) g_sideTab = 0;
+    if (g_videoChatOpen) g_sideTab = 1;
+
+    // ---------------- Animacoes ----------------
+
+    g_sideProgress =
+        Approach(
+            g_sideProgress,
+            sideOpen && !g_controlsHidden ? 1.0f : 0.0f,
+            dt, 0.2f, 0.2f);
+
+    float sideEased =
+        1.0f - (1.0f - g_sideProgress) * (1.0f - g_sideProgress);
+
+    float panelWidth = RoomSidePanelWidth() * sideEased;
+
+    // Barra: transmitindo ou esperando a imagem fica sempre;
+    // vendo, so com o mouse perto da borda de baixo (ou em
+    // cima dela / num popover). Entra em ~0,18s e sai em
+    // ~0,35s - sem piscar.
+    bool nearBottom = false;
+
+    if (ImGui::IsMousePosValid())
+    {
+        ImVec2 mouse = io.MousePos;
+
+        nearBottom =
+            mouse.x >= 0.0f &&
+            mouse.x < io.DisplaySize.x - panelWidth &&
+            mouse.y <= io.DisplaySize.y &&
+            mouse.y > io.DisplaySize.y - 130.0f * UiScale();
+    }
+
+    bool wantBar =
+        !g_controlsHidden &&
+        (!watching || !g_streamReceived || nearBottom || g_barHovered);
+
+    g_barAlpha = Approach(g_barAlpha, wantBar ? 1.0f : 0.0f, dt, 0.18f, 0.35f);
+
+    if (watching)
+    {
+        g_videoRightInset = panelWidth;
+    }
+
     std::string myId = g_room.GetMemberId();
 
-    PeoplePanelModel model;
+    // ---------------- Painel lateral ----------------
 
-    model.rightSide = rightSide;
-    model.topOffset = topOffset;
+    RoomSidePanelModel panel;
 
     for (const RoomMember& member : state.members)
     {
@@ -6002,61 +6467,220 @@ float DrawRoomPeoplePanel(
         }
 
         entry.voice = MemberVoiceState(member, entry.isMe);
-
         entry.speakAmount = SpeakAmount(member.id);
-
+        entry.avatar = MemberAvatar(member.id);
         entry.volume = g_voice.PeerVolume(member.id);
 
-        model.people.push_back(entry);
+        panel.people.people.push_back(entry);
     }
 
-    model.voiceJoined = g_voice.IsJoined();
-    model.voiceJoining = g_voice.IsJoining();
-    model.voiceMuted = g_voice.IsMuted();
-    model.voiceTransmitting = g_voice.IsTransmitting();
-    model.micLevel = g_voice.MicLevel();
-    model.pttKey = ShortcutName(SHORTCUT_PUSH_TO_TALK);
-    model.muteKey = ShortcutName(SHORTCUT_TOGGLE_MIC);
-    model.voiceError = g_voice.ErrorText();
+    panel.people.voiceJoined = g_voice.IsJoined();
+    panel.people.voiceJoining = g_voice.IsJoining();
+    panel.people.voiceMuted = g_voice.IsMuted();
+    panel.people.voiceTransmitting = g_voice.IsTransmitting();
+    panel.people.micLevel = g_voice.MicLevel();
+    panel.people.pttKey = ShortcutName(SHORTCUT_PUSH_TO_TALK);
+    panel.people.muteKey = ShortcutName(SHORTCUT_TOGGLE_MIC);
+    panel.people.voiceError = g_voice.ErrorText();
 
-    PeoplePanelActions actions;
+    panel.chat = &chat;
+    panel.chatInput = g_chatInput;
+    panel.chatInputSize = sizeof(g_chatInput);
+    panel.focusChat = g_chatFocus && g_sideProgress >= 0.5f;
+    panel.tab = g_sideTab;
+    panel.pinned = g_sidePinned;
+    panel.unreadChat = unread;
+    panel.progress = g_sideProgress;
 
-    float height = DrawPeoplePanel(model, actions);
+    RoomSidePanelActions panelActions;
 
-    if (actions.close)
+    DrawRoomSidePanel(panel, panelActions);
+
+    if (panel.focusChat)
     {
-        g_peopleOpen = false;
+        g_chatFocus = false;
     }
 
-    if (actions.voiceJoin)
+    // ---------------- Quem fala (painel fechado) ----------------
+
+    if (watching &&
+        g_sideProgress <= 0.0f &&
+        g_voice.IsJoined())
+    {
+        std::vector<std::string> speaking;
+
+        for (const RoomMember& member : state.members)
+        {
+            if (member.id != myId && SpeakingNow(member.id))
+            {
+                speaking.push_back(member.name);
+            }
+        }
+
+        DrawVoiceSpeakers(speaking, g_voice.IsMuted());
+    }
+
+    // ---------------- Barra de icones ----------------
+
+    RoomBarModel bar;
+
+    bar.alpha = SmoothStep01(g_barAlpha);
+    bar.watching = watching && g_streamReceived;
+    bar.voiceJoined = g_voice.IsJoined();
+    bar.voiceJoining = g_voice.IsJoining();
+    bar.voiceMuted = g_voice.IsMuted();
+    bar.peopleOpen = g_peopleOpen && !g_controlsHidden;
+    bar.chatOpen = g_videoChatOpen && !g_controlsHidden;
+    bar.unreadChat = unread;
+    bar.rightInset = panelWidth;
+    bar.muteKey = ShortcutName(SHORTCUT_TOGGLE_MIC);
+    bar.soundKey = ShortcutName(SHORTCUT_TOGGLE_SOUND);
+    bar.peopleKey = ShortcutName(SHORTCUT_PEOPLE);
+    bar.chatKey = ShortcutName(SHORTCUT_CHAT);
+    bar.fullscreenKey = ShortcutName(SHORTCUT_FULLSCREEN);
+    bar.volume = &g_volume;
+    bar.muted = &g_muted;
+    bar.fillWindow = &g_fillWindow;
+    bar.fullscreen = g_fullscreen;
+    bar.fps = g_fps.load();
+    bar.width = g_frameWidth;
+    bar.height = g_frameHeight;
+    bar.lostNetwork = g_statLostNetwork.load();
+    bar.recovered = g_statRecovered.load();
+    bar.late = g_statLate.load();
+    bar.presenterName = g_watchName;
+    bar.otherPresenters = others;
+
+    {
+        std::string hint;
+
+        auto add =
+            [&hint](const std::string& key, const char* what)
+            {
+                if (key.empty())
+                    return;
+
+                if (!hint.empty())
+                    hint += "  ·  ";
+
+                hint += key + ": " + what;
+            };
+
+        add(ShortcutName(SHORTCUT_TOGGLE_SOUND), "som");
+        add("setas", "volume");
+        add(ShortcutName(SHORTCUT_TOGGLE_UI), "esconder controles");
+
+        bar.keyHint = hint;
+    }
+
+    RoomBarActions barActions;
+
+    DrawRoomBar(bar, barActions);
+
+    g_barHovered = bar.alpha > 0.05f && barActions.hovered;
+
+    // ---------------- Clique fora fecha (sem fixar) ----------------
+
+    if (sideOpen &&
+        !g_sidePinned &&
+        !g_controlsHidden &&
+        g_sideProgress >= 1.0f &&
+        ImGui::IsMouseClicked(ImGuiMouseButton_Left) &&
+        !panelActions.hovered &&
+        !g_barHovered &&
+        !g_settingsOpen &&
+        ImGui::IsMousePosValid() &&
+        io.MousePos.x < io.DisplaySize.x - RoomSidePanelWidth())
+    {
+        CloseSidePanel();
+    }
+
+    // ---------------- Acoes ----------------
+
+    if (panelActions.setTab >= 0)
+    {
+        OpenSidePanel(panelActions.setTab);
+    }
+
+    if (panelActions.close)
+    {
+        CloseSidePanel();
+    }
+
+    if (panelActions.togglePin)
+    {
+        g_sidePinned = !g_sidePinned;
+
+        ReceiverSettings().SetInt(L"PainelFixo", g_sidePinned ? 1 : 0);
+    }
+
+    if (panelActions.sendChat)
+    {
+        out.sendChat = true;
+    }
+
+    const PeoplePanelActions& people = panelActions.people;
+
+    if (people.voiceJoin || barActions.joinVoice)
     {
         StartVoice();
     }
 
-    if (actions.voiceLeave)
+    if (people.voiceLeave)
     {
         g_voice.Leave();
     }
 
-    if (actions.toggleMute)
+    if (people.toggleMute || barActions.toggleMic)
     {
         g_voice.SetMuted(!g_voice.IsMuted());
     }
 
-    if (actions.volumeMember >= 0 &&
-        actions.volumeMember < static_cast<int>(state.members.size()))
+    if (people.volumeMember >= 0 &&
+        people.volumeMember < static_cast<int>(state.members.size()))
     {
         g_voice.SetPeerVolume(
-            state.members[actions.volumeMember].id,
-            actions.volumeValue);
+            state.members[people.volumeMember].id,
+            people.volumeValue);
     }
 
-    if (actions.openShortcuts)
+    if (people.openShortcuts)
     {
-        g_shortcutsOpen = true;
+        OpenSettings(SETTINGS_TAB_SHORTCUTS);
     }
 
-    return height;
+    if (barActions.togglePeople)
+    {
+        if (g_peopleOpen)
+            CloseSidePanel();
+        else
+            OpenSidePanel(0);
+    }
+
+    if (barActions.toggleChat)
+    {
+        if (g_videoChatOpen)
+            CloseSidePanel();
+        else
+            OpenSidePanel(1);
+    }
+
+    if (barActions.openSettings)
+    {
+        OpenSettings(SETTINGS_TAB_VOICE);
+    }
+
+    if (barActions.toggleFullscreen)
+    {
+        out.toggleFullscreen = true;
+    }
+
+    if (barActions.backToRoom)
+    {
+        out.backToRoom = true;
+    }
+
+    out.switchTo = barActions.switchTo;
 }
 
 
@@ -6069,6 +6693,45 @@ float g_overlayAlpha = 1.0f;
 float g_peoplePanelHeight = 0.0f;
 
 bool g_roomBarHovered = false;
+
+
+// Som (M) e volume (setas) do video. Devolve true se algo
+// mudou.
+bool HandleVideoKeys()
+{
+    if (ImGui::GetIO().WantTextInput)
+        return false;
+
+    bool changed = false;
+
+    if (LocalShortcut(SHORTCUT_TOGGLE_SOUND))
+    {
+        g_muted = !g_muted;
+
+        changed = true;
+    }
+
+    if (ImGui::IsKeyPressed(ImGuiKey_UpArrow))
+    {
+        g_volume += 0.05f;
+
+        g_muted = false;
+
+        changed = true;
+    }
+
+    if (ImGui::IsKeyPressed(ImGuiKey_DownArrow))
+    {
+        g_volume -= 0.05f;
+
+        changed = true;
+    }
+
+    if (g_volume < 0.0f) g_volume = 0.0f;
+    if (g_volume > 1.0f) g_volume = 1.0f;
+
+    return changed;
+}
 
 
 void DrawVideoOverlay(
@@ -6107,33 +6770,9 @@ void DrawVideoOverlay(
     }
 
     // Atalhos de teclado (tambem mostram o painel).
-    if (keyboardFree)
+    if (keyboardFree && HandleVideoKeys())
     {
-        if (LocalShortcut(SHORTCUT_TOGGLE_SOUND))
-        {
-            g_muted = !g_muted;
-
-            lastActivity = now;
-        }
-
-        if (ImGui::IsKeyPressed(ImGuiKey_UpArrow))
-        {
-            g_volume += 0.05f;
-
-            g_muted = false;
-
-            lastActivity = now;
-        }
-
-        if (ImGui::IsKeyPressed(ImGuiKey_DownArrow))
-        {
-            g_volume -= 0.05f;
-
-            lastActivity = now;
-        }
-
-        if (g_volume < 0.0f) g_volume = 0.0f;
-        if (g_volume > 1.0f) g_volume = 1.0f;
+        lastActivity = now;
     }
 
     // Visivel por 2,5s depois da ultima atividade, sumindo
@@ -6225,7 +6864,7 @@ void DrawVideoOverlay(
 
     if (overlayActions.openShortcuts)
     {
-        g_shortcutsOpen = true;
+        OpenSettings(SETTINGS_TAB_SHORTCUTS);
     }
 
     if (outSwitchTo && overlayActions.switchTo >= 0)
@@ -6292,14 +6931,21 @@ void DrawReceiverUi()
         ToggleFullscreen();
     }
 
-    // Pessoas: no video e transmitindo (na lista da sala ja
-    // aparecem).
-    if (peopleShortcut &&
-        mode == AppMode::Room &&
-        g_roomView != RoomView::Lobby)
+    // Sem navegacao por teclado no video/transmitindo da sala:
+    // Tab (esconder controles) e as setas (volume) nao mexem no
+    // foco dos botoes. (Vale a partir do proximo frame.)
     {
-        g_peopleOpen = !g_peopleOpen;
+        ImGuiIO& io = ImGui::GetIO();
+
+        if (mode == AppMode::Room && g_roomView != RoomView::Lobby)
+            io.ConfigFlags &= ~ImGuiConfigFlags_NavEnableKeyboard;
+        else
+            io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
     }
+
+    // Recalculado abaixo se o painel lateral estiver sobre o
+    // video.
+    g_videoRightInset = 0.0f;
 
     // O chat ja foi processado neste frame (senao, as mensagens
     // novas viram avisos mesmo assim - ex.: transmitindo).
@@ -6426,76 +7072,28 @@ void DrawReceiverUi()
                 shareGoHome
             );
 
-            // Chat e pessoas tambem enquanto transmite (no canto
-            // direito - o painel da transmissao fica no esquerdo).
+            // Chat, pessoas e voz tambem enquanto transmite: o
+            // mesmo painel lateral e a barra de icones do video.
             int unread = 0;
 
             std::vector<ChatLine> chat =
-                CollectChat(g_videoChatOpen, unread);
+                CollectChat(g_videoChatOpen && !g_controlsHidden, unread);
 
             chatHandled = true;
 
-            ShareToolbarActions bar;
+            RoomControlsResult controls;
 
-            float barHeight =
-                DrawShareRoomToolbar(
-                    g_peopleOpen,
-                    g_videoChatOpen,
-                    unread,
-                    g_voice.IsJoined(),
-                    g_voice.IsMuted(),
-                    bar);
+            DrawRoomControls(
+                roomState,
+                false,
+                std::vector<std::string>(),
+                chat,
+                unread,
+                chatShortcut,
+                peopleShortcut,
+                controls);
 
-            if (bar.togglePeople)
-            {
-                g_peopleOpen = !g_peopleOpen;
-            }
-
-            if (bar.toggleChat)
-            {
-                toggleChat = true;
-            }
-
-            if (bar.toggleMute)
-            {
-                g_voice.SetMuted(!g_voice.IsMuted());
-            }
-
-            float rightTop = barHeight;
-
-            if (g_peopleOpen)
-            {
-                rightTop += DrawRoomPeoplePanel(roomState, true, barHeight);
-            }
-
-            if (chatShortcut && !g_videoChatOpen)
-            {
-                toggleChat = true;
-            }
-
-            if (g_videoChatOpen)
-            {
-                bool close = false;
-
-                if (DrawVideoChat(
-                        chat,
-                        g_chatInput,
-                        sizeof(g_chatInput),
-                        g_chatFocus,
-                        close,
-                        true,
-                        rightTop))
-                {
-                    sendChat = true;
-                }
-
-                g_chatFocus = false;
-
-                if (close)
-                {
-                    toggleChat = true;
-                }
-            }
+            sendChat |= controls.sendChat;
         }
         else if (g_roomView == RoomView::Watch)
         {
@@ -6524,89 +7122,13 @@ void DrawReceiverUi()
             int unread = 0;
 
             std::vector<ChatLine> chat =
-                CollectChat(g_videoChatOpen, unread);
+                CollectChat(g_videoChatOpen && !g_controlsHidden, unread);
 
             chatHandled = true;
 
-            // Barra da sala (Pessoas / Chat / microfone) no canto
-            // direito, como transmitindo; some junto com o painel
-            // do video, a nao ser que algo esteja aberto.
-            float barAlpha =
-                !g_streamReceived || g_peopleOpen || g_videoChatOpen
-                ? 1.0f
-                : g_overlayAlpha;
-
-            ShareToolbarActions bar;
-
-            float rightTop =
-                DrawShareRoomToolbar(
-                    g_peopleOpen,
-                    g_videoChatOpen,
-                    unread,
-                    g_voice.IsJoined(),
-                    g_voice.IsMuted(),
-                    bar,
-                    barAlpha);
-
-            g_roomBarHovered = bar.hovered && barAlpha > 0.05f;
-
-            if (barAlpha > 0.05f)
-            {
-                if (bar.togglePeople)
-                {
-                    g_peopleOpen = !g_peopleOpen;
-                }
-
-                if (bar.toggleChat)
-                {
-                    toggleChat = true;
-                }
-
-                if (bar.toggleMute)
-                {
-                    g_voice.SetMuted(!g_voice.IsMuted());
-                }
-            }
-
-            // O painel do video fica logo abaixo da barra (ao lado
-            // do de pessoas); o chat, embaixo de tudo.
-            float barTop = rightTop;
-
-            if (g_peopleOpen)
-            {
-                g_peoplePanelHeight =
-                    DrawRoomPeoplePanel(roomState, true, rightTop);
-
-                rightTop += g_peoplePanelHeight;
-            }
-            else if (g_voice.IsJoined())
-            {
-                std::vector<std::string> speaking;
-
-                for (const RoomMember& member : roomState.members)
-                {
-                    if (member.id != myId &&
-                        SpeakingNow(member.id))
-                    {
-                        speaking.push_back(member.name);
-                    }
-                }
-
-                DrawVoiceSpeakers(speaking, g_voice.IsMuted());
-            }
-
             if (g_streamReceived)
             {
-                DrawVideoOverlay(
-                    actions,
-                    true,
-                    g_watchName,
-                    backToRoom,
-                    others,
-                    unread,
-                    &switchTo,
-                    &toggleChat,
-                    barTop);
+                HandleVideoKeys();
             }
             else
             {
@@ -6636,34 +7158,30 @@ void DrawReceiverUi()
                     backToRoom);
             }
 
-            // Atalho do chat (Enter por padrao) abre o chat.
-            if (chatShortcut && !g_videoChatOpen)
+            RoomControlsResult controls;
+
+            DrawRoomControls(
+                roomState,
+                true,
+                others,
+                chat,
+                unread,
+                chatShortcut,
+                peopleShortcut,
+                controls);
+
+            sendChat |= controls.sendChat;
+
+            backToRoom |= controls.backToRoom;
+
+            if (controls.switchTo >= 0)
             {
-                toggleChat = true;
+                switchTo = controls.switchTo;
             }
 
-            if (g_videoChatOpen)
+            if (controls.toggleFullscreen)
             {
-                bool close = false;
-
-                if (DrawVideoChat(
-                        chat,
-                        g_chatInput,
-                        sizeof(g_chatInput),
-                        g_chatFocus,
-                        close,
-                        true,
-                        rightTop))
-                {
-                    sendChat = true;
-                }
-
-                g_chatFocus = false;
-
-                if (close)
-                {
-                    toggleChat = true;
-                }
+                actions.toggleFullscreen = true;
             }
         }
         else
@@ -6699,6 +7217,8 @@ void DrawReceiverUi()
                 entry.watching =
                     !g_watchSessionCode.empty() &&
                     presenter.sessionCode == g_watchSessionCode;
+
+                entry.avatar = MemberAvatar(presenter.memberId);
 
                 if (const RoomThumbTexture* thumb =
                         RoomThumbnail(presenter.memberId))
@@ -6780,6 +7300,8 @@ void DrawReceiverUi()
                 MemberVoice voice = MemberVoiceState(member, isMe);
 
                 room.memberSpeak.push_back(SpeakAmount(member.id));
+
+                room.memberAvatar.push_back(MemberAvatar(member.id));
 
                 room.memberIsMe.push_back(isMe);
                 room.memberVoice.push_back(voice);
@@ -6924,7 +7446,7 @@ void DrawReceiverUi()
     // Tela de atalhos (por cima de qualquer tela)
     // --------------------------------------------------------
 
-    if (g_shortcutsOpen)
+    if (g_settingsOpen)
     {
         // Esperando a tecla nova?
         if (g_captureRow >= 0 && g_keyCapture.IsActive())
@@ -6946,7 +7468,52 @@ void DrawReceiverUi()
             }
         }
 
-        ShortcutsModel shortcuts;
+        SettingsModel shortcuts;
+
+        shortcuts.openTab = g_settingsOpenTab;
+
+        g_settingsOpenTab = -1;
+
+        // Voz
+        for (size_t i = 0; i < g_microphones.size(); ++i)
+        {
+            shortcuts.microphones.push_back(g_microphones[i].name);
+
+            if (g_microphones[i].id == g_voiceMicrophone)
+            {
+                shortcuts.microphone = static_cast<int>(i) + 1;
+            }
+        }
+
+        for (size_t i = 0; i < g_speakers.size(); ++i)
+        {
+            shortcuts.speakers.push_back(g_speakers[i].name);
+
+            if (g_speakers[i].id == g_voiceSpeaker)
+            {
+                shortcuts.speaker = static_cast<int>(i) + 1;
+            }
+        }
+
+        shortcuts.voiceJoined = g_voice.IsJoined();
+        shortcuts.voiceTransmitting = g_voice.IsTransmitting();
+        shortcuts.micLevel = g_voice.MicLevel();
+        shortcuts.echoCancel =
+            !shortcuts.voiceJoined || g_voice.EchoCancellation();
+        shortcuts.noiseSuppression = &g_noiseSuppression;
+        shortcuts.soundsEnabled = &g_soundsEnabled;
+        shortcuts.soundsVolume = &g_soundsVolume;
+
+        // Geral
+        shortcuts.lightTheme = &g_lightThemeSetting;
+        shortcuts.myAvatar = MyAvatarTexture();
+        shortcuts.myName = CurrentName();
+        shortcuts.avatarError = g_avatarError;
+
+        // Teste do microfone (fora da voz)
+        shortcuts.micTestRunning = g_micTester.IsRunning();
+        shortcuts.micTestLevel = g_micTester.Level();
+        shortcuts.micTestLoopback = &g_micTestLoopback;
 
         for (int i = 0; i < SHORTCUT_COUNT; ++i)
         {
@@ -6965,9 +7532,54 @@ void DrawReceiverUi()
 
         shortcuts.capturing = g_captureRow;
 
-        ShortcutsActions shortcutActions;
+        SettingsActions shortcutActions;
 
-        DrawShortcutsWindow(shortcuts, shortcutActions);
+        DrawSettingsWindow(shortcuts, shortcutActions);
+
+        // A parte de voz e tratada junto com as acoes da sala
+        // (mais abaixo).
+        if (shortcutActions.microphone >= 0)
+            roomActions.voiceMicrophone = shortcutActions.microphone;
+
+        if (shortcutActions.speaker >= 0)
+            roomActions.voiceSpeaker = shortcutActions.speaker;
+
+        roomActions.voiceRefreshDevices |= shortcutActions.refreshDevices;
+        roomActions.voiceSettingsChanged |= shortcutActions.voiceSettingsChanged;
+        roomActions.previewSound |= shortcutActions.previewSound;
+
+        if (shortcutActions.micTestToggle)
+        {
+            g_micTestOn = !g_micTestOn;
+        }
+
+        if (shortcutActions.themeChanged)
+        {
+            UiSetLightTheme(g_lightThemeSetting);
+
+            ApplyTitleBarTheme(g_lightThemeSetting);
+
+            ReceiverSettings().SetInt(
+                L"TemaClaro", g_lightThemeSetting ? 1 : 0);
+        }
+
+        if (shortcutActions.chooseAvatar)
+        {
+            ChooseAvatar();
+        }
+
+        if (shortcutActions.removeAvatar)
+        {
+            g_myAvatarJpeg.clear();
+            g_myAvatarSerial++;
+
+            g_avatarError.clear();
+
+            DeleteFileW(
+                ReceiverSettings().SiblingPath(L"foto.jpg").c_str());
+
+            g_room.SetAvatar(g_myAvatarJpeg);
+        }
 
         if (shortcutActions.capture >= 0)
         {
@@ -7010,9 +7622,22 @@ void DrawReceiverUi()
 
             g_captureRow = -1;
 
-            g_shortcutsOpen = false;
+            g_settingsOpen = false;
+
+            g_micTestOn = false;
         }
     }
+
+    PollAvatarDialog();
+
+    // Teste do microfone: so com as configuracoes abertas e fora
+    // da voz (na voz, o nivel vem dela).
+    g_micTester.Set(
+        g_settingsOpen && g_micTestOn && !g_voice.IsJoined(),
+        g_voiceMicrophone,
+        g_voiceSpeaker,
+        g_micTestLoopback,
+        g_noiseSuppression);
 
     DrawToasts(g_toasts);
 
@@ -7127,6 +7752,11 @@ void DrawReceiverUi()
         }
     }
 
+    if (homeActions.openSettings)
+    {
+        OpenSettings(SETTINGS_TAB_GENERAL);
+    }
+
     if (homeActions.shareWithoutRoom)
     {
         OpenShareMode();
@@ -7158,7 +7788,12 @@ void DrawReceiverUi()
 
     if (roomActions.openShortcuts)
     {
-        g_shortcutsOpen = true;
+        OpenSettings(SETTINGS_TAB_SHORTCUTS);
+    }
+
+    if (roomActions.openVoiceSettings)
+    {
+        OpenSettings(SETTINGS_TAB_VOICE);
     }
 
     if (roomActions.voiceSettingsChanged)
@@ -7184,10 +7819,10 @@ void DrawReceiverUi()
 
     if (roomActions.voiceRefreshDevices)
     {
-        g_microphones = VoiceCapture::ListMicrophones();
-
-        g_speakers = VoiceCapture::ListSpeakers();
+        RequestDeviceLists();
     }
+
+    PollDeviceLists();
 
     if (roomActions.voiceSpeaker >= 0)
     {
@@ -7206,7 +7841,7 @@ void DrawReceiverUi()
 
         if (g_sounds.IsRunning())
         {
-            g_sounds.Start(g_voiceSpeaker);
+            g_sounds.StartAsync(g_voiceSpeaker);
         }
     }
 
@@ -7266,9 +7901,10 @@ void DrawReceiverUi()
 
     if (toggleChat)
     {
-        g_videoChatOpen = !g_videoChatOpen;
-
-        g_chatFocus = g_videoChatOpen;
+        if (g_videoChatOpen)
+            CloseSidePanel();
+        else
+            OpenSidePanel(1);
     }
 
     if (sendChat &&
@@ -7577,8 +8213,16 @@ void RenderFrame()
     // Limpar (fundo preto - letterbox)
     // --------------------------------------------------------
 
+    // Sem video na tela: fundo do tema (claro ou escuro). Com
+    // video: preto (as bordas do letterbox).
+    bool lightBackground =
+        UiIsLightTheme() && !(haveFrame && g_videoSRV);
+
     float clearColor[4] =
-        { 0.0f, 0.0f, 0.0f, 1.0f };
+        { lightBackground ? 0.90f : 0.0f,
+          lightBackground ? 0.91f : 0.0f,
+          lightBackground ? 0.93f : 0.0f,
+          1.0f };
 
 
     g_rendererContext->OMSetRenderTargets(
@@ -7610,8 +8254,20 @@ void RenderFrame()
             static_cast<double>(width) /
             static_cast<double>(height);
 
+        // Painel lateral da sala aberto: o video usa so o que
+        // sobra a esquerda (encolhe em vez de ficar por baixo).
+        int videoWidth = windowWidth;
+
+        if (g_videoRightInset > 0.0f &&
+            g_videoRightInset < static_cast<float>(windowWidth) - 50.0f)
+        {
+            videoWidth =
+                windowWidth -
+                static_cast<int>(g_videoRightInset + 0.5f);
+        }
+
         double windowAspect =
-            static_cast<double>(windowWidth) /
+            static_cast<double>(videoWidth) /
             static_cast<double>(windowHeight);
 
 
@@ -7664,7 +8320,7 @@ void RenderFrame()
         D3D11_VIEWPORT viewport{};
 
         viewport.Width =
-            static_cast<float>(windowWidth);
+            static_cast<float>(videoWidth);
 
         viewport.Height =
             static_cast<float>(windowHeight);
@@ -7842,7 +8498,7 @@ LRESULT CALLBACK WindowProc(
 
         if (wParam == VK_ESCAPE &&
             g_fullscreen &&
-            !g_shortcutsOpen)
+            !g_settingsOpen)
         {
             ToggleFullscreen();
 
@@ -8334,6 +8990,13 @@ int AppMain(
 
         return 1;
     }
+
+    UiSetLightTheme(g_lightThemeSetting);
+
+    ApplyTitleBarTheme(g_lightThemeSetting);
+
+    // Foto de perfil (enviada ao entrar numa sala).
+    g_room.SetAvatar(g_myAvatarJpeg);
 
 
     // Sem ffmpeg funcionando nao ha video - a interface abre

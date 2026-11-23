@@ -1100,7 +1100,8 @@ void ParseRoomState(
             RoomMember{
                 parts[0],
                 UrlDecode(parts[1]),
-                parts.size() >= 3 ? parts[2] : std::string() });
+                parts.size() >= 3 ? parts[2] : std::string(),
+                parts.size() >= 4 ? parts[3] : std::string() });
     }
 
     int presenters =
@@ -1477,8 +1478,12 @@ bool SignalingRoomPresent(
 // (Base64UrlEncode/Decode: room_crypto.h)
 
 
-bool SignalingRoomThumb(
+namespace
+{
+
+bool PostRoomImage(
     const RoomMembership& membership,
+    const char* action,
     const std::vector<uint8_t>& jpeg,
     std::string& outError)
 {
@@ -1496,7 +1501,7 @@ bool SignalingRoomThumb(
     }
 
     if (!HttpPost(
-            RoomPath(membership, "thumb"),
+            RoomPath(membership, action),
             body,
             status,
             response,
@@ -1518,8 +1523,9 @@ bool SignalingRoomThumb(
 }
 
 
-bool SignalingRoomGetThumb(
+bool GetRoomImage(
     const RoomMembership& membership,
+    const char* action,
     const std::string& targetMemberId,
     std::vector<uint8_t>& outJpeg,
     std::string& outVersion,
@@ -1533,7 +1539,7 @@ bool SignalingRoomGetThumb(
     std::string response;
 
     if (!HttpPost(
-            RoomPath(membership, "thumb_get"),
+            RoomPath(membership, action),
             MemberBody(membership) + "&target=" + targetMemberId,
             status,
             response,
@@ -1564,6 +1570,53 @@ bool SignalingRoomGetThumb(
     }
 
     return true;
+}
+
+
+} // namespace
+
+
+bool SignalingRoomThumb(
+    const RoomMembership& membership,
+    const std::vector<uint8_t>& jpeg,
+    std::string& outError)
+{
+    return PostRoomImage(membership, "thumb", jpeg, outError);
+}
+
+
+bool SignalingRoomGetThumb(
+    const RoomMembership& membership,
+    const std::string& targetMemberId,
+    std::vector<uint8_t>& outJpeg,
+    std::string& outVersion,
+    std::string& outError)
+{
+    return GetRoomImage(
+        membership, "thumb_get", targetMemberId,
+        outJpeg, outVersion, outError);
+}
+
+
+bool SignalingRoomAvatar(
+    const RoomMembership& membership,
+    const std::vector<uint8_t>& image,
+    std::string& outError)
+{
+    return PostRoomImage(membership, "avatar", image, outError);
+}
+
+
+bool SignalingRoomGetAvatar(
+    const RoomMembership& membership,
+    const std::string& targetMemberId,
+    std::vector<uint8_t>& outImage,
+    std::string& outVersion,
+    std::string& outError)
+{
+    return GetRoomImage(
+        membership, "avatar_get", targetMemberId,
+        outImage, outVersion, outError);
 }
 
 

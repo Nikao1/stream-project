@@ -41,13 +41,21 @@ Dentro da sala:
   que cada um mostra (atualizada a cada 15 s; passe o mouse
   para ver maior). Quem transmite pode desligar a prévia no
   painel da transmissão.
-- Clique em Assistir (ou na prévia) em quem você quer ver. Para trocar, use "Trocar de tela" no painel
-  do vídeo (mexa o mouse para ele aparecer).
-- Dá para transmitir e assistir ao mesmo tempo.
-- Chat: no lado direito da sala, ou no botão Chat (ou tecla
-  Enter) durante o vídeo e enquanto você transmite.
-- Pessoas: o botão Pessoas (ou tecla P) mostra quem está na
-  sala e na voz por cima do vídeo ou da sua transmissão.
+- Clique em Assistir (ou na prévia) em quem você quer ver.
+- Vendo uma transmissão, os controles ficam escondidos: leve o
+  mouse até a parte de baixo da janela e a barra de ícones
+  aparece (microfone, som, pessoas, chat, trocar de tela,
+  opções do vídeo, configurações, tela cheia e voltar à sala).
+  Passe o mouse em cima de um ícone para ver o que ele faz.
+- Pessoas e Chat abrem num painel à direita que empurra o
+  vídeo para o lado (nada fica por cima da imagem). O alfinete
+  fixa o painel; sem ele, o painel fecha ao clicar no vídeo.
+  No rodapé do painel ficam Silenciar e Sair da voz.
+- Tab esconde (ou mostra) tudo, para ver só a transmissão.
+- Teclas: Enter abre o chat, P mostra as pessoas, M liga/desliga
+  o som e as setas mudam o volume (dá para trocar em Atalhos).
+- Dá para transmitir e assistir ao mesmo tempo. Transmitindo,
+  a mesma barra e o mesmo painel ficam disponíveis.
 - Transmitindo, o painel da transmissão pode ser minimizado
   (botão Minimizar) para ver melhor a prévia.
 - Se a conexão cair, o programa tenta voltar sozinho.
@@ -58,11 +66,19 @@ CANAL DE VOZ
 ------------
 Na sala, clique em "Entrar na voz" para conversar com quem
 também entrou. A voz vai direto entre vocês, criptografada.
+- A engrenagem (na tela inicial e ao lado de "Entrar na voz")
+  abre as Configurações:
+  - Geral: tema escuro ou claro e sua foto (aparece para a
+    sala, criptografada como o chat);
+  - Voz: microfone, onde ouvir, "Testar microfone" (dá para
+    ouvir a própria voz, de preferência com fone), redução de
+    ruído e eco, sons de aviso;
+  - Atalhos.
 - Sem atalho, o microfone fica aberto. Em Atalhos dá para
   escolher uma tecla de "segurar para falar" e outra de
   ligar/desligar o microfone - qualquer tecla ou botão do
   mouse, e funcionam com o jogo aberto.
-- "Microfone" e "Ouvir em": escolha o microfone e onde ouvir a
+- "Microfone" e "Ouvir em" (nas Configurações): escolha o microfone e onde ouvir a
   voz dos outros (ex.: no fone, mesmo com a transmissão saindo
   nas caixas de som). A escolha fica salva.
 - Clique no nome de alguém na voz para ajustar o volume dele

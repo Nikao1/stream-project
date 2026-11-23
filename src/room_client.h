@@ -118,6 +118,24 @@ public:
         m_wantThumbs = want;
     }
 
+    // Foto de perfil desta pessoa (JPEG pequeno; vazio = sem
+    // foto). Enviada criptografada; reenviada ao reconectar.
+    void SetAvatar(
+        const std::vector<uint8_t>& jpeg
+    );
+
+    // Fotos das pessoas da sala (inclusive a propria): mesmo
+    // esquema das previas.
+    std::string AvatarVersion(
+        const std::string& memberId
+    );
+
+    bool GetAvatar(
+        const std::string& memberId,
+        std::string& outVersion,
+        std::vector<uint8_t>& outJpeg
+    );
+
     // Versao da previa guardada (vazio = nenhuma). Barato: pra
     // conferir a cada frame se mudou.
     std::string ThumbnailVersion(
@@ -150,6 +168,11 @@ private:
     );
 
     void UpdateThumbnails(
+        const RoomMembership& membership,
+        const RoomState& state
+    );
+
+    void UpdateAvatars(
         const RoomMembership& membership,
         const RoomState& state
     );
@@ -225,4 +248,12 @@ private:
     std::map<std::string, Thumb> m_thumbs;
 
     uint64_t m_localThumbCount = 0;
+
+    // Fotos: a propria (pra enviar) e as baixadas.
+    std::vector<uint8_t> m_myAvatar;
+    bool m_avatarDirty = false;
+    unsigned long long m_avatarRetryAt = 0;
+    uint64_t m_avatarSerial = 0;
+
+    std::map<std::string, Thumb> m_avatars;
 };

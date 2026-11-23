@@ -201,7 +201,53 @@ UiSoundPlayer::~UiSoundPlayer()
 void UiSoundPlayer::Start(
     const std::wstring& deviceId)
 {
-    Stop();
+    if (m_starter.joinable())
+    {
+        m_starter.join();
+    }
+
+    std::lock_guard<std::mutex> lock(m_lifecycle);
+
+    StartLocked(deviceId);
+}
+
+
+void UiSoundPlayer::StartAsync(
+    const std::wstring& deviceId)
+{
+    if (m_starter.joinable())
+    {
+        m_starter.join();
+    }
+
+    m_starter =
+        std::thread(
+            [this, deviceId]()
+            {
+                std::lock_guard<std::mutex> lock(m_lifecycle);
+
+                StartLocked(deviceId);
+            });
+}
+
+
+void UiSoundPlayer::Stop()
+{
+    if (m_starter.joinable())
+    {
+        m_starter.join();
+    }
+
+    std::lock_guard<std::mutex> lock(m_lifecycle);
+
+    StopLocked();
+}
+
+
+void UiSoundPlayer::StartLocked(
+    const std::wstring& deviceId)
+{
+    StopLocked();
 
     m_playback = new AudioPlayback();
 
@@ -223,7 +269,7 @@ void UiSoundPlayer::Start(
 }
 
 
-void UiSoundPlayer::Stop()
+void UiSoundPlayer::StopLocked()
 {
     m_running = false;
 

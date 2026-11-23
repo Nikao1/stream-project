@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.20)
 
 project(stream-project
-    VERSION 0.7.0
+    VERSION 0.7.4
     LANGUAGES C CXX
 )
 
@@ -249,6 +249,8 @@ add_executable(stream-project WIN32
     src/signaling_client.h
     src/noise_suppressor.cpp
     src/noise_suppressor.h
+    src/mic_tester.cpp
+    src/mic_tester.h
     src/ui_sounds.cpp
     src/ui_sounds.h
     src/room_client.cpp
@@ -312,6 +314,7 @@ target_link_libraries(stream-project PRIVATE
     imgui
     dwmapi
     shell32
+    comdlg32
     advapi32
     gdi32
     user32

@@ -55,6 +55,11 @@ public:
         const std::wstring& deviceId
     );
 
+    // Igual, numa thread (trocar a saida sem travar a janela).
+    void StartAsync(
+        const std::wstring& deviceId
+    );
+
     void Stop();
 
     bool IsRunning() const
@@ -87,6 +92,17 @@ public:
 
 private:
     void Loop();
+
+    // Com m_lifecycle travado.
+    void StartLocked(
+        const std::wstring& deviceId
+    );
+
+    void StopLocked();
+
+    std::mutex m_lifecycle;
+
+    std::thread m_starter;
 
     std::mutex m_mutex;
 

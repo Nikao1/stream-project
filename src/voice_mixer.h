@@ -77,6 +77,13 @@ public:
         std::vector<float>& out
     );
 
+    // Nivel do que sai nas caixas de som (0..1), segurado por uns
+    // 300 ms (o eco chega atrasado). Pra supressao de eco.
+    float OutputLevel() const
+    {
+        return m_outputLevel;
+    }
+
 private:
     struct Source
     {
@@ -104,4 +111,6 @@ private:
     std::thread m_thread;
 
     std::atomic<bool> m_running{ false };
+
+    std::atomic<float> m_outputLevel{ 0.0f };
 };

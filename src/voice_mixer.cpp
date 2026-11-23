@@ -203,10 +203,22 @@ void VoiceMixer::MixBlock(
     }
 
     // Evita estourar quando varias pessoas falam alto juntas.
+    double outEnergy = 0.0;
+
     for (float& sample : out)
     {
         sample = (std::max)(-1.0f, (std::min)(1.0f, sample));
+
+        outEnergy += static_cast<double>(sample) * sample;
     }
+
+    float outRms =
+        static_cast<float>(std::sqrt(outEnergy / out.size()));
+
+    // Cai ~25% a cada 100 ms: o eco (que chega atrasado) ainda
+    // conta.
+    m_outputLevel =
+        (std::max)(outRms, m_outputLevel.load() * 0.97f);
 }
 
 

@@ -331,7 +331,7 @@ void DrawClientLiveScreen(
 
         if (model.roomPreview)
         {
-            if (ImGui::Checkbox(
+            if (UiToggle(
                     "Mostrar prévia na lista da sala",
                     model.roomPreview))
             {
@@ -998,7 +998,7 @@ void DrawClientPickerScreen(
 
     ImGui::BeginDisabled(!model.windowAudioSupported);
 
-    ImGui::Checkbox(
+    UiToggle(
         "Ao compartilhar uma janela, transmitir só o som dela",
         model.windowAudioOnly
     );

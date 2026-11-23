@@ -22,6 +22,7 @@ enum ShortcutId
     SHORTCUT_FULLSCREEN,
     SHORTCUT_CHAT,
     SHORTCUT_PEOPLE,           // painel de pessoas
+    SHORTCUT_TOGGLE_UI,        // mostrar/esconder controles do video
     SHORTCUT_COUNT
 };
 

@@ -65,6 +65,9 @@ struct HomeScreenActions
     bool enter = false;
 
     bool shareWithoutRoom = false;
+
+    // Engrenagem: configuracoes.
+    bool openSettings = false;
 };
 
 void DrawHomeScreen(
@@ -142,6 +145,9 @@ struct RoomPresenterEntry
     void* thumbnail = nullptr;
     float thumbWidth = 0.0f;
     float thumbHeight = 0.0f;
+
+    // Foto de perfil (sem previa, aparece no lugar da bolinha).
+    void* avatar = nullptr;
 };
 
 struct RoomScreenModel
@@ -187,6 +193,9 @@ struct RoomScreenModel
 
     // Anel de "falando" (0..1, suavizado), mesma ordem.
     std::vector<float> memberSpeak;
+
+    // Fotos de perfil (ImTextureID ou nullptr), mesma ordem.
+    std::vector<void*> memberAvatar;
 
     // Volume de cada pessoa na voz (0 a 2; 1 = normal).
     std::vector<float> memberVolume;
@@ -252,8 +261,9 @@ struct RoomScreenActions
     bool voiceLeave = false;
     bool voiceToggleMute = false;
 
-    // Abrir a tela de atalhos.
+    // Abrir as configuracoes (aba Atalhos / aba Voz).
     bool openShortcuts = false;
+    bool openVoiceSettings = false;
 
     // Microfone escolhido (mesmo esquema de
     // RoomScreenModel::microphone; -1 = sem mudanca).
@@ -293,21 +303,6 @@ void DrawRoomWaitingScreen(
 );
 
 
-// Chat sobre o video (canto inferior esquerdo, ou direito com
-// rightSide). outClose = a pessoa fechou. Devolve true quando
-// envia (texto em input). occupiedTop: altura ja ocupada no
-// topo do mesmo lado (o chat encolhe pra nao ficar por cima).
-bool DrawVideoChat(
-    const std::vector<ChatLine>& lines,
-    char* input,
-    size_t inputSize,
-    bool focusInput,
-    bool& outClose,
-    bool rightSide = false,
-    float occupiedTop = 0.0f
-);
-
-
 // ------------------------------------------------------------
 // Painel "Pessoas" (sobre o video ou a transmissao)
 // ------------------------------------------------------------
@@ -328,6 +323,9 @@ struct PeopleEntry
 
     // Anel de "falando" (0..1, ja suavizado).
     float speakAmount = 0.0f;
+
+    // Foto de perfil (ImTextureID; nullptr = inicial).
+    void* avatar = nullptr;
 };
 
 struct PeoplePanelModel
@@ -370,37 +368,128 @@ struct PeoplePanelActions
     bool openShortcuts = false;
 };
 
-// Devolve a altura ocupada (pra empilhar o que vem embaixo).
-float DrawPeoplePanel(
-    const PeoplePanelModel& model,
-    PeoplePanelActions& actions
+// ------------------------------------------------------------
+// Sala sobre o video (ou transmitindo): painel lateral com
+// abas Pessoas/Chat e barra de icones embaixo
+// ------------------------------------------------------------
+
+struct RoomSidePanelModel
+{
+    // Pessoas e voz (rightSide/topOffset nao sao usados aqui).
+    PeoplePanelModel people;
+
+    const std::vector<ChatLine>* chat = nullptr;
+
+    char* chatInput = nullptr;
+    size_t chatInputSize = 0;
+    bool focusChat = false;
+
+    // 0 = Pessoas, 1 = Chat.
+    int tab = 0;
+
+    // Fixado: nao fecha ao clicar no video.
+    bool pinned = false;
+
+    int unreadChat = 0;
+
+    // 0 = fechado, 1 = aberto (anima o deslize e o fade).
+    float progress = 1.0f;
+};
+
+struct RoomSidePanelActions
+{
+    // -1 = nao trocou.
+    int setTab = -1;
+
+    bool togglePin = false;
+    bool close = false;
+    bool sendChat = false;
+
+    // Mouse em cima do painel.
+    bool hovered = false;
+
+    PeoplePanelActions people;
+};
+
+// Largura do painel (o video encolhe isso quando aberto).
+float RoomSidePanelWidth();
+
+void DrawRoomSidePanel(
+    const RoomSidePanelModel& model,
+    RoomSidePanelActions& actions
 );
 
 
-// Barra de botoes da sala no canto superior direito enquanto
-// esta pessoa transmite (la nao ha o painel do video).
-// Devolve a altura ocupada (pra o painel de pessoas ficar
-// embaixo).
-struct ShareToolbarActions
+struct RoomBarModel
 {
-    bool togglePeople = false;
-    bool toggleChat = false;
-    bool toggleMute = false;
+    // 0 = invisivel, 1 = visivel (fade).
+    float alpha = 1.0f;
 
-    // Mouse em cima (mantem a barra visivel).
-    bool hovered = false;
+    // Vendo uma transmissao (som, opcoes, tela cheia, voltar);
+    // false = esta pessoa transmite (so voz, pessoas, chat e
+    // configuracoes).
+    bool watching = false;
+
+    bool voiceJoined = false;
+    bool voiceJoining = false;
+    bool voiceMuted = false;
+
+    bool peopleOpen = false;
+    bool chatOpen = false;
+    int unreadChat = 0;
+
+    // Largura ocupada a direita (painel lateral): a barra
+    // centraliza no espaco que sobra.
+    float rightInset = 0.0f;
+
+    // Teclas (vazio = nenhuma) pras dicas.
+    std::string muteKey;
+    std::string soundKey;
+    std::string peopleKey;
+    std::string chatKey;
+    std::string fullscreenKey;
+
+    // Opcoes do video (so com watching; a tela altera direto).
+    float* volume = nullptr;
+    bool* muted = nullptr;
+    bool* fillWindow = nullptr;
+    bool fullscreen = false;
+
+    int fps = 0;
+    unsigned width = 0;
+    unsigned height = 0;
+    unsigned long long lostNetwork = 0;
+    unsigned long long recovered = 0;
+    unsigned long long late = 0;
+
+    std::string presenterName;
+    std::string keyHint;
+
+    // Outras pessoas transmitindo ("Nome · o que mostra").
+    std::vector<std::string> otherPresenters;
 };
 
-// alpha: some junto com o painel do video quando o mouse fica
-// parado (assistindo); 1 = sempre visivel.
-float DrawShareRoomToolbar(
-    bool peopleOpen,
-    bool chatOpen,
-    int unreadChat,
-    bool voiceJoined,
-    bool voiceMuted,
-    ShareToolbarActions& actions,
-    float alpha = 1.0f
+struct RoomBarActions
+{
+    bool toggleMic = false;
+    bool joinVoice = false;
+    bool togglePeople = false;
+    bool toggleChat = false;
+    bool openSettings = false;
+    bool toggleFullscreen = false;
+    bool backToRoom = false;
+
+    // Indice em otherPresenters (-1 = nenhum).
+    int switchTo = -1;
+
+    // Mouse em cima (ou um popover aberto): mantem visivel.
+    bool hovered = false;
+    bool popupOpen = false;
+};
+
+void DrawRoomBar(
+    RoomBarModel& model,
+    RoomBarActions& actions
 );
 
 
@@ -418,32 +507,103 @@ struct ShortcutRow
     bool global = false;
 };
 
-struct ShortcutsModel
+// ------------------------------------------------------------
+// Configuracoes (abas Voz e Atalhos)
+// ------------------------------------------------------------
+
+constexpr int SETTINGS_TAB_VOICE = 0;
+constexpr int SETTINGS_TAB_SHORTCUTS = 1;
+constexpr int SETTINGS_TAB_GENERAL = 2;
+
+struct SettingsModel
 {
+    // Aba a mostrar ao abrir (-1 = a que ja estava).
+    int openTab = -1;
+
+    // ---- Geral ----
+
+    // A tela altera direto e avisa em themeChanged.
+    bool* lightTheme = nullptr;
+
+    // Foto de perfil (ImTextureID; nullptr = sem foto) e nome
+    // (pra inicial quando nao ha foto).
+    void* myAvatar = nullptr;
+    std::string myName;
+
+    // Erro ao abrir a imagem escolhida (vazio = nenhum).
+    std::string avatarError;
+
+    // Teste do microfone fora da voz.
+    bool micTestRunning = false;
+    float micTestLevel = 0.0f;
+    bool* micTestLoopback = nullptr;
+
+    // ---- Voz ----
+
+    // Dispositivos: 0 = padrao do Windows, i + 1 = lista[i].
+    std::vector<std::string> microphones;
+    int microphone = 0;
+
+    std::vector<std::string> speakers;
+    int speaker = 0;
+
+    // Na voz: mostra o nivel do microfone (teste).
+    bool voiceJoined = false;
+    bool voiceTransmitting = false;
+    float micLevel = 0.0f;
+
+    // false = Windows sem cancelamento de eco (pedir fone).
+    bool echoCancel = true;
+
+    // A tela altera direto e avisa em voiceSettingsChanged.
+    bool* noiseSuppression = nullptr;
+    bool* soundsEnabled = nullptr;
+    float* soundsVolume = nullptr;
+
+    // ---- Atalhos ----
+
     std::vector<ShortcutRow> rows;
 
     // Linha esperando a tecla (-1 = nenhuma).
     int capturing = -1;
 };
 
-struct ShortcutsActions
+struct SettingsActions
 {
-    // Comecar a capturar a tecla desta linha.
-    int capture = -1;
+    // Dispositivo escolhido (mesmo esquema; -1 = sem mudanca).
+    int microphone = -1;
+    int speaker = -1;
 
-    // Remover o atalho desta linha.
+    // Uma lista de dispositivos abriu: atualizar.
+    bool refreshDevices = false;
+
+    // Reducao de ruido / sons mudaram (salvar e aplicar).
+    bool voiceSettingsChanged = false;
+
+    // Soltou o volume dos sons: tocar um de exemplo.
+    bool previewSound = false;
+
+    // Geral
+    bool themeChanged = false;
+    bool chooseAvatar = false;
+    bool removeAvatar = false;
+
+    // Teste do microfone: ligar/desligar.
+    bool micTestToggle = false;
+
+    // Atalhos: capturar / remover a tecla desta linha.
+    int capture = -1;
     int clear = -1;
 
     bool cancelCapture = false;
-
     bool restoreDefaults = false;
 
     bool close = false;
 };
 
-void DrawShortcutsWindow(
-    const ShortcutsModel& model,
-    ShortcutsActions& actions
+void DrawSettingsWindow(
+    const SettingsModel& model,
+    SettingsActions& actions
 );
 
 

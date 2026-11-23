@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <condition_variable>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -173,6 +174,10 @@ private:
 
     void StopPeers();
 
+    void QueueDeviceChange();
+
+    void DeviceLoop();
+
     void ReapPeers();
 
     std::mutex m_mutex;
@@ -194,6 +199,9 @@ private:
     // So a thread do microfone usa (criado antes dela comecar).
     std::unique_ptr<NoiseSuppressor> m_denoiser;
 
+    // Supressao do eco que sobra (so a thread do microfone).
+    float m_echoGain = 1.0f;
+
     bool m_muteToggleWasDown = false;
 
     std::thread m_joinThread;
@@ -204,6 +212,21 @@ private:
     // Protegidos por m_mutex
     std::string m_error;
     std::wstring m_microphone;
+
+    // Troca de microfone/saida numa thread propria.
+    std::thread m_deviceThread;
+    std::mutex m_deviceMutex;
+    std::condition_variable m_deviceCv;
+    bool m_deviceDirty = false;
+    bool m_deviceRunning = false;
+
+    // Uma troca de cada vez (e nunca junto com o Leave).
+    std::mutex m_restartMutex;
+
+    // O que esta aberto agora (so muda com m_restartMutex, ou
+    // no JoinWorker antes de entrar).
+    std::wstring m_appliedMic;
+    std::wstring m_appliedSpeaker;
     std::wstring m_speaker;
 
     std::map<std::string, std::unique_ptr<VoicePeer>> m_peers;

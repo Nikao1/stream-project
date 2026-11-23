@@ -77,6 +77,13 @@ sessao pelo fluxo normal acima ("join"/"announce"):
         So em memoria; some quando a transmissao para.
     POST /rooms/<code>/thumb_get      member_id, token, target
                                       -> image, version
+    POST /rooms/<code>/avatar         member_id, token, [image]
+                                      -> ok
+        Foto de perfil (JPEG pequeno, criptografado nas salas
+        e2e). Sem image = tira. So em memoria; some quando a
+        pessoa sai da sala.
+    POST /rooms/<code>/avatar_get     member_id, token, target
+                                      -> image, version
 
     O heartbeat aceita chat_after=<id> e devolve tambem as
     mensagens de chat mais novas que esse id:
@@ -85,7 +92,8 @@ sessao pelo fluxo normal acima ("join"/"announce"):
 
     Estado da sala:
         member_count=N
-        member_<i>=<member_id>|<nome>|<sessao de voz, ou vazio>
+        member_<i>=<member_id>|<nome>|<sessao de voz, ou vazio>|
+                   <versao da foto, ou vazio>
         presenter_count=N
         presenter_<i>=<member_id>|<codigo da sessao>|<nome>|<o que
                       esta compartilhando>|<versao da previa,
@@ -152,6 +160,7 @@ MAX_SEALED_NAME = 400
 MAX_SEALED_LABEL = 800
 MAX_SEALED_CHAT = 2400
 MAX_THUMB_BODY_BYTES = 44000    # o JPEG em base64 + campos
+MAX_AVATAR_BYTES = 12000        # foto de perfil (96x96)
 
 # So confie em X-Forwarded-For quando o servidor estiver atras
 # de um proxy da hospedagem (Render, Fly etc.): TRUST_PROXY=1
@@ -302,7 +311,8 @@ def _room_state(room):
     presenters = []
     for i, (member_id, member) in enumerate(members):
         fields[f"member_{i}"] = "|".join([
-            member_id, quote(member["name"]), member.get("voice") or ""])
+            member_id, quote(member["name"]), member.get("voice") or "",
+            str(member.get("avatar_version") or "")])
         presenting = member["presenting"]
         if presenting is not None:
             presenters.append((presenting["since"], member_id,
@@ -426,8 +436,9 @@ class Handler(BaseHTTPRequestHandler):
         self._reply(status, {"error": message})
 
     def _read_form(self):
+        path = self.path.split("?")[0]
         limit = (MAX_THUMB_BODY_BYTES
-                 if self.path.split("?")[0].endswith("/thumb")
+                 if path.endswith("/thumb") or path.endswith("/avatar")
                  else MAX_BODY_BYTES)
         try:
             length = int(self.headers.get("Content-Length", "0"))
@@ -515,6 +526,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self._room_thumb(code, form)
             if action == "thumb_get":
                 return self._room_thumb_get(code, form)
+            if action == "avatar":
+                return self._room_avatar(code, form)
+            if action == "avatar_get":
+                return self._room_avatar_get(code, form)
 
         self._error(404, "not_found")
 
@@ -921,6 +936,51 @@ class Handler(BaseHTTPRequestHandler):
                 return self._error(404, "no_thumb")
             image = presenting["thumb"]
             version = presenting["thumb_version"]
+        self._reply(200, {
+            "image": base64.urlsafe_b64encode(image).decode("ascii"),
+            "version": version,
+        })
+
+    def _room_avatar(self, code, form):
+        text = form.get("image", "")
+        image = None
+        if text:
+            try:
+                image = base64.urlsafe_b64decode(text.encode("ascii"))
+            except (binascii.Error, ValueError, UnicodeEncodeError):
+                return self._error(400, "invalid_fields")
+            if (len(image) > MAX_AVATAR_BYTES or
+                    not (image.startswith(b"\xff\xd8") or
+                         image.startswith(b"SPE1"))):
+                return self._error(400, "invalid_fields")
+        with _lock:
+            room, member = self._room_member(code, form)
+            if room is None:
+                return self._error(404, "not_in_room")
+            # Sala e2e: so foto criptografada.
+            if (image is not None and room.get("e2e") and
+                    not image.startswith(b"SPE1")):
+                return self._error(400, "invalid_fields")
+            if image is None:
+                member.pop("avatar", None)
+                member.pop("avatar_version", None)
+            else:
+                version = room.get("next_thumb", 1)
+                room["next_thumb"] = version + 1
+                member["avatar"] = image
+                member["avatar_version"] = version
+        self._reply(200, {"ok": 1})
+
+    def _room_avatar_get(self, code, form):
+        with _lock:
+            room, member = self._room_member(code, form)
+            if room is None:
+                return self._error(404, "not_in_room")
+            target = room["members"].get(form.get("target", ""))
+            if target is None or "avatar" not in target:
+                return self._error(404, "no_avatar")
+            image = target["avatar"]
+            version = target["avatar_version"]
         self._reply(200, {
             "image": base64.urlsafe_b64encode(image).decode("ascii"),
             "version": version,

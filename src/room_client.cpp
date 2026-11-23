@@ -156,6 +156,18 @@ bool RoomClient::Create(
 
     m_thumbs.clear();
 
+    m_avatars.clear();
+    m_avatarDirty = !m_myAvatar.empty();
+    m_avatarRetryAt = 0;
+
+    // A propria foto aparece na hora (mesmo antes de chegar ao
+    // servidor).
+    if (!m_myAvatar.empty())
+    {
+        m_avatars[membership.memberId] =
+            Thumb{ "local" + std::to_string(++m_avatarSerial), m_myAvatar };
+    }
+
     std::cout
         << "Sala criada: "
         << membership.code
@@ -279,6 +291,18 @@ RoomJoinResult RoomClient::Join(
     m_publishedVoice.clear();
 
     m_thumbs.clear();
+
+    m_avatars.clear();
+    m_avatarDirty = !m_myAvatar.empty();
+    m_avatarRetryAt = 0;
+
+    // A propria foto aparece na hora (mesmo antes de chegar ao
+    // servidor).
+    if (!m_myAvatar.empty())
+    {
+        m_avatars[membership.memberId] =
+            Thumb{ "local" + std::to_string(++m_avatarSerial), m_myAvatar };
+    }
 
     std::cout
         << "Entrou na sala "
@@ -696,10 +720,12 @@ void RoomClient::Loop()
             m_heartbeats++;
         }
 
-        // Previas de quem transmite (fora da trava: rede).
+        // Previas de quem transmite e fotos (fora da trava: rede).
         if (!state.members.empty())
         {
             UpdateThumbnails(membership, state);
+
+            UpdateAvatars(membership, state);
         }
         else if (gone)
         {
@@ -741,9 +767,11 @@ void RoomClient::Loop()
                 m_membership = again;
                 m_state = state;
 
-                // A transmissao e a voz precisam ser publicadas
-                // de novo pelo membro novo.
+                // A transmissao, a voz e a foto precisam ser
+                // publicadas de novo pelo membro novo.
                 m_published = Presenting{};
+
+                m_avatarDirty = !m_myAvatar.empty();
 
                 m_publishedVoice.clear();
 
@@ -1022,6 +1050,214 @@ bool RoomClient::GetThumbnail(
     auto found = m_thumbs.find(memberId);
 
     if (found == m_thumbs.end())
+        return false;
+
+    outVersion = found->second.version;
+    outJpeg = found->second.jpeg;
+
+    return true;
+}
+
+
+// ------------------------------------------------------------
+// Fotos de perfil
+// ------------------------------------------------------------
+
+namespace
+{
+
+std::string AvatarContext(
+    const std::string& memberId)
+{
+    return "foto|" + memberId;
+}
+
+} // namespace
+
+
+void RoomClient::SetAvatar(
+    const std::vector<uint8_t>& jpeg)
+{
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+
+        m_myAvatar = jpeg;
+        m_avatarDirty = true;
+        m_avatarRetryAt = 0;
+
+        // Na hora, na propria tela.
+        std::string myId = m_membership.memberId;
+
+        if (!myId.empty())
+        {
+            if (jpeg.empty())
+            {
+                m_avatars.erase(myId);
+            }
+            else
+            {
+                m_avatars[myId] =
+                    Thumb{ "local" + std::to_string(++m_avatarSerial), jpeg };
+            }
+        }
+
+        m_wake = true;
+    }
+
+    m_cv.notify_all();
+}
+
+
+void RoomClient::UpdateAvatars(
+    const RoomMembership& membership,
+    const RoomState& state)
+{
+    std::string error;
+
+    // ---- Enviar a propria (quando mudou / reconectou) ----
+    std::vector<uint8_t> mine;
+    bool dirty = false;
+    RoomKey key;
+
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+
+        dirty = m_avatarDirty;
+        mine = m_myAvatar;
+        key = m_key;
+    }
+
+    // Falhou ha pouco (ex.: servidor sem a rota de fotos): espera
+    // 30 s antes de tentar de novo, em vez de a cada 2 s.
+    if (dirty && GetTickCount64() < m_avatarRetryAt)
+    {
+        dirty = false;
+    }
+
+    if (dirty)
+    {
+        std::vector<uint8_t> sealed =
+            mine.empty()
+            ? std::vector<uint8_t>()
+            : RoomSealBytes(key, AvatarContext(membership.memberId), mine);
+
+        if (SignalingRoomAvatar(membership, sealed, error))
+        {
+            std::lock_guard<std::mutex> lock(m_mutex);
+
+            // (se mudou de novo no meio, envia na proxima volta)
+            if (m_myAvatar == mine)
+            {
+                m_avatarDirty = false;
+            }
+
+            if (!mine.empty() &&
+                m_avatars.find(membership.memberId) == m_avatars.end())
+            {
+                m_avatars[membership.memberId] =
+                    Thumb{ "local" + std::to_string(++m_avatarSerial), mine };
+            }
+        }
+        else
+        {
+            std::cout << "Sala: foto nao enviada: " << error << "\n";
+
+            m_avatarRetryAt = GetTickCount64() + 30000;
+        }
+    }
+
+    // ---- Baixar as dos outros ----
+    std::vector<std::pair<std::string, std::string>> wanted;
+
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+
+        for (auto it = m_avatars.begin(); it != m_avatars.end();)
+        {
+            bool keep = it->first == membership.memberId;
+
+            for (const RoomMember& member : state.members)
+            {
+                if (member.id == it->first && !member.avatarVersion.empty())
+                {
+                    keep = true;
+                }
+            }
+
+            it = keep ? std::next(it) : m_avatars.erase(it);
+        }
+
+        for (const RoomMember& member : state.members)
+        {
+            if (member.id == membership.memberId ||
+                member.avatarVersion.empty())
+            {
+                continue;
+            }
+
+            auto found = m_avatars.find(member.id);
+
+            if (found == m_avatars.end() ||
+                found->second.version != member.avatarVersion)
+            {
+                wanted.emplace_back(member.id, member.avatarVersion);
+            }
+        }
+    }
+
+    int fetched = 0;
+
+    for (const auto& item : wanted)
+    {
+        if (fetched++ >= 3 || !m_running)
+            break;
+
+        std::vector<uint8_t> sealed;
+        std::vector<uint8_t> jpeg;
+        std::string version;
+
+        if (!SignalingRoomGetAvatar(
+                membership, item.first, sealed, version, error))
+        {
+            continue;
+        }
+
+        std::lock_guard<std::mutex> lock(m_mutex);
+
+        if (!RoomOpenBytes(m_key, AvatarContext(item.first), sealed, jpeg))
+        {
+            m_avatars[item.first] = Thumb{ item.second, {} };
+
+            continue;
+        }
+
+        m_avatars[item.first] =
+            Thumb{ version.empty() ? item.second : version, std::move(jpeg) };
+    }
+}
+
+
+std::string RoomClient::AvatarVersion(
+    const std::string& memberId)
+{
+    std::lock_guard<std::mutex> lock(m_mutex);
+
+    auto found = m_avatars.find(memberId);
+
+    return found == m_avatars.end() ? std::string() : found->second.version;
+}
+
+
+bool RoomClient::GetAvatar(
+    const std::string& memberId,
+    std::string& outVersion,
+    std::vector<uint8_t>& outJpeg)
+{
+    std::lock_guard<std::mutex> lock(m_mutex);
+
+    auto found = m_avatars.find(memberId);
+
+    if (found == m_avatars.end())
         return false;
 
     outVersion = found->second.version;

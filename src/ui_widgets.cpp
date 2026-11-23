@@ -1,6 +1,8 @@
 #include "ui_widgets.h"
 
 #include <algorithm>
+#include <cstdio>
+#include <cmath>
 #include <cstring>
 #include <string>
 
@@ -19,12 +21,45 @@ ImFont* g_titleFont = nullptr;
 // Tema
 // ============================================================
 
+// Tema claro (false = escuro). So muda cores: nenhum custo de
+// desempenho.
+bool g_lightTheme = false;
+
+
+void UiSetLightTheme(
+    bool light)
+{
+    if (light == g_lightTheme)
+        return;
+
+    g_lightTheme = light;
+
+    UiApplyTheme(g_uiScale);
+}
+
+
+bool UiIsLightTheme()
+{
+    return g_lightTheme;
+}
+
+
 void UiApplyTheme(
     float scale)
 {
     g_uiScale = scale;
 
-    ImGui::StyleColorsDark();
+    // Recomeca do estilo padrao (reaplicar nao acumula a escala).
+    ImGui::GetStyle() = ImGuiStyle();
+
+    if (g_lightTheme)
+    {
+        ImGui::StyleColorsLight();
+    }
+    else
+    {
+        ImGui::StyleColorsDark();
+    }
 
     ImGuiStyle& style = ImGui::GetStyle();
 
@@ -38,38 +73,64 @@ void UiApplyTheme(
     style.ItemSpacing = ImVec2(10.0f, 12.0f);
 
     style.WindowBorderSize = 1.0f;
-    style.FrameBorderSize = 0.0f;
+
+    // Claro: contornos nos botoes, campos e abas (branco sobre
+    // branco nao separa nada). Escuro: sem (o contraste ja separa).
+    style.FrameBorderSize = g_lightTheme ? 1.0f : 0.0f;
+    style.TabBorderSize = g_lightTheme ? 1.0f : 0.0f;
 
     ImVec4* colors = style.Colors;
 
     const ImVec4 accent = UiColorAccent();
 
+    // Escuro: camadas de branco transparente sobre o fundo.
+    // Claro: camadas de preto transparente sobre o fundo.
+    const float ink = g_lightTheme ? 0.0f : 1.0f;
+
     colors[ImGuiCol_WindowBg] =
-        ImVec4(0.09f, 0.10f, 0.12f, 0.97f);
+        g_lightTheme
+        ? ImVec4(0.97f, 0.97f, 0.98f, 0.98f)
+        : ImVec4(0.09f, 0.10f, 0.12f, 0.97f);
+
+    colors[ImGuiCol_PopupBg] =
+        g_lightTheme
+        ? ImVec4(1.0f, 1.0f, 1.0f, 0.99f)
+        : ImVec4(0.11f, 0.12f, 0.14f, 0.99f);
 
     colors[ImGuiCol_Border] =
-        ImVec4(1.0f, 1.0f, 1.0f, 0.08f);
+        ImVec4(ink, ink, ink, g_lightTheme ? 0.16f : 0.08f);
 
     colors[ImGuiCol_FrameBg] =
-        ImVec4(1.0f, 1.0f, 1.0f, 0.06f);
+        ImVec4(ink, ink, ink, g_lightTheme ? 0.05f : 0.06f);
 
     colors[ImGuiCol_FrameBgHovered] =
-        ImVec4(1.0f, 1.0f, 1.0f, 0.09f);
+        ImVec4(ink, ink, ink, g_lightTheme ? 0.08f : 0.09f);
 
     colors[ImGuiCol_FrameBgActive] =
-        ImVec4(1.0f, 1.0f, 1.0f, 0.12f);
+        ImVec4(ink, ink, ink, g_lightTheme ? 0.11f : 0.12f);
 
     colors[ImGuiCol_Button] =
-        ImVec4(1.0f, 1.0f, 1.0f, 0.08f);
+        ImVec4(ink, ink, ink, g_lightTheme ? 0.06f : 0.08f);
 
     colors[ImGuiCol_ButtonHovered] =
-        ImVec4(1.0f, 1.0f, 1.0f, 0.14f);
+        ImVec4(ink, ink, ink, g_lightTheme ? 0.10f : 0.14f);
 
     colors[ImGuiCol_ButtonActive] =
-        ImVec4(1.0f, 1.0f, 1.0f, 0.20f);
+        ImVec4(ink, ink, ink, g_lightTheme ? 0.15f : 0.20f);
+
+    colors[ImGuiCol_Header] =
+        ImVec4(accent.x, accent.y, accent.z, 0.20f);
+
+    colors[ImGuiCol_HeaderHovered] =
+        ImVec4(accent.x, accent.y, accent.z, 0.30f);
+
+    colors[ImGuiCol_HeaderActive] =
+        ImVec4(accent.x, accent.y, accent.z, 0.40f);
 
     colors[ImGuiCol_Text] =
-        ImVec4(0.94f, 0.95f, 0.96f, 1.0f);
+        g_lightTheme
+        ? ImVec4(0.10f, 0.11f, 0.13f, 1.0f)
+        : ImVec4(0.94f, 0.95f, 0.96f, 1.0f);
 
     colors[ImGuiCol_TextSelectedBg] =
         ImVec4(accent.x, accent.y, accent.z, 0.45f);
@@ -117,19 +178,25 @@ const ImWchar* UiGlyphRanges()
 
 ImVec4 UiColorMuted()
 {
-    return ImVec4(0.62f, 0.65f, 0.70f, 1.0f);
+    return g_lightTheme
+        ? ImVec4(0.38f, 0.40f, 0.45f, 1.0f)
+        : ImVec4(0.62f, 0.65f, 0.70f, 1.0f);
 }
 
 
 ImVec4 UiColorError()
 {
-    return ImVec4(1.00f, 0.45f, 0.42f, 1.0f);
+    return g_lightTheme
+        ? ImVec4(0.82f, 0.18f, 0.16f, 1.0f)
+        : ImVec4(1.00f, 0.45f, 0.42f, 1.0f);
 }
 
 
 ImVec4 UiColorSuccess()
 {
-    return ImVec4(0.42f, 0.86f, 0.58f, 1.0f);
+    return g_lightTheme
+        ? ImVec4(0.09f, 0.55f, 0.27f, 1.0f)
+        : ImVec4(0.42f, 0.86f, 0.58f, 1.0f);
 }
 
 
@@ -293,6 +360,10 @@ bool UiPrimaryButton(
         ImGuiCol_ButtonActive,
         ImVec4(accent.x - 0.05f, accent.y - 0.05f, accent.z - 0.05f, 1.0f));
 
+    // Texto branco sobre o azul (no tema claro o texto padrao e
+    // escuro).
+    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 1.0f, 1.0f, 1.0f));
+
     ImGui::BeginDisabled(!enabled);
 
     bool clicked =
@@ -304,7 +375,7 @@ bool UiPrimaryButton(
 
     ImGui::EndDisabled();
 
-    ImGui::PopStyleColor(3);
+    ImGui::PopStyleColor(4);
 
     return clicked;
 }
@@ -326,9 +397,13 @@ bool UiPrimaryButtonSized(
         ImGuiCol_ButtonActive,
         ImVec4(accent.x - 0.05f, accent.y - 0.05f, accent.z - 0.05f, 1.0f));
 
+    // Texto branco sobre o azul (no tema claro o texto padrao e
+    // escuro).
+    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 1.0f, 1.0f, 1.0f));
+
     bool clicked = ImGui::Button(label, size);
 
-    ImGui::PopStyleColor(3);
+    ImGui::PopStyleColor(4);
 
     return clicked;
 }
@@ -574,7 +649,8 @@ void UiAvatar(
     const char* name,
     float diameter,
     bool live,
-    float speaking)
+    float speaking,
+    void* image)
 {
     // Paleta: cores medias, legiveis com texto branco.
     static const ImU32 palette[] =
@@ -611,7 +687,22 @@ void UiAvatar(
 
     ImVec2 center(pos.x + radius, pos.y + radius);
 
-    draw->AddCircleFilled(center, radius, color, 32);
+    if (image)
+    {
+        // Foto redonda.
+        draw->AddImageRounded(
+            reinterpret_cast<ImTextureID>(image),
+            pos,
+            ImVec2(pos.x + diameter, pos.y + diameter),
+            ImVec2(0, 0),
+            ImVec2(1, 1),
+            IM_COL32(255, 255, 255, 255),
+            radius);
+    }
+    else
+    {
+        draw->AddCircleFilled(center, radius, color, 32);
+    }
 
     if (live)
     {
@@ -637,17 +728,20 @@ void UiAvatar(
             2.0f * g_uiScale);
     }
 
-    std::string initial = Initial(name);
+    if (!image)
+    {
+        std::string initial = Initial(name);
 
-    ImVec2 textSize =
-        ImGui::CalcTextSize(initial.c_str());
+        ImVec2 textSize =
+            ImGui::CalcTextSize(initial.c_str());
 
-    draw->AddText(
-        ImVec2(
-            center.x - textSize.x * 0.5f,
-            center.y - textSize.y * 0.5f),
-        IM_COL32(255, 255, 255, 255),
-        initial.c_str());
+        draw->AddText(
+            ImVec2(
+                center.x - textSize.x * 0.5f,
+                center.y - textSize.y * 0.5f),
+            IM_COL32(255, 255, 255, 255),
+            initial.c_str());
+    }
 }
 
 
@@ -785,4 +879,439 @@ void UiLogo(
         ImVec2(pos.x + s * 0.44f, pos.y + s * 0.54f),
         ImVec2(pos.x + s * 0.60f, pos.y + s * 0.44f),
         white);
+}
+
+
+// ============================================================
+// UiToggle
+// ============================================================
+
+bool UiToggle(
+    const char* label,
+    bool* v)
+{
+    const ImGuiStyle& style = ImGui::GetStyle();
+
+    float height = ImGui::GetFrameHeight() * 0.72f;
+    float width = height * 1.8f;
+
+    // Texto visivel (sem o "##id").
+    const char* labelEnd = std::strstr(label, "##");
+
+    ImVec2 textSize =
+        ImGui::CalcTextSize(label, labelEnd);
+
+    ImVec2 pos = ImGui::GetCursorScreenPos();
+
+    float rowHeight = ImGui::GetFrameHeight();
+
+    ImVec2 total(
+        width + (textSize.x > 0.0f ? style.ItemInnerSpacing.x * 2.0f + textSize.x : 0.0f),
+        rowHeight);
+
+    bool clicked = ImGui::InvisibleButton(label, total);
+
+    if (clicked)
+    {
+        *v = !*v;
+    }
+
+    bool hovered = ImGui::IsItemHovered();
+
+    // Animacao da bolinha (0 = desligado, 1 = ligado).
+    ImGuiStorage* storage = ImGui::GetStateStorage();
+
+    ImGuiID id = ImGui::GetItemID();
+
+    float t = storage->GetFloat(id, *v ? 1.0f : 0.0f);
+
+    float target = *v ? 1.0f : 0.0f;
+
+    float speed = ImGui::GetIO().DeltaTime / 0.12f;
+
+    t += (std::max)(-speed, (std::min)(speed, target - t));
+
+    storage->SetFloat(id, t);
+
+    ImDrawList* draw = ImGui::GetWindowDrawList();
+
+    float alpha = ImGui::GetStyle().Alpha;
+
+    ImVec2 trackMin(pos.x, pos.y + (rowHeight - height) * 0.5f);
+    ImVec2 trackMax(trackMin.x + width, trackMin.y + height);
+
+    ImVec4 off =
+        g_lightTheme
+        ? ImVec4(0.78f, 0.79f, 0.82f, alpha)
+        : ImVec4(0.24f, 0.25f, 0.29f, alpha);
+    ImVec4 on = UiColorAccent();
+
+    on.w = alpha;
+
+    ImVec4 track(
+        off.x + (on.x - off.x) * t,
+        off.y + (on.y - off.y) * t,
+        off.z + (on.z - off.z) * t,
+        alpha);
+
+    if (hovered)
+    {
+        track.x = (std::min)(1.0f, track.x + 0.06f);
+        track.y = (std::min)(1.0f, track.y + 0.06f);
+        track.z = (std::min)(1.0f, track.z + 0.06f);
+    }
+
+    draw->AddRectFilled(
+        trackMin, trackMax,
+        ImGui::ColorConvertFloat4ToU32(track),
+        height * 0.5f);
+
+    float knobRadius = height * 0.5f - 2.5f * g_uiScale;
+
+    float knobX =
+        trackMin.x + height * 0.5f + (width - height) * t;
+
+    draw->AddCircleFilled(
+        ImVec2(knobX, trackMin.y + height * 0.5f),
+        knobRadius,
+        ImGui::ColorConvertFloat4ToU32(ImVec4(1.0f, 1.0f, 1.0f, alpha)),
+        24);
+
+    if (textSize.x > 0.0f)
+    {
+        draw->AddText(
+            ImVec2(
+                trackMax.x + style.ItemInnerSpacing.x * 2.0f,
+                pos.y + (rowHeight - textSize.y) * 0.5f),
+            ImGui::GetColorU32(ImGuiCol_Text),
+            label,
+            labelEnd);
+    }
+
+    return clicked;
+}
+
+
+// ============================================================
+// UiGearIconAt
+// ============================================================
+
+void UiGearIconAt(
+    ImVec2 center,
+    float size,
+    ImU32 color,
+    ImU32 hole)
+{
+    (void)color;
+
+    ImDrawList* draw = ImGui::GetWindowDrawList();
+
+    // Engrenagem de 8 dentes: contorno azul forte, miolo azul
+    // claro e furo no meio (cor do fundo).
+    const int teeth = 8;
+    const float pi = 3.14159265f;
+
+    float outer = size * 0.5f;
+    float inner = outer * 0.74f;
+    float thickness = (std::max)(1.0f, size * 0.085f);
+
+    // Desconta metade da linha (o contorno cabe no tamanho).
+    outer -= thickness * 0.5f;
+    inner -= thickness * 0.5f;
+
+    ImVec2 points[teeth * 8];
+    int count = 0;
+
+    for (int i = 0; i < teeth; ++i)
+    {
+        float base = i * 2.0f * pi / teeth;
+
+        // dente: sobe, topo, desce, vale (cantos levemente
+        // chanfrados pra parecer arredondado)
+        const float shape[8][2] =
+        {
+            { -0.30f, inner / outer },
+            { -0.20f, 0.97f },
+            { -0.15f, 1.00f },
+            {  0.15f, 1.00f },
+            {  0.20f, 0.97f },
+            {  0.30f, inner / outer },
+            {  0.40f, inner / outer * 0.99f },
+            {  0.50f, inner / outer },
+        };
+
+        for (const auto& p : shape)
+        {
+            float angle = base + p[0] * 2.0f * pi / teeth;
+            float radius = outer * p[1];
+
+            points[count++] =
+                ImVec2(
+                    center.x + std::cos(angle) * radius,
+                    center.y + std::sin(angle) * radius);
+        }
+    }
+
+    ImVec4 accent = UiColorAccent();
+
+    ImU32 strong = ImGui::ColorConvertFloat4ToU32(accent);
+
+    ImU32 light =
+        ImGui::ColorConvertFloat4ToU32(
+            ImVec4(
+                accent.x + (1.0f - accent.x) * 0.45f,
+                accent.y + (1.0f - accent.y) * 0.45f,
+                accent.z + (1.0f - accent.z) * 0.45f,
+                accent.w));
+
+    draw->AddConcavePolyFilled(points, count, light);
+
+    draw->AddPolyline(
+        points, count, strong, ImDrawFlags_Closed, thickness);
+
+    float holeRadius = outer * 0.36f;
+
+    draw->AddCircleFilled(center, holeRadius, hole, 20);
+
+    draw->AddCircle(center, holeRadius, strong, 20, thickness);
+}
+
+
+// ============================================================
+// UiIconAt / UiIconButton
+// ============================================================
+
+void UiIconAt(
+    UiIcon icon,
+    ImVec2 c,
+    float size,
+    ImU32 color)
+{
+    ImDrawList* draw = ImGui::GetWindowDrawList();
+
+    float h = size * 0.5f;
+    float t = (std::max)(1.0f, size * 0.09f);
+
+    auto P = [&](float x, float y) { return ImVec2(c.x + x * h, c.y + y * h); };
+
+    switch (icon)
+    {
+    case UiIcon::Mic:
+    case UiIcon::MicOff:
+    {
+        draw->AddRect(P(-0.32f, -0.95f), P(0.32f, 0.25f), color, h * 0.32f, 0, t);
+        draw->PathArcTo(P(0.0f, -0.05f), h * 0.62f, 0.0f, 3.14159265f, 14);
+        draw->PathStroke(color, 0, t);
+        draw->AddLine(P(0.0f, 0.57f), P(0.0f, 0.88f), color, t);
+        draw->AddLine(P(-0.38f, 0.92f), P(0.38f, 0.92f), color, t);
+
+        if (icon == UiIcon::MicOff)
+        {
+            draw->AddLine(P(-0.85f, -0.85f), P(0.85f, 0.85f), IM_COL32(239, 68, 68, 255), t * 1.3f);
+        }
+
+        break;
+    }
+
+    case UiIcon::Volume:
+    case UiIcon::VolumeOff:
+    {
+        ImVec2 body[6] =
+        {
+            P(-0.85f, -0.3f), P(-0.45f, -0.3f), P(0.0f, -0.75f),
+            P(0.0f, 0.75f), P(-0.45f, 0.3f), P(-0.85f, 0.3f)
+        };
+
+        draw->AddPolyline(body, 6, color, ImDrawFlags_Closed, t);
+
+        if (icon == UiIcon::Volume)
+        {
+            draw->PathArcTo(P(0.05f, 0.0f), h * 0.42f, -0.9f, 0.9f, 10);
+            draw->PathStroke(color, 0, t);
+            draw->PathArcTo(P(0.05f, 0.0f), h * 0.78f, -0.9f, 0.9f, 12);
+            draw->PathStroke(color, 0, t);
+        }
+        else
+        {
+            ImU32 red = IM_COL32(239, 68, 68, 255);
+
+            draw->AddLine(P(0.3f, -0.35f), P(0.9f, 0.35f), red, t);
+            draw->AddLine(P(0.3f, 0.35f), P(0.9f, -0.35f), red, t);
+        }
+
+        break;
+    }
+
+    case UiIcon::People:
+    {
+        draw->AddCircle(P(-0.25f, -0.35f), h * 0.32f, color, 16, t);
+        draw->PathArcTo(P(-0.25f, 0.85f), h * 0.62f, 3.14159265f * 1.12f, 3.14159265f * 1.88f, 14);
+        draw->PathStroke(color, 0, t);
+        draw->AddCircle(P(0.45f, -0.25f), h * 0.25f, color, 14, t);
+        draw->PathArcTo(P(0.55f, 0.75f), h * 0.45f, 3.14159265f * 1.25f, 3.14159265f * 1.9f, 12);
+        draw->PathStroke(color, 0, t);
+        break;
+    }
+
+    case UiIcon::Chat:
+    {
+        draw->AddRect(P(-0.85f, -0.7f), P(0.85f, 0.45f), color, h * 0.3f, 0, t);
+
+        ImVec2 tail[3] = { P(-0.45f, 0.45f), P(-0.55f, 0.88f), P(-0.05f, 0.45f) };
+
+        draw->AddPolyline(tail, 3, color, 0, t);
+        break;
+    }
+
+    case UiIcon::Switch:
+    {
+        draw->AddLine(P(-0.8f, -0.4f), P(0.8f, -0.4f), color, t);
+        draw->AddLine(P(0.8f, -0.4f), P(0.45f, -0.75f), color, t);
+        draw->AddLine(P(0.8f, 0.4f), P(-0.8f, 0.4f), color, t);
+        draw->AddLine(P(-0.8f, 0.4f), P(-0.45f, 0.75f), color, t);
+        break;
+    }
+
+    case UiIcon::Sliders:
+    {
+        const float ys[3] = { -0.6f, 0.0f, 0.6f };
+        const float knobs[3] = { 0.35f, -0.35f, 0.15f };
+
+        for (int i = 0; i < 3; ++i)
+        {
+            draw->AddLine(P(-0.85f, ys[i]), P(0.85f, ys[i]), color, t);
+            draw->AddCircleFilled(P(knobs[i], ys[i]), h * 0.17f, color, 10);
+        }
+
+        break;
+    }
+
+    case UiIcon::Fullscreen:
+    case UiIcon::ExitFullscreen:
+    {
+        // Quatro cantos (pra fora = entrar; pra dentro = sair).
+        float a = icon == UiIcon::Fullscreen ? 0.85f : 0.3f;
+        float b = icon == UiIcon::Fullscreen ? 0.35f : 0.85f;
+
+        const float sx[4] = { -1, 1, 1, -1 };
+        const float sy[4] = { -1, -1, 1, 1 };
+
+        for (int i = 0; i < 4; ++i)
+        {
+            ImVec2 corner = P(sx[i] * a, sy[i] * a);
+
+            draw->AddLine(corner, P(sx[i] * (icon == UiIcon::Fullscreen ? b : b), sy[i] * a), color, t);
+            draw->AddLine(corner, P(sx[i] * a, sy[i] * (icon == UiIcon::Fullscreen ? b : b)), color, t);
+        }
+
+        break;
+    }
+
+    case UiIcon::Exit:
+    {
+        ImVec2 door[4] = { P(0.1f, -0.85f), P(-0.75f, -0.85f), P(-0.75f, 0.85f), P(0.1f, 0.85f) };
+
+        draw->AddPolyline(door, 4, color, 0, t);
+        draw->AddLine(P(-0.25f, 0.0f), P(0.9f, 0.0f), color, t);
+        draw->AddLine(P(0.9f, 0.0f), P(0.55f, -0.35f), color, t);
+        draw->AddLine(P(0.9f, 0.0f), P(0.55f, 0.35f), color, t);
+        break;
+    }
+
+    case UiIcon::Pin:
+    case UiIcon::PinOff:
+    {
+        draw->AddCircle(P(0.0f, -0.4f), h * 0.42f, color, 16, t);
+        draw->AddLine(P(0.0f, 0.02f), P(0.0f, 0.95f), color, t);
+
+        if (icon == UiIcon::Pin)
+        {
+            draw->AddCircleFilled(P(0.0f, -0.4f), h * 0.42f, color, 16);
+        }
+
+        break;
+    }
+
+    case UiIcon::Close:
+    {
+        draw->AddLine(P(-0.6f, -0.6f), P(0.6f, 0.6f), color, t);
+        draw->AddLine(P(-0.6f, 0.6f), P(0.6f, -0.6f), color, t);
+        break;
+    }
+    }
+}
+
+
+bool UiIconButton(
+    const char* id,
+    UiIcon icon,
+    const char* tooltip,
+    bool active,
+    bool danger,
+    int badge)
+{
+    float size = ImGui::GetFrameHeight();
+
+    if (active)
+    {
+        ImVec4 accent = UiColorAccent();
+
+        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(accent.x, accent.y, accent.z, 0.22f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(accent.x, accent.y, accent.z, 0.30f));
+    }
+
+    bool clicked = ImGui::Button(id, ImVec2(size, size));
+
+    if (active)
+    {
+        ImGui::PopStyleColor(2);
+    }
+
+    ImVec2 min = ImGui::GetItemRectMin();
+
+    ImVec4 color =
+        danger ? UiColorError()
+        : active ? UiColorAccent()
+        : ImGui::GetStyleColorVec4(ImGuiCol_Text);
+
+    color.w *= ImGui::GetStyle().Alpha;
+
+    UiIconAt(
+        icon,
+        ImVec2(min.x + size * 0.5f, min.y + size * 0.5f),
+        size * 0.5f,
+        ImGui::ColorConvertFloat4ToU32(color));
+
+    if (badge > 0)
+    {
+        ImDrawList* draw = ImGui::GetWindowDrawList();
+
+        float r = size * 0.2f;
+
+        ImVec2 center(min.x + size - r * 0.8f, min.y + r * 0.8f);
+
+        draw->AddCircleFilled(center, r, IM_COL32(239, 68, 68, static_cast<int>(255 * ImGui::GetStyle().Alpha)), 14);
+
+        char text[4];
+
+        snprintf(text, sizeof(text), "%d", badge > 9 ? 9 : badge);
+
+        ImVec2 ts = ImGui::CalcTextSize(text);
+
+        float scale = (r * 1.6f) / ts.y;
+
+        ImGui::GetWindowDrawList()->AddText(
+            ImGui::GetFont(),
+            ImGui::GetFontSize() * scale,
+            ImVec2(center.x - ts.x * scale * 0.5f, center.y - ts.y * scale * 0.5f),
+            IM_COL32(255, 255, 255, static_cast<int>(255 * ImGui::GetStyle().Alpha)),
+            text);
+    }
+
+    if (ImGui::IsItemHovered() && tooltip && *tooltip)
+    {
+        ImGui::SetTooltip("%s", tooltip);
+    }
+
+    return clicked;
 }

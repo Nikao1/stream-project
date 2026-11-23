@@ -62,6 +62,19 @@ public:
         const WINDOWPLACEMENT& placement
     );
 
+    // Outro arquivo na mesma pasta (%APPDATA%\StreamProject).
+    // Vazio se a pasta nao existe.
+    std::wstring SiblingPath(
+        const wchar_t* fileName) const
+    {
+        size_t slash = m_path.find_last_of(L'\\');
+
+        if (slash == std::wstring::npos)
+            return std::wstring();
+
+        return m_path.substr(0, slash + 1) + fileName;
+    }
+
 private:
     std::wstring m_path;
 };

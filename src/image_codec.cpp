@@ -406,3 +406,143 @@ bool ImageDecodeToBgra(
 
     return ok;
 }
+
+
+bool ImageLoadSquareFile(
+    const wchar_t* path,
+    int side,
+    std::vector<uint8_t>& outPixels)
+{
+    outPixels.clear();
+
+    if (!path || side <= 0)
+        return false;
+
+    ComScope com;
+
+    IWICImagingFactory* factory = CreateFactory();
+    IWICBitmapDecoder* decoder = nullptr;
+    IWICBitmapFrameDecode* frame = nullptr;
+    IWICBitmapClipper* clipper = nullptr;
+    IWICBitmapScaler* scaler = nullptr;
+    IWICFormatConverter* converter = nullptr;
+
+    bool ok = false;
+
+    HRESULT hr = factory ? S_OK : E_FAIL;
+
+    if (SUCCEEDED(hr))
+    {
+        hr =
+            factory->CreateDecoderFromFilename(
+                path,
+                nullptr,
+                GENERIC_READ,
+                WICDecodeMetadataCacheOnDemand,
+                &decoder);
+    }
+
+    if (SUCCEEDED(hr))
+        hr = decoder->GetFrame(0, &frame);
+
+    UINT width = 0;
+    UINT height = 0;
+
+    if (SUCCEEDED(hr))
+        hr = frame->GetSize(&width, &height);
+
+    if (SUCCEEDED(hr) && (width == 0 || height == 0))
+        hr = E_FAIL;
+
+    // Quadrado do meio.
+    if (SUCCEEDED(hr))
+        hr = factory->CreateBitmapClipper(&clipper);
+
+    if (SUCCEEDED(hr))
+    {
+        UINT square = width < height ? width : height;
+
+        WICRect rect{};
+
+        rect.X = static_cast<INT>((width - square) / 2);
+        rect.Y = static_cast<INT>((height - square) / 2);
+        rect.Width = static_cast<INT>(square);
+        rect.Height = static_cast<INT>(square);
+
+        hr = clipper->Initialize(frame, &rect);
+    }
+
+    if (SUCCEEDED(hr))
+        hr = factory->CreateBitmapScaler(&scaler);
+
+    if (SUCCEEDED(hr))
+    {
+        hr =
+            scaler->Initialize(
+                clipper,
+                static_cast<UINT>(side),
+                static_cast<UINT>(side),
+                WICBitmapInterpolationModeFant);
+    }
+
+    if (SUCCEEDED(hr))
+        hr = factory->CreateFormatConverter(&converter);
+
+    if (SUCCEEDED(hr))
+    {
+        hr =
+            converter->Initialize(
+                scaler,
+                GUID_Pixel32bppBGRA,
+                WICBitmapDitherTypeNone,
+                nullptr,
+                0.0,
+                WICBitmapPaletteTypeCustom);
+    }
+
+    if (SUCCEEDED(hr))
+    {
+        outPixels.resize(static_cast<size_t>(side) * side * 4);
+
+        hr =
+            converter->CopyPixels(
+                nullptr,
+                static_cast<UINT>(side) * 4,
+                static_cast<UINT>(outPixels.size()),
+                outPixels.data());
+
+        ok = SUCCEEDED(hr);
+
+        if (!ok)
+        {
+            outPixels.clear();
+        }
+    }
+
+    // Transparencia (PNG): sobre fundo cinza-escuro.
+    if (ok)
+    {
+        for (size_t i = 0; i < outPixels.size(); i += 4)
+        {
+            unsigned alpha = outPixels[i + 3];
+
+            for (int c = 0; c < 3; ++c)
+            {
+                outPixels[i + c] =
+                    static_cast<uint8_t>(
+                        (outPixels[i + c] * alpha + 40 * (255 - alpha)) / 255);
+            }
+
+            outPixels[i + 3] = 255;
+        }
+    }
+
+    SafeRelease(converter);
+    SafeRelease(scaler);
+    SafeRelease(clipper);
+    SafeRelease(frame);
+    SafeRelease(decoder);
+    SafeRelease(factory);
+
+    return ok;
+}

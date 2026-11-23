@@ -37,6 +37,13 @@ const ImWchar* UiGlyphRanges();
 // Cores do tema
 // ------------------------------------------------------------
 
+// Tema claro/escuro (so cores; reaplica o estilo).
+void UiSetLightTheme(
+    bool light
+);
+
+bool UiIsLightTheme();
+
 ImVec4 UiColorMuted();    // texto secundario
 ImVec4 UiColorError();
 ImVec4 UiColorSuccess();
@@ -103,7 +110,16 @@ void UiAvatar(
     const char* name,
     float diameter,
     bool live = false,
-    float speaking = 0.0f
+    float speaking = 0.0f,
+    void* image = nullptr   // foto (ImTextureID); nullptr = inicial
+);
+
+// Chave liga/desliga (no lugar da caixinha de marcar): trilho
+// arredondado + bolinha que desliza, com o texto a direita.
+// Devolve true quando a pessoa mudou (v ja alterado).
+bool UiToggle(
+    const char* label,
+    bool* v
 );
 
 // Icone de microfone desenhado (sem fonte de icones), num
@@ -113,6 +129,54 @@ void UiMicIcon(
     float size,
     ImU32 color,
     bool slashed
+);
+
+// Icones desenhados (sem fonte de icones: nada a mais no
+// programa). Contorno com a cor dada, centrados em center.
+enum class UiIcon
+{
+    Mic,
+    MicOff,
+    Volume,
+    VolumeOff,
+    People,
+    Chat,
+    Switch,
+    Sliders,
+    Fullscreen,
+    ExitFullscreen,
+    Exit,
+    Pin,
+    PinOff,
+    Close
+};
+
+void UiIconAt(
+    UiIcon icon,
+    ImVec2 center,
+    float size,
+    ImU32 color
+);
+
+// Botao quadrado so com icone (dica ao passar o mouse). active =
+// destacado (ex.: painel aberto); danger = vermelho; badge > 0
+// = bolinha com numero (ex.: mensagens nao lidas).
+bool UiIconButton(
+    const char* id,
+    UiIcon icon,
+    const char* tooltip,
+    bool active = false,
+    bool danger = false,
+    int badge = 0
+);
+
+// Engrenagem (configuracoes), centrada em center. hole = cor do
+// furo do meio (a do fundo do botao).
+void UiGearIconAt(
+    ImVec2 center,
+    float size,
+    ImU32 color,
+    ImU32 hole
 );
 
 // Mesmo icone numa posicao da tela, sem ocupar espaco (ex.: por

@@ -38,7 +38,10 @@ public:
     }
 
     // Limpa FRAME_SAMPLES amostras (float -1..1, 16 kHz mono)
-    // no lugar. Devolve a probabilidade de voz (0..1).
+    // no lugar. Devolve a probabilidade de voz (0..1). Depois da
+    // rede, uma "porta" suave abaixa ~20 dB o ruido que sobra
+    // entre as palavras (segura 200 ms depois da fala, pra nao
+    // cortar o fim delas).
     float Process(
         float* samples
     );
@@ -64,6 +67,10 @@ private:
     DenoiseState* m_state = nullptr;
 
     bool m_bypass = false;
+
+    // Porta pos-rede: entre as palavras abaixa o que sobrou.
+    float m_gateGain = 1.0f;
+    int m_gateHold = 0;
 
     // Historicos dos filtros (fim do bloco anterior).
     static constexpr size_t TAPS = 63;

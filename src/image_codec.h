@@ -35,6 +35,14 @@ bool ImageEncodeJpeg(
     std::vector<uint8_t>& outJpeg
 );
 
+// Abre uma imagem do disco (JPG, PNG, BMP, GIF...), corta o
+// quadrado do meio e reduz pra side x side. Pra foto de perfil.
+bool ImageLoadSquareFile(
+    const wchar_t* path,
+    int side,
+    std::vector<uint8_t>& outPixels
+);
+
 bool ImageDecodeToBgra(
     const uint8_t* data,
     size_t size,

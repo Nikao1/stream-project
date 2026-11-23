@@ -206,6 +206,9 @@ struct RoomMember
     // Sessao do canal de voz desta pessoa (vazio = fora da
     // voz). Pra ouvir, entra-se nela como numa transmissao.
     std::string voiceSession;
+
+    // Versao da foto de perfil (vazio = sem foto).
+    std::string avatarVersion;
 };
 
 struct RoomPresenter
@@ -331,6 +334,22 @@ bool SignalingRoomStop(
 bool SignalingRoomThumb(
     const RoomMembership& membership,
     const std::vector<uint8_t>& jpeg,
+    std::string& outError
+);
+
+// Foto de perfil desta pessoa (vazio = tirar) e baixar a de
+// outra pessoa - mesmo esquema das previas.
+bool SignalingRoomAvatar(
+    const RoomMembership& membership,
+    const std::vector<uint8_t>& image,
+    std::string& outError
+);
+
+bool SignalingRoomGetAvatar(
+    const RoomMembership& membership,
+    const std::string& targetMemberId,
+    std::vector<uint8_t>& outImage,
+    std::string& outVersion,
     std::string& outError
 );
 

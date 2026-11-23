@@ -192,5 +192,49 @@ float NoiseSuppressor::Process(
 
     Downsample(high, samples);
 
+    if (!m_bypass)
+    {
+        // Ganho alvo pela deteccao de voz: fala (e 200 ms depois
+        // dela) = 1; sem voz = 0,1 (-20 dB); no meio, gradual.
+        if (vad > 0.5f)
+        {
+            m_gateHold = 10; // 10 x 20 ms
+        }
+
+        float target;
+
+        if (m_gateHold > 0)
+        {
+            target = 1.0f;
+
+            m_gateHold--;
+        }
+        else if (vad <= 0.25f)
+        {
+            target = 0.1f;
+        }
+        else
+        {
+            target = 0.1f + (vad - 0.25f) / 0.25f * 0.9f;
+        }
+
+        // Abre rapido (~5 ms), fecha devagar (~120 ms): sem
+        // estalos e sem engolir o comeco das palavras.
+        const float attack = 1.0f / (0.005f * 16000.0f);
+        const float release = 1.0f / (0.120f * 16000.0f);
+
+        for (size_t i = 0; i < FRAME_SAMPLES; ++i)
+        {
+            float diff = target - m_gateGain;
+
+            float step = diff > 0.0f ? attack : release;
+
+            m_gateGain +=
+                diff > step ? step : (diff < -step ? -step : diff);
+
+            samples[i] *= m_gateGain;
+        }
+    }
+
     return vad;
 }
