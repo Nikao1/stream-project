@@ -1600,21 +1600,42 @@ void DrawRoomWaitingScreen(
 
 void DrawWaitingScreen(
     const std::string& reply,
-    const std::string& versionWarning)
+    const std::string& versionWarning,
+    bool hostFull)
 {
     UiBeginCenteredPanel("##aguardando", 440.0f);
 
-    UiTitle("Conectando");
+    if (hostFull)
+    {
+        UiTitle("Transmissão cheia");
 
-    UiMutedText(
-        (std::string("Aguardando a transmissão começar") +
-         UiBusyDots()).c_str()
-    );
+        UiWrappedColored(
+            UiColorError(),
+            "Já tem 8 pessoas assistindo, o máximo por "
+            "transmissão.");
 
-    UiMutedText(
-        "Se demorar, confira se quem transmite já escolheu "
-        "a tela que vai compartilhar."
-    );
+        UiMutedText(
+            (std::string("Esperando uma vaga") +
+             UiBusyDots()).c_str());
+
+        UiMutedText(
+            "Você entra sozinho assim que alguém sair. Pode deixar "
+            "esta tela aberta.");
+    }
+    else
+    {
+        UiTitle("Conectando");
+
+        UiMutedText(
+            (std::string("Aguardando a transmissão começar") +
+             UiBusyDots()).c_str()
+        );
+
+        UiMutedText(
+            "Se demorar, confira se quem transmite já escolheu "
+            "a tela que vai compartilhar."
+        );
+    }
 
     if (!versionWarning.empty())
     {

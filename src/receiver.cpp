@@ -696,6 +696,23 @@ inline bool WatchKeepGoing()
 // transmite - pra perceber conexao caida (reconexao automatica).
 std::atomic<ULONGLONG> g_lastVideoPacketMs{ 0 };
 
+// Ultimo aviso de "transmissao lotada" (0 = nenhum nesta
+// conexao).
+std::atomic<ULONGLONG> g_hostFullAtMs{ 0 };
+
+
+// Quem transmite disse "lotado" ha pouco e a imagem ainda nao
+// chegou.
+bool HostIsFull()
+{
+    ULONGLONG at = g_hostFullAtMs;
+
+    return
+        at != 0 &&
+        !g_streamReceived &&
+        GetTickCount64() - at < 3000;
+}
+
 // Quem transmite manda sinal de vida (versao 0.6.0 em diante).
 // So com ele da pra distinguir "tela parada" de "conexao caiu".
 std::atomic<bool> g_senderSendsAlive{ false };
@@ -1931,6 +1948,25 @@ void ReceiverThread()
 
         if (plainSize <= 0)
             continue;
+
+        // Transmissao lotada: so avisa (o HELLO continua, e
+        // entramos sozinhos quando alguem sair).
+        if (plainSize == static_cast<int>(sizeof(VIEWERS_FULL_TAG)) &&
+            std::memcmp(
+                plainBuffer.data(),
+                VIEWERS_FULL_TAG,
+                sizeof(VIEWERS_FULL_TAG)) == 0)
+        {
+            if (g_hostFullAtMs == 0)
+            {
+                std::cout
+                    << "Transmissao lotada - esperando vaga.\n";
+            }
+
+            g_hostFullAtMs = GetTickCount64();
+
+            continue;
+        }
 
         g_lastVideoPacketMs = GetTickCount64();
 
@@ -4394,6 +4430,8 @@ void ViewerDisconnect()
 
     g_lastVideoPacketMs = 0;
 
+    g_hostFullAtMs = 0;
+
     g_frameWidth = 0;
     g_frameHeight = 0;
 
@@ -6218,7 +6256,12 @@ void DrawReceiverUi()
                     versionWarning = g_versionWarning;
 
                     status =
-                        g_uiState == UiState::Connected
+                        HostIsFull()
+                        ? std::string(
+                              "Transmissão cheia (8 pessoas "
+                              "assistindo). Você entra assim que "
+                              "alguém sair")
+                        : g_uiState == UiState::Connected
                         ? std::string("Aguardando a imagem chegar")
                         : g_uiStatus;
                 }
@@ -6509,7 +6552,8 @@ void DrawReceiverUi()
 
         DrawWaitingScreen(
             reply,
-            versionWarning
+            versionWarning,
+            HostIsFull()
         );
     }
 

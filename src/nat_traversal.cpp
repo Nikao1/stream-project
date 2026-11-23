@@ -486,10 +486,39 @@ bool UdpServiceViewers(
                 continue;
             }
 
-            if (viewers.Touch(from, now, sessionKey) ==
-                UdpViewerList::TouchResult::Added)
+            UdpViewerList::TouchResult touched =
+                viewers.Touch(from, now, sessionKey);
+
+            if (touched == UdpViewerList::TouchResult::Added)
             {
                 outJoined.push_back(from);
+            }
+            else if (touched == UdpViewerList::TouchResult::Full)
+            {
+                // Lotado: avisa (o HELLO chega a cada 1 s, entao
+                // e no maximo um pacote pequeno por segundo).
+                // Contador alto e fixo pelo relogio: nunca bate
+                // com os do video (que comecam do zero).
+                uint8_t full[4] = { 'F', 'U', 'L', '1' };
+
+                uint8_t sealed[sizeof(full) + CRYPTO_OVERHEAD];
+
+                size_t sealedSize =
+                    CryptoSeal(
+                        sessionKey,
+                        channel,
+                        0xF000000000000000ull | now,
+                        full,
+                        sizeof(full),
+                        sealed);
+
+                sendto(
+                    socket,
+                    reinterpret_cast<const char*>(sealed),
+                    static_cast<int>(sealedSize),
+                    0,
+                    reinterpret_cast<const sockaddr*>(&from),
+                    sizeof(from));
             }
 
             if (anonHello)

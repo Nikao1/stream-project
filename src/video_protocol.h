@@ -120,6 +120,12 @@ constexpr char VIDEO_ALIVE_TAG[4] = { 'S', 'T', 'P', '1' };
 
 constexpr uint64_t VIDEO_ALIVE_INTERVAL_MS = 1000;
 
+// Resposta de quem transmite a um HELLO quando ja ha
+// MAX_VIEWERS assistindo: "cheio" (cifrado com a chave daquele
+// espectador - ninguem de fora consegue forjar). Quem tenta
+// entrar continua mandando HELLO e entra quando vagar.
+constexpr char VIEWERS_FULL_TAG[4] = { 'F', 'U', 'L', '1' };
+
 
 #pragma pack(push, 1)
 

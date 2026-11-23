@@ -456,9 +456,11 @@ void DrawConnectScreen(
 // Conectado, esperando o primeiro frame. reply = texto da
 // RESPOSTA do convite manual (vazio = nao mostrar).
 // versionWarning = aviso de versoes diferentes (vazio = nada).
+// hostFull = quem transmite avisou que ja tem 8 assistindo.
 void DrawWaitingScreen(
     const std::string& reply,
-    const std::string& versionWarning
+    const std::string& versionWarning,
+    bool hostFull = false
 );
 
 
