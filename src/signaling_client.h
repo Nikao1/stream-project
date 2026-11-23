@@ -230,6 +230,9 @@ struct RoomPresenter
 
 struct RoomState
 {
+    // Nome da sala (opcional; vazio = sem nome).
+    std::string title;
+
     std::vector<RoomMember> members;
 
     // Na ordem em que comecaram a transmitir.
@@ -270,8 +273,10 @@ enum class RoomJoinResult
 
 // saltHex: sal da chave da sala (vazio = sala sem criptografia
 // de ponta a ponta - nao usado mais por esta versao).
+// title: nome da sala (ja trancado; vazio = sem nome).
 bool SignalingCreateRoom(
     const std::string& name,
+    const std::string& title,
     const std::string& saltHex,
     RoomMembership& outMembership,
     RoomState& outState,
@@ -284,6 +289,13 @@ RoomJoinResult SignalingRoomInfo(
     const std::string& code,
     bool& outEncrypted,
     std::string& outSaltHex,
+    std::string& outError
+);
+
+// Troca o nome da sala (ja trancado; vazio = tira o nome).
+bool SignalingRoomTitle(
+    const RoomMembership& membership,
+    const std::string& title,
     std::string& outError
 );
 

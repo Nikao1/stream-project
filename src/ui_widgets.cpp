@@ -674,8 +674,18 @@ void UiAvatar(
         hash *= 16777619u;
     }
 
+    // Tudo some junto com a janela (fade).
+    const float fade = ImGui::GetStyle().Alpha;
+
+    auto faded = [fade](ImU32 c)
+    {
+        ImU32 a = static_cast<ImU32>(((c >> IM_COL32_A_SHIFT) & 0xFF) * fade);
+
+        return (c & ~IM_COL32_A_MASK) | (a << IM_COL32_A_SHIFT);
+    };
+
     ImU32 color =
-        palette[hash % (sizeof(palette) / sizeof(palette[0]))];
+        faded(palette[hash % (sizeof(palette) / sizeof(palette[0]))]);
 
     ImVec2 pos = ImGui::GetCursorScreenPos();
 
@@ -696,7 +706,7 @@ void UiAvatar(
             ImVec2(pos.x + diameter, pos.y + diameter),
             ImVec2(0, 0),
             ImVec2(1, 1),
-            IM_COL32(255, 255, 255, 255),
+            faded(IM_COL32(255, 255, 255, 255)),
             radius);
     }
     else
@@ -709,7 +719,7 @@ void UiAvatar(
         draw->AddCircle(
             center,
             radius + 1.5f * g_uiScale,
-            IM_COL32(239, 68, 68, 255),
+            faded(IM_COL32(239, 68, 68, 255)),
             32,
             2.0f * g_uiScale);
     }
@@ -723,7 +733,7 @@ void UiAvatar(
         draw->AddCircle(
             center,
             radius + (live ? 4.5f : 1.5f) * g_uiScale,
-            IM_COL32(34, 197, 94, alpha),
+            faded(IM_COL32(34, 197, 94, alpha)),
             32,
             2.0f * g_uiScale);
     }
@@ -739,7 +749,7 @@ void UiAvatar(
             ImVec2(
                 center.x - textSize.x * 0.5f,
                 center.y - textSize.y * 0.5f),
-            IM_COL32(255, 255, 255, 255),
+            faded(IM_COL32(255, 255, 255, 255)),
             initial.c_str());
     }
 }
@@ -811,7 +821,7 @@ void UiMicIconAt(
         draw->AddLine(
             ImVec2(pos.x + size * 0.12f, pos.y + size * 0.10f),
             ImVec2(pos.x + size * 0.88f, pos.y + size * 0.90f),
-            IM_COL32(239, 68, 68, 255),
+            IM_COL32(239, 68, 68, static_cast<int>(255 * ImGui::GetStyle().Alpha)),
             thick * 1.3f);
     }
 }
@@ -1052,7 +1062,10 @@ void UiGearIconAt(
         }
     }
 
+    // Some junto com a janela (fade): respeita o alpha do estilo.
     ImVec4 accent = UiColorAccent();
+
+    accent.w *= ImGui::GetStyle().Alpha;
 
     ImU32 strong = ImGui::ColorConvertFloat4ToU32(accent);
 
@@ -1092,6 +1105,10 @@ void UiIconAt(
     float h = size * 0.5f;
     float t = (std::max)(1.0f, size * 0.09f);
 
+    // Vermelho do "desligado", sumindo junto com a janela.
+    const ImU32 redOff =
+        IM_COL32(239, 68, 68, static_cast<int>(255 * ImGui::GetStyle().Alpha));
+
     auto P = [&](float x, float y) { return ImVec2(c.x + x * h, c.y + y * h); };
 
     switch (icon)
@@ -1107,7 +1124,7 @@ void UiIconAt(
 
         if (icon == UiIcon::MicOff)
         {
-            draw->AddLine(P(-0.85f, -0.85f), P(0.85f, 0.85f), IM_COL32(239, 68, 68, 255), t * 1.3f);
+            draw->AddLine(P(-0.85f, -0.85f), P(0.85f, 0.85f), redOff, t * 1.3f);
         }
 
         break;
@@ -1133,10 +1150,8 @@ void UiIconAt(
         }
         else
         {
-            ImU32 red = IM_COL32(239, 68, 68, 255);
-
-            draw->AddLine(P(0.3f, -0.35f), P(0.9f, 0.35f), red, t);
-            draw->AddLine(P(0.3f, 0.35f), P(0.9f, -0.35f), red, t);
+            draw->AddLine(P(0.3f, -0.35f), P(0.9f, 0.35f), redOff, t);
+            draw->AddLine(P(0.3f, 0.35f), P(0.9f, -0.35f), redOff, t);
         }
 
         break;
@@ -1229,6 +1244,37 @@ void UiIconAt(
             draw->AddCircleFilled(P(0.0f, -0.4f), h * 0.42f, color, 16);
         }
 
+        break;
+    }
+
+    case UiIcon::Screen:
+    {
+        // Monitor com "ondas" (transmitindo).
+        draw->AddRect(P(-0.85f, -0.7f), P(0.85f, 0.45f), color, h * 0.12f, 0, t);
+        draw->AddLine(P(0.0f, 0.45f), P(0.0f, 0.8f), color, t);
+        draw->AddLine(P(-0.4f, 0.85f), P(0.4f, 0.85f), color, t);
+        draw->AddCircleFilled(P(0.0f, -0.12f), h * 0.14f, color, 10);
+        draw->PathArcTo(P(0.0f, -0.12f), h * 0.36f, -0.8f, 0.8f, 8);
+        draw->PathStroke(color, 0, t);
+        draw->PathArcTo(P(0.0f, -0.12f), h * 0.36f, 3.14159265f - 0.8f, 3.14159265f + 0.8f, 8);
+        draw->PathStroke(color, 0, t);
+        break;
+    }
+
+    case UiIcon::Edit:
+    {
+        // Lapis inclinado.
+        ImVec2 body[4] = { P(0.55f, -0.85f), P(0.85f, -0.55f), P(-0.45f, 0.75f), P(-0.75f, 0.45f) };
+
+        draw->AddPolyline(body, 4, color, ImDrawFlags_Closed, t);
+        draw->AddLine(P(-0.75f, 0.45f), P(-0.85f, 0.85f), color, t);
+        draw->AddLine(P(-0.85f, 0.85f), P(-0.45f, 0.75f), color, t);
+        break;
+    }
+
+    case UiIcon::Stop:
+    {
+        draw->AddRectFilled(P(-0.55f, -0.55f), P(0.55f, 0.55f), color, h * 0.12f);
         break;
     }
 

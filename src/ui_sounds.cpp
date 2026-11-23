@@ -313,6 +313,21 @@ void UiSoundPlayer::Play(
 
     m_position = 0;
 
+    // O som novo substitui o anterior (em vez de somar): clicar
+    // varias vezes seguidas nao empilha sons ate estourar. O
+    // que restava some em 8 ms (sem estalo).
+    const size_t fade = static_cast<size_t>(RATE / 125) * 2;
+
+    if (m_pending.size() > fade)
+    {
+        m_pending.resize(fade);
+    }
+
+    for (size_t i = 0; i < m_pending.size(); ++i)
+    {
+        m_pending[i] *= 1.0f - static_cast<float>(i) / static_cast<float>(fade);
+    }
+
     if (m_pending.size() < samples.size())
     {
         m_pending.resize(samples.size(), 0.0f);

@@ -85,6 +85,13 @@ public:
         uint32_t timestampMs
     );
 
+    // Estado (canal de voz), sem audio: pacote com payloadSize
+    // 0 e as flags no lugar do timestamp (bit 0 = microfone
+    // desligado). Versoes antigas descartam (payloadSize 0).
+    bool SendStatusPacket(
+        uint32_t flags
+    );
+
     void Stop();
 
     // Mesmo esquema do UdpServer (video): endereco publico por

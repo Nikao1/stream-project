@@ -190,6 +190,53 @@ bool UdpAudioServer::Service()
 
 
 // ============================================================
+// SendStatusPacket
+// ============================================================
+
+bool UdpAudioServer::SendStatusPacket(
+    uint32_t flags)
+{
+    if (m_socket == INVALID_SOCKET)
+        return false;
+
+    AudioPacketHeader header{};
+
+    header.magic = htonl(AUDIO_PROTOCOL_MAGIC);
+    header.sequence = htonl(m_sequence);
+    header.timestampMs = htonl(flags);
+    header.payloadSize = 0;
+
+    UdpViewer viewers[MAX_VIEWERS];
+
+    size_t viewerCount = m_viewers.Snapshot(viewers);
+
+    uint8_t sealed[AUDIO_HEADER_SIZE + CRYPTO_OVERHEAD];
+
+    for (size_t v = 0; v < viewerCount; ++v)
+    {
+        size_t sealedSize =
+            CryptoSeal(
+                viewers[v].sessionKey,
+                CRYPTO_CHANNEL_AUDIO,
+                m_packetCounter++,
+                reinterpret_cast<const uint8_t*>(&header),
+                AUDIO_HEADER_SIZE,
+                sealed);
+
+        sendto(
+            m_socket,
+            reinterpret_cast<const char*>(sealed),
+            static_cast<int>(sealedSize),
+            0,
+            reinterpret_cast<sockaddr*>(&viewers[v].address),
+            sizeof(viewers[v].address));
+    }
+
+    return viewerCount > 0;
+}
+
+
+// ============================================================
 // SendAudioPacket
 // ============================================================
 

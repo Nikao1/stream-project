@@ -31,9 +31,17 @@ class RoomClient
 public:
     ~RoomClient();
 
+    // title: nome da sala (opcional, vazio = sem nome).
     bool Create(
         const std::string& name,
+        const std::string& title,
         std::string& outError
+    );
+
+    // Troca o nome da sala (vale pra todos; sai na proxima volta
+    // da thread). Vazio = sem nome.
+    void SetTitle(
+        const std::string& title
     );
 
     RoomJoinResult Join(
@@ -226,6 +234,10 @@ private:
     std::deque<RoomChatMessage> m_chat;
     uint64_t m_chatTotal = 0;
     std::deque<std::string> m_outbox;
+
+    // Nome da sala a publicar (m_titlePending = falta mandar).
+    std::string m_titleWanted;
+    bool m_titlePending = false;
 
     // Previas
     std::function<bool()> m_thumbEnabled;

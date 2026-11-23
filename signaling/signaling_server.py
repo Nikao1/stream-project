@@ -36,7 +36,7 @@ escolhe quem ver). A sala so guarda quem esta nela e o codigo de
 SESSAO de cada um que transmite - quem assiste entra nessa
 sessao pelo fluxo normal acima ("join"/"announce"):
 
-    POST /rooms                       name, [e2e=1, salt]
+    POST /rooms                       name, [e2e=1, salt, title]
                                       -> code, member_id, token,
                                          ttl + estado da sala
     POST /rooms/<code>/info           -> e2e (0|1), [salt]
@@ -64,6 +64,10 @@ sessao pelo fluxo normal acima ("join"/"announce"):
     POST /rooms/<code>/leave          member_id, token -> ok
     POST /rooms/<code>/chat           member_id, token, text
                                       -> ok, id
+    POST /rooms/<code>/title          member_id, token, [title]
+                                      -> ok
+        Nome da sala (opcional; trancado nas salas e2e). Sem
+        title = sala sem nome.
     POST /rooms/<code>/voice          member_id, token,
                                       [session_code, session_token]
                                       -> ok
@@ -91,6 +95,7 @@ sessao pelo fluxo normal acima ("join"/"announce"):
         chat_<i>=<id>|<member_id>|<nome>|<texto>
 
     Estado da sala:
+        room_title=<nome da sala, ou vazio>
         member_count=N
         member_<i>=<member_id>|<nome>|<sessao de voz, ou vazio>|
                    <versao da foto, ou vazio>
@@ -304,7 +309,7 @@ def _room_chat(room, after):
 
 def _room_state(room):
     """Chamar com _lock adquirido. Campos do estado da sala."""
-    fields = {}
+    fields = {"room_title": quote(room.get("title") or "")}
     members = sorted(room["members"].items(),
                      key=lambda item: item[1]["joined"])
     fields["member_count"] = len(members)
@@ -520,6 +525,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._room_leave(code, form)
             if action == "chat":
                 return self._room_chat_send(code, form)
+            if action == "title":
+                return self._room_title(code, form)
             if action == "voice":
                 return self._room_voice(code, form)
             if action == "thumb":
@@ -716,6 +723,27 @@ class Handler(BaseHTTPRequestHandler):
         name = _clean_text(form.get("name", ""), MAX_NAME_LENGTH)
         return name or "Sem nome"
 
+    def _room_title_field(self, form, e2e):
+        """Nome da sala: vazio (sem nome) ou valido; None =
+        invalido."""
+        text = form.get("title", "")
+        if not text:
+            return ""
+        if e2e:
+            return _sealed(text, MAX_SEALED_NAME)
+        return _clean_text(text, MAX_NAME_LENGTH)
+
+    def _room_title(self, code, form):
+        with _lock:
+            room, member = self._room_member(code, form)
+            if room is None:
+                return self._error(404, "not_in_room")
+            title = self._room_title_field(form, bool(room.get("e2e")))
+            if title is None:
+                return self._error(400, "invalid_fields")
+            room["title"] = title
+        self._reply(200, {"ok": 1})
+
     def _add_member(self, room, name):
         """Chamar com _lock adquirido."""
         member_id = secrets.token_hex(4)
@@ -755,12 +783,15 @@ class Handler(BaseHTTPRequestHandler):
         name = self._room_name(form, e2e)
         if name is None:
             return self._error(400, "invalid_fields")
+        title = self._room_title_field(form, e2e)
+        if title is None:
+            return self._error(400, "invalid_fields")
         with _lock:
             if len(_rooms) >= MAX_ROOMS:
                 return self._error(503, "server_full")
             code = _new_code()
             room = {"members": {}, "chat": [], "next_chat_id": 1,
-                    "next_thumb": 1, "e2e": e2e,
+                    "next_thumb": 1, "e2e": e2e, "title": title,
                     "salt": salt.lower() if e2e else ""}
             _rooms[code] = room
             member_id, token = self._add_member(room, name)

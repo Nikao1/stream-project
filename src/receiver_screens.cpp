@@ -1,6 +1,7 @@
 #include "receiver_screens.h"
 
 #include <algorithm>
+#include <cstring>
 
 #include "imgui.h"
 #include "ui_widgets.h"
@@ -231,6 +232,8 @@ namespace
 {
 bool GearButton(const char* id, const char* tooltip);
 }
+
+std::string FitText(const std::string& text, float maxWidth);
 
 
 void DrawHomeScreen(
@@ -603,8 +606,11 @@ void PersonRow(
     bool live,
     float rightReserve,
     float speaking = 0.0f,
-    void* image = nullptr)
+    void* image = nullptr,
+    int indicator = 0)
 {
+    // indicator: 0 = nada, 1 = na voz (bolinha verde), 2 =
+    // microfone desligado, 3 = silenciado por voce.
     float avatar = ImGui::GetFrameHeight() * 1.15f;
 
     UiAvatar(name.c_str(), avatar, live, speaking, image);
@@ -628,6 +634,56 @@ void PersonRow(
     }
 
     ImGui::TextUnformatted(name.c_str());
+
+    // Situacao na voz: um sinal so, ao lado do nome.
+    if (indicator != 0)
+    {
+        ImVec2 nameMax = ImGui::GetItemRectMax();
+        ImVec2 nameMin = ImGui::GetItemRectMin();
+
+        float line = ImGui::GetTextLineHeight();
+
+        ImVec2 center(
+            nameMax.x + 6.0f * UiScale() + line * 0.45f,
+            (nameMin.y + nameMax.y) * 0.5f);
+
+        int alpha = static_cast<int>(255 * ImGui::GetStyle().Alpha);
+
+        ImU32 red = IM_COL32(239, 68, 68, alpha);
+
+        const char* tip = "";
+
+        if (indicator == 1)
+        {
+            ImGui::GetWindowDrawList()->AddCircleFilled(
+                ImVec2(nameMax.x + 6.0f * UiScale() + line * 0.2f, center.y),
+                line * 0.2f,
+                IM_COL32(34, 197, 94, alpha), 12);
+
+            tip = "Na voz";
+        }
+        else if (indicator == 2)
+        {
+            UiMicIconAt(
+                ImVec2(center.x - line * 0.45f, center.y - line * 0.45f),
+                line * 0.9f, red, true);
+
+            tip = "Microfone desligado";
+        }
+        else
+        {
+            UiIconAt(UiIcon::VolumeOff, center, line * 0.9f, ImGui::GetColorU32(UiColorMuted()));
+
+            tip = "Silenciado por você";
+        }
+
+        if (ImGui::IsMouseHoveringRect(
+                ImVec2(center.x - line * 0.5f, nameMin.y),
+                ImVec2(center.x + line * 0.5f, nameMax.y)))
+        {
+            ImGui::SetTooltip("%s", tip);
+        }
+    }
 
     if (!detail.empty())
     {
@@ -658,24 +714,24 @@ bool MemberRow(
     float speakAmount,
     void* image)
 {
-    const char* detail = "";
-
-    switch (voice)
-    {
-    case MemberVoice::Connecting: detail = "conectando a voz..."; break;
-    case MemberVoice::In:         detail = "na voz"; break;
-    case MemberVoice::Speaking:   detail = "falando"; break;
-    default: break;
-    }
-
+    // Uma linha so: nome + um sinal (bolinha verde = na voz;
+    // microfone cortado; som cortado = silenciado por voce). Falar
+    // ja acende o anel verde da foto. Texto so enquanto conecta.
     std::string shown = name;
 
-    std::string detailText = detail;
+    std::string detailText =
+        voice == MemberVoice::Connecting ? "conectando..." : "";
 
-    // Silenciada por esta pessoa.
+    int indicator = 0;
+
+    if (voice == MemberVoice::Muted)
+        indicator = 2;
+    else if (voice == MemberVoice::In || voice == MemberVoice::Speaking)
+        indicator = 1;
+
     if (!isMe && voice != MemberVoice::Out && volume <= 0.001f)
     {
-        detailText = "silenciado por você";
+        indicator = 3;
     }
 
     ImGui::BeginGroup();
@@ -686,7 +742,8 @@ bool MemberRow(
         live,
         0.0f,
         speakAmount,
-        image);
+        image,
+        indicator);
 
     ImGui::EndGroup();
 
@@ -771,7 +828,7 @@ bool GearButton(
     // Furo da engrenagem: cor do fundo (opaca).
     ImVec4 windowBg = ImGui::GetStyleColorVec4(ImGuiCol_WindowBg);
 
-    windowBg.w = 1.0f;
+    windowBg.w = ImGui::GetStyle().Alpha;
 
     (void)hovered;
 
@@ -857,147 +914,6 @@ void DeviceCombo(
 
 // Secao "Voz" da sala: so o essencial (entrar/sair, microfone).
 // O resto fica nas configuracoes (engrenagem).
-void DrawVoiceSection(
-    const RoomScreenModel& model,
-    RoomScreenActions& actions)
-{
-    const ImGuiStyle& style = ImGui::GetStyle();
-
-    UiFieldLabel("Voz");
-
-    ImGui::Spacing();
-
-    float gear = ImGui::GetFrameHeight();
-
-    if (model.voiceJoining)
-    {
-        UiSpinner(8.0f * UiScale());
-
-        ImGui::SameLine();
-
-        UiMutedText((std::string("Entrando na voz") + UiBusyDots()).c_str());
-    }
-    else if (!model.voiceJoined)
-    {
-        if (ImGui::Button(
-                "Entrar na voz",
-                ImVec2(
-                    ImGui::GetContentRegionAvail().x - gear -
-                        style.ItemSpacing.x,
-                    0.0f)))
-        {
-            actions.voiceJoin = true;
-        }
-
-        ImGui::SameLine();
-
-        if (GearButton("##voz_config", "Configurações de voz e atalhos"))
-        {
-            actions.openVoiceSettings = true;
-        }
-
-        UiMutedText(
-            "Converse com a sala por aqui mesmo. A voz vai direto "
-            "entre vocês, criptografada.");
-    }
-    else
-    {
-        // [microfone] [sair da voz] [engrenagem]
-        float half =
-            (ImGui::GetContentRegionAvail().x - gear -
-             style.ItemSpacing.x * 2.0f) * 0.5f;
-
-        float icon = ImGui::GetTextLineHeight();
-
-        ImVec4 micColor =
-            model.voiceMuted
-            ? UiColorError()
-            : ImGui::GetStyleColorVec4(ImGuiCol_Text);
-
-        ImGui::PushStyleColor(ImGuiCol_Text, micColor);
-
-        if (ImGui::Button(
-                model.voiceMuted
-                ? "      Ligar microfone##mic"
-                : "      Silenciar##mic",
-                ImVec2(half, 0.0f)))
-        {
-            actions.voiceToggleMute = true;
-        }
-
-        ImGui::PopStyleColor();
-
-        if (ImGui::IsItemHovered() && !model.voiceMuteKey.empty())
-        {
-            ImGui::SetTooltip(
-                "Atalho: %s (funciona com o jogo aberto)",
-                model.voiceMuteKey.c_str());
-        }
-
-        ImVec2 buttonMin = ImGui::GetItemRectMin();
-
-        UiMicIconAt(
-            ImVec2(
-                buttonMin.x + style.FramePadding.x * 1.5f,
-                buttonMin.y + style.FramePadding.y),
-            icon,
-            ImGui::GetColorU32(micColor),
-            model.voiceMuted);
-
-        ImGui::SameLine();
-
-        if (ImGui::Button("Sair da voz", ImVec2(half, 0.0f)))
-        {
-            actions.voiceLeave = true;
-        }
-
-        ImGui::SameLine();
-
-        if (GearButton("##voz_config", "Configurações de voz e atalhos"))
-        {
-            actions.openVoiceSettings = true;
-        }
-
-        // Nivel do microfone (verde quando a voz esta saindo).
-        ImGui::PushStyleColor(
-            ImGuiCol_PlotHistogram,
-            model.voiceTransmitting
-            ? UiColorSuccess()
-            : UiColorMuted());
-
-        ImGui::ProgressBar(
-            (std::min)(1.0f, model.voiceMicLevel * 4.0f),
-            ImVec2(-1.0f, 4.0f * UiScale()),
-            "");
-
-        ImGui::PopStyleColor();
-
-        // Uma linha de situacao, so quando ajuda.
-        if (model.voiceMuted)
-        {
-            UiMutedText("Seu microfone está desligado.");
-        }
-        else if (!model.voicePttKey.empty() && !model.voiceTransmitting)
-        {
-            UiMutedText(
-                ("Segure " + model.voicePttKey + " para falar.").c_str());
-        }
-
-        if (!model.voiceEchoCancel)
-        {
-            UiWrappedColored(
-                UiColorMuted(),
-                "Sem cancelamento de eco neste Windows: use fone de "
-                "ouvido.");
-        }
-    }
-
-    if (!model.voiceError.empty())
-    {
-        UiWrappedColored(UiColorError(), model.voiceError.c_str());
-    }
-}
-
 } // namespace
 
 
@@ -1006,102 +922,256 @@ void DrawRoomScreen(
     RoomScreenActions& actions)
 {
     static double codeCopiedAt = 0.0;
+    static double linkCopiedAt = 0.0;
 
     const ImGuiStyle& style = ImGui::GetStyle();
 
-    UiBeginCenteredPanel("##sala", 860.0f);
+    const ImGuiViewport* viewport = ImGui::GetMainViewport();
 
-    // Duas colunas em janelas largas; uma so nas estreitas.
-    bool twoColumns =
-        ImGui::GetContentRegionAvail().x >= 640.0f * UiScale();
+    // A janela inteira, menos o painel Pessoas/Chat a direita.
+    ImGui::SetNextWindowPos(viewport->WorkPos, ImGuiCond_Always);
+
+    ImGui::SetNextWindowSize(
+        ImVec2(
+            (std::max)(200.0f, viewport->WorkSize.x - model.rightInset),
+            viewport->WorkSize.y),
+        ImGuiCond_Always);
+
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
+    ImGui::PushStyleVar(
+        ImGuiStyleVar_WindowPadding,
+        ImVec2(24.0f * UiScale(), 18.0f * UiScale()));
+
+    ImGui::Begin(
+        "##sala",
+        nullptr,
+        ImGuiWindowFlags_NoTitleBar |
+        ImGuiWindowFlags_NoResize |
+        ImGuiWindowFlags_NoMove |
+        ImGuiWindowFlags_NoCollapse |
+        ImGuiWindowFlags_NoSavedSettings |
+        ImGuiWindowFlags_NoBringToFrontOnFocus);
+
+    auto recently =
+        [](double at)
+        {
+            return at > 0.0 && ImGui::GetTime() - at < 2.0;
+        };
 
 
     // --------------------------------------------------------
-    // Cabecalho: nome da sala + copiar codigo
+    // Cabecalho: nome (lapis renomeia) · pessoas | convite,
+    // codigo, sair (e, em janela estreita, Pessoas/Chat)
     // --------------------------------------------------------
 
-    UiTitle(("Sala " + model.code).c_str());
+    bool hasTitle = !model.title.empty();
 
+    if (hasTitle)
     {
-        static double linkCopiedAt = 0.0;
+        UiTitle(model.title.c_str());
+    }
+    else
+    {
+        ImGui::PushStyleColor(ImGuiCol_Text, UiColorMuted());
 
-        auto recently =
-            [](double at)
-            {
-                return at > 0.0 && ImGui::GetTime() - at < 2.0;
-            };
+        UiTitle("Sala sem nome");
 
-        float codeWidth =
-            ImGui::CalcTextSize("Copiar código").x +
-            style.FramePadding.x * 4.0f;
+        ImGui::PopStyleColor();
+    }
 
-        float linkWidth =
-            model.inviteLink.empty()
-            ? 0.0f
-            : ImGui::CalcTextSize("Copiar convite").x +
-                  style.FramePadding.x * 4.0f;
+    float titleBottom = ImGui::GetItemRectMax().y;
+    float titleTop = ImGui::GetItemRectMin().y;
 
-        float total =
-            codeWidth +
-            (linkWidth > 0.0f ? linkWidth + style.ItemSpacing.x : 0.0f);
+    ImGui::SameLine();
 
-        // Ao lado do titulo se couber; senao, na linha de baixo.
-        float titleWidth = ImGui::GetItemRectSize().x;
+    ImGui::SetCursorScreenPos(
+        ImVec2(
+            ImGui::GetCursorScreenPos().x,
+            (titleTop + titleBottom - ImGui::GetFrameHeight()) * 0.5f));
 
-        if (titleWidth + total + style.ItemSpacing.x * 2.0f <=
-            ImGui::GetContentRegionAvail().x)
+    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
+
+    static char titleBuffer[64] = "";
+
+    if (UiIconButton(
+            "##renomear",
+            UiIcon::Edit,
+            hasTitle ? "Renomear a sala" : "Dar um nome à sala"))
+    {
+        strncpy(titleBuffer, model.title.c_str(), sizeof(titleBuffer) - 1);
+
+        titleBuffer[sizeof(titleBuffer) - 1] = '\0';
+
+        ImGui::OpenPopup("##nomesala");
+    }
+
+    ImGui::PopStyleColor();
+
+    if (ImGui::BeginPopup("##nomesala"))
+    {
+        UiMutedText("Nome da sala (todos veem; opcional)");
+
+        ImGui::SetNextItemWidth(260.0f * UiScale());
+
+        if (ImGui::IsWindowAppearing())
         {
-            ImGui::SameLine(ImGui::GetContentRegionMax().x - total);
-
-            ImGui::SetCursorPosY(
-                ImGui::GetCursorPosY() + 4.0f * UiScale());
+            ImGui::SetKeyboardFocusHere();
         }
 
-        float buttonsY = ImGui::GetCursorPosY();
+        bool enter =
+            ImGui::InputTextWithHint(
+                "##nome", "Ex.: Jogatina de sexta",
+                titleBuffer, 33,
+                ImGuiInputTextFlags_EnterReturnsTrue);
 
-        if (linkWidth > 0.0f)
+        float half = (260.0f * UiScale() - style.ItemSpacing.x) * 0.5f;
+
+        if (ImGui::Button("Salvar", ImVec2(half, 0.0f)) || enter)
         {
-            if (ImGui::Button(
-                    recently(linkCopiedAt)
-                    ? "Copiado!##copiarlink"
-                    : "Copiar convite##copiarlink",
-                    ImVec2(linkWidth, 0.0f)))
-            {
-                ImGui::SetClipboardText(model.inviteLink.c_str());
+            actions.setTitle = true;
+            actions.titleText = titleBuffer;
 
-                linkCopiedAt = ImGui::GetTime();
-            }
-
-            if (ImGui::IsItemHovered())
-            {
-                ImGui::SetTooltip(
-                    "Link que abre o programa direto nesta sala.\n"
-                    "A chave vai depois do # e não passa pelo servidor.");
-            }
-
-            ImGui::SameLine();
-
-            ImGui::SetCursorPosY(buttonsY);
+            ImGui::CloseCurrentPopup();
         }
 
+        ImGui::SameLine();
+
+        ImGui::BeginDisabled(!hasTitle);
+
+        if (ImGui::Button("Tirar o nome", ImVec2(half, 0.0f)))
+        {
+            actions.setTitle = true;
+            actions.titleText.clear();
+
+            ImGui::CloseCurrentPopup();
+        }
+
+        ImGui::EndDisabled();
+
+        ImGui::EndPopup();
+    }
+
+    // Botoes a direita (na mesma linha se couber; senao embaixo).
+    float codeWidth =
+        ImGui::CalcTextSize("Copiar código").x + style.FramePadding.x * 2.0f;
+
+    float linkWidth =
+        model.inviteLink.empty()
+        ? 0.0f
+        : ImGui::CalcTextSize("Copiar convite").x + style.FramePadding.x * 2.0f;
+
+    float leaveWidth =
+        ImGui::CalcTextSize("Sair").x + style.FramePadding.x * 2.0f;
+
+    float panelWidth = model.narrow ? ImGui::GetFrameHeight() + style.ItemSpacing.x : 0.0f;
+
+    float total =
+        codeWidth + leaveWidth + style.ItemSpacing.x +
+        (linkWidth > 0.0f ? linkWidth + style.ItemSpacing.x : 0.0f) +
+        panelWidth;
+
+    float lineEnd = ImGui::GetItemRectMax().x - ImGui::GetWindowPos().x;
+
+    float buttonsY =
+        (titleTop + titleBottom - ImGui::GetFrameHeight()) * 0.5f -
+        ImGui::GetWindowPos().y;
+
+    if (lineEnd + total + style.ItemSpacing.x * 2.0f <=
+        ImGui::GetContentRegionMax().x)
+    {
+        ImGui::SameLine(ImGui::GetContentRegionMax().x - total);
+
+        ImGui::SetCursorPosY(buttonsY);
+    }
+    else
+    {
+        buttonsY = ImGui::GetCursorPosY();
+    }
+
+    if (linkWidth > 0.0f)
+    {
         if (ImGui::Button(
-                recently(codeCopiedAt)
-                ? "Copiado!##copiarsala"
-                : "Copiar código##copiarsala",
-                ImVec2(codeWidth, 0.0f)))
+                recently(linkCopiedAt)
+                ? "Copiado!##copiarlink"
+                : "Copiar convite##copiarlink",
+                ImVec2(linkWidth, 0.0f)))
         {
-            ImGui::SetClipboardText(model.code.c_str());
+            ImGui::SetClipboardText(model.inviteLink.c_str());
 
-            codeCopiedAt = ImGui::GetTime();
+            linkCopiedAt = ImGui::GetTime();
+        }
+
+        if (ImGui::IsItemHovered())
+        {
+            ImGui::SetTooltip(
+                "Link que abre o programa direto nesta sala.\n"
+                "A chave vai depois do # e não passa pelo servidor.");
+        }
+
+        ImGui::SameLine();
+
+        ImGui::SetCursorPosY(buttonsY);
+    }
+
+    if (ImGui::Button(
+            recently(codeCopiedAt)
+            ? "Copiado!##copiarsala"
+            : "Copiar código##copiarsala",
+            ImVec2(codeWidth, 0.0f)))
+    {
+        ImGui::SetClipboardText(model.code.c_str());
+
+        codeCopiedAt = ImGui::GetTime();
+    }
+
+    if (ImGui::IsItemHovered())
+    {
+        ImGui::SetTooltip("%s", model.code.c_str());
+    }
+
+    ImGui::SameLine();
+
+    ImGui::SetCursorPosY(buttonsY);
+
+    ImGui::PushStyleColor(ImGuiCol_Text, UiColorError());
+
+    if (ImGui::Button("Sair##sairsala", ImVec2(leaveWidth, 0.0f)))
+    {
+        actions.leave = true;
+    }
+
+    ImGui::PopStyleColor();
+
+    if (ImGui::IsItemHovered())
+    {
+        ImGui::SetTooltip("Sair da sala");
+    }
+
+    if (model.narrow)
+    {
+        ImGui::SameLine();
+
+        ImGui::SetCursorPosY(buttonsY);
+
+        if (UiIconButton(
+                "##abrirpainel",
+                UiIcon::People,
+                "Pessoas e chat",
+                model.panelOpen,
+                false,
+                model.panelOpen ? 0 : model.unreadChat))
+        {
+            actions.togglePanel = true;
         }
     }
 
     UiMutedText(
-        (std::string(model.inviteLink.empty()
-                         ? "Passe o código inteiro para quem vai entrar"
-                         : "Mande o convite (ou o código inteiro) para quem vai entrar") +
-         "  ·  cabem até " + std::to_string(model.maxMembers) +
-         " pessoas").c_str());
+        (std::to_string(model.memberCount) + " de " +
+         std::to_string(model.maxMembers) + " pessoas  ·  " +
+         (model.inviteLink.empty()
+          ? "passe o código para quem vai entrar"
+          : "mande o convite para quem vai entrar")).c_str());
 
     if (model.offline)
     {
@@ -1113,28 +1183,331 @@ void DrawRoomScreen(
     }
 
     ImGui::Spacing();
-
-    bool table =
-        twoColumns &&
-        ImGui::BeginTable(
-            "##salacolunas",
-            2,
-            ImGuiTableFlags_SizingStretchProp |
-            ImGuiTableFlags_BordersInnerV);
-
-    if (table)
-    {
-        ImGui::TableSetupColumn("a", ImGuiTableColumnFlags_WidthStretch, 1.15f);
-        ImGui::TableSetupColumn("b", ImGuiTableColumnFlags_WidthStretch, 1.0f);
-        ImGui::TableNextColumn();
-    }
+    ImGui::Separator();
+    ImGui::Spacing();
 
 
     // --------------------------------------------------------
-    // Quem esta transmitindo
+    // Transmissoes: cartoes com previa, e o de transmitir
     // --------------------------------------------------------
 
     UiFieldLabel("Transmitindo agora");
+
+    ImGui::Spacing();
+
+    float avail = ImGui::GetContentRegionAvail().x;
+
+    float gap = 14.0f * UiScale();
+
+    int columns =
+        (std::max)(1, (std::min)(4, static_cast<int>((avail + gap) / (250.0f * UiScale() + gap))));
+
+    float cardWidth = (avail - gap * (columns - 1)) / columns;
+
+    float thumbHeight = cardWidth * 9.0f / 16.0f;
+
+    float footer = ImGui::GetFrameHeight() + style.FramePadding.y * 2.0f + 6.0f * UiScale();
+
+    float cardHeight = thumbHeight + footer;
+
+    float rounding = 10.0f * UiScale();
+
+    ImDrawList* draw = ImGui::GetWindowDrawList();
+
+    ImU32 border = ImGui::GetColorU32(ImGuiCol_Border);
+
+    int slot = 0;
+
+    // Posiciona o proximo cartao na grade.
+    auto nextCard =
+        [&]()
+        {
+            if (slot % columns != 0)
+            {
+                ImGui::SameLine(0.0f, gap);
+            }
+
+            slot++;
+        };
+
+    size_t count = model.presenters.size();
+
+    for (size_t i = 0; i < count; ++i)
+    {
+        const RoomPresenterEntry& entry = model.presenters[i];
+
+        ImGui::PushID(static_cast<int>(i));
+
+        nextCard();
+
+        ImGui::BeginGroup();
+
+        ImVec2 pos = ImGui::GetCursorScreenPos();
+
+        bool canWatch = !entry.isMe && !entry.watching && !model.connecting;
+
+        ImGui::InvisibleButton("##previa", ImVec2(cardWidth, thumbHeight));
+
+        bool hovered = ImGui::IsItemHovered();
+
+        if (ImGui::IsItemClicked() && canWatch)
+        {
+            actions.watch = static_cast<int>(i);
+        }
+
+        if (hovered && canWatch)
+        {
+            ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+        }
+
+        ImVec2 thumbMax(pos.x + cardWidth, pos.y + thumbHeight);
+
+        draw->AddRectFilled(
+            pos, thumbMax, IM_COL32(0, 0, 0, 255), rounding,
+            ImDrawFlags_RoundCornersTop);
+
+        if (entry.thumbnail && entry.thumbWidth > 0.0f && entry.thumbHeight > 0.0f)
+        {
+            float scale =
+                (std::min)(cardWidth / entry.thumbWidth,
+                           thumbHeight / entry.thumbHeight);
+
+            ImVec2 size(entry.thumbWidth * scale, entry.thumbHeight * scale);
+
+            ImVec2 min(pos.x + (cardWidth - size.x) * 0.5f,
+                       pos.y + (thumbHeight - size.y) * 0.5f);
+
+            draw->AddImageRounded(
+                reinterpret_cast<ImTextureID>(entry.thumbnail),
+                min, ImVec2(min.x + size.x, min.y + size.y),
+                ImVec2(0, 0), ImVec2(1, 1),
+                IM_COL32(255, 255, 255, 255),
+                rounding, ImDrawFlags_RoundCornersTop);
+        }
+        else
+        {
+            // Sem previa: foto ou inicial no meio.
+            float diameter = thumbHeight * 0.38f;
+
+            ImVec2 back = ImGui::GetCursorScreenPos();
+
+            ImGui::SetCursorScreenPos(
+                ImVec2(pos.x + (cardWidth - diameter) * 0.5f,
+                       pos.y + (thumbHeight - diameter) * 0.5f));
+
+            UiAvatar(entry.name.c_str(), diameter, false, 0.0f, entry.avatar);
+
+            ImGui::SetCursorScreenPos(back);
+        }
+
+        // Rodape do cartao: bolinha vermelha, nome · o que mostra,
+        // botao.
+        ImVec2 footerMin(pos.x, thumbMax.y);
+        ImVec2 cardMax(pos.x + cardWidth, thumbMax.y + footer);
+
+        draw->AddRectFilled(
+            footerMin, cardMax,
+            ImGui::GetColorU32(ImGuiCol_FrameBg), rounding,
+            ImDrawFlags_RoundCornersBottom);
+
+        draw->AddRect(
+            pos, cardMax,
+            hovered && canWatch ? ImGui::GetColorU32(UiColorAccent()) : border,
+            rounding, 0, 1.0f * UiScale());
+
+        float buttonWidth =
+            ImGui::CalcTextSize("Assistindo").x + style.FramePadding.x * 2.0f;
+
+        float midY = footerMin.y + footer * 0.5f;
+
+        float pad = 10.0f * UiScale();
+
+        draw->AddCircleFilled(
+            ImVec2(footerMin.x + pad + 4.0f * UiScale(), midY),
+            4.0f * UiScale(), IM_COL32(239, 68, 68, 255), 12);
+
+        std::string text =
+            (entry.isMe ? entry.name + " (você)" : entry.name) +
+            (entry.label.empty() ? std::string() : "  ·  " + entry.label);
+
+        float textX = footerMin.x + pad + 14.0f * UiScale();
+
+        float textMax = cardMax.x - pad - buttonWidth - style.ItemSpacing.x - textX;
+
+        std::string fitted = FitText(text, textMax);
+
+        draw->AddText(
+            ImVec2(textX, midY - ImGui::GetTextLineHeight() * 0.5f),
+            ImGui::GetColorU32(ImGuiCol_Text),
+            fitted.c_str());
+
+        if (fitted != text &&
+            ImGui::IsMouseHoveringRect(footerMin, cardMax))
+        {
+            ImGui::SetTooltip("%s", text.c_str());
+        }
+
+        ImGui::SetCursorScreenPos(
+            ImVec2(cardMax.x - pad - buttonWidth,
+                   midY - ImGui::GetFrameHeight() * 0.5f));
+
+        if (entry.isMe)
+        {
+            ImGui::BeginDisabled();
+            ImGui::Button("Você", ImVec2(buttonWidth, 0.0f));
+            ImGui::EndDisabled();
+        }
+        else if (entry.watching)
+        {
+            ImGui::BeginDisabled();
+            ImGui::Button(
+                model.connecting ? "Conectando" : "Assistindo",
+                ImVec2(buttonWidth, 0.0f));
+            ImGui::EndDisabled();
+        }
+        else
+        {
+            ImGui::BeginDisabled(model.connecting);
+
+            ImGui::PushStyleColor(ImGuiCol_Text, UiColorAccent());
+
+            if (ImGui::Button("Assistir", ImVec2(buttonWidth, 0.0f)))
+            {
+                actions.watch = static_cast<int>(i);
+            }
+
+            ImGui::PopStyleColor();
+
+            ImGui::EndDisabled();
+        }
+
+        ImGui::SetCursorScreenPos(pos);
+
+        ImGui::Dummy(ImVec2(cardWidth, cardHeight));
+
+        ImGui::EndGroup();
+
+        ImGui::PopID();
+    }
+
+    // Cartao de transmitir (ou da sua transmissao).
+    {
+        nextCard();
+
+        ImGui::BeginGroup();
+
+        ImVec2 pos = ImGui::GetCursorScreenPos();
+
+        ImVec2 cardMax(pos.x + cardWidth, pos.y + cardHeight);
+
+        if (!model.sharing)
+        {
+            ImGui::InvisibleButton("##transmitir", ImVec2(cardWidth, cardHeight));
+
+            bool hovered = ImGui::IsItemHovered();
+
+            if (ImGui::IsItemClicked())
+            {
+                actions.openShare = true;
+            }
+
+            if (hovered)
+            {
+                ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+            }
+
+            ImVec4 accent = UiColorAccent();
+
+            draw->AddRectFilled(
+                pos, cardMax,
+                ImGui::ColorConvertFloat4ToU32(
+                    ImVec4(accent.x, accent.y, accent.z, hovered ? 0.16f : 0.08f)),
+                rounding);
+
+            draw->AddRect(
+                pos, cardMax,
+                ImGui::ColorConvertFloat4ToU32(
+                    ImVec4(accent.x, accent.y, accent.z, hovered ? 0.9f : 0.5f)),
+                rounding, 0, 1.0f * UiScale());
+
+            float icon = (std::min)(cardHeight * 0.22f, 44.0f * UiScale());
+
+            const char* label = "Transmitir minha tela";
+
+            ImVec2 labelSize = ImGui::CalcTextSize(label);
+
+            float blockTop =
+                pos.y + (cardHeight - icon - labelSize.y - 10.0f * UiScale()) * 0.5f;
+
+            ImGui::SetCursorScreenPos(ImVec2(pos.x, pos.y));
+
+            UiIconAt(
+                UiIcon::Screen,
+                ImVec2(pos.x + cardWidth * 0.5f, blockTop + icon * 0.5f),
+                icon,
+                ImGui::GetColorU32(accent));
+
+            draw->AddText(
+                ImVec2(pos.x + (cardWidth - labelSize.x) * 0.5f,
+                       blockTop + icon + 10.0f * UiScale()),
+                ImGui::GetColorU32(accent),
+                label);
+        }
+        else
+        {
+            draw->AddRectFilled(
+                pos, cardMax,
+                ImGui::GetColorU32(ImGuiCol_FrameBg), rounding);
+
+            draw->AddRect(pos, cardMax, border, rounding, 0, 1.0f * UiScale());
+
+            float pad = 14.0f * UiScale();
+
+            float inner = cardWidth - pad * 2.0f;
+
+            ImGui::SetCursorScreenPos(ImVec2(pos.x + pad, pos.y + pad));
+
+            ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + inner);
+
+            UiWrappedColored(UiColorSuccess(), "Você está transmitindo");
+
+            std::string detail =
+                model.sharingLabel + "  ·  " +
+                std::to_string(model.sharingViewers) + " assistindo";
+
+            UiMutedText(detail.c_str());
+
+            ImGui::PopTextWrapPos();
+
+            ImGui::SetCursorScreenPos(
+                ImVec2(pos.x + pad,
+                       cardMax.y - pad - ImGui::GetFrameHeight()));
+
+            float half = (inner - style.ItemSpacing.x) * 0.5f;
+
+            if (ImGui::Button("Opções##opcoestransm", ImVec2(half, 0.0f)))
+            {
+                actions.openShare = true;
+            }
+
+            ImGui::SameLine();
+
+            ImGui::PushStyleColor(ImGuiCol_Text, UiColorError());
+
+            if (ImGui::Button("Parar##parartransm", ImVec2(half, 0.0f)))
+            {
+                actions.stopShare = true;
+            }
+
+            ImGui::PopStyleColor();
+
+            ImGui::SetCursorScreenPos(pos);
+
+            ImGui::Dummy(ImVec2(cardWidth, cardHeight));
+        }
+
+        ImGui::EndGroup();
+    }
 
     ImGui::Spacing();
 
@@ -1143,196 +1516,6 @@ void DrawRoomScreen(
         UiMutedText(
             "Ninguém está transmitindo ainda. Quando alguém "
             "começar, aparece aqui.");
-    }
-
-    const float buttonWidth =
-        ImGui::CalcTextSize("Assistindo").x +
-        style.FramePadding.x * 4.0f;
-
-    for (size_t i = 0; i < model.presenters.size(); ++i)
-    {
-        const RoomPresenterEntry& entry =
-            model.presenters[i];
-
-        ImGui::PushID(static_cast<int>(i));
-
-        float rowTop = ImGui::GetCursorPosY();
-
-        if (entry.thumbnail &&
-            entry.thumbWidth > 0.0f &&
-            entry.thumbHeight > 0.0f)
-        {
-            // Previa no lugar da bolinha (clicar = assistir).
-            float maxW = 136.0f * UiScale();
-            float maxH = 77.0f * UiScale();
-
-            float scale =
-                (std::min)(maxW / entry.thumbWidth,
-                           maxH / entry.thumbHeight);
-
-            ImVec2 size(entry.thumbWidth * scale,
-                        entry.thumbHeight * scale);
-
-            ImVec2 pos = ImGui::GetCursorScreenPos();
-
-            // Centraliza numa caixa fixa (linhas alinhadas).
-            ImGui::InvisibleButton("##previa", ImVec2(maxW, maxH));
-
-            bool hovered = ImGui::IsItemHovered();
-
-            if (ImGui::IsItemClicked() &&
-                !entry.isMe && !entry.watching && !model.connecting)
-            {
-                actions.watch = static_cast<int>(i);
-            }
-
-            ImDrawList* draw = ImGui::GetWindowDrawList();
-
-            ImVec2 min(pos.x + (maxW - size.x) * 0.5f,
-                       pos.y + (maxH - size.y) * 0.5f);
-
-            ImVec2 max(min.x + size.x, min.y + size.y);
-
-            draw->AddRectFilled(
-                pos, ImVec2(pos.x + maxW, pos.y + maxH),
-                IM_COL32(0, 0, 0, 255), 6.0f * UiScale());
-
-            draw->AddImageRounded(
-                reinterpret_cast<ImTextureID>(entry.thumbnail),
-                min, max, ImVec2(0, 0), ImVec2(1, 1),
-                IM_COL32(255, 255, 255, 255),
-                6.0f * UiScale());
-
-            draw->AddRect(
-                pos, ImVec2(pos.x + maxW, pos.y + maxH),
-                hovered
-                    ? ImGui::GetColorU32(UiColorAccent())
-                    : IM_COL32(239, 68, 68, 200),
-                6.0f * UiScale(), 0, 1.5f * UiScale());
-
-            if (hovered)
-            {
-                // Maior ao passar o mouse.
-                ImGui::BeginTooltip();
-
-                float big =
-                    (std::min)(360.0f * UiScale() / entry.thumbWidth,
-                               203.0f * UiScale() / entry.thumbHeight);
-
-                ImGui::Image(
-                    reinterpret_cast<ImTextureID>(entry.thumbnail),
-                    ImVec2(entry.thumbWidth * big,
-                           entry.thumbHeight * big));
-
-                ImGui::EndTooltip();
-            }
-
-            ImGui::SameLine();
-
-            ImGui::BeginGroup();
-
-            float textWidth =
-                ImGui::GetContentRegionAvail().x -
-                buttonWidth - style.ItemSpacing.x;
-
-            ImGui::PushTextWrapPos(
-                ImGui::GetCursorPosX() + (std::max)(40.0f, textWidth));
-
-            ImGui::SetCursorPosY(
-                ImGui::GetCursorPosY() + maxH * 0.18f);
-
-            ImGui::TextUnformatted(
-                (entry.isMe ? entry.name + " (você)" : entry.name).c_str());
-
-            if (!entry.label.empty())
-            {
-                ImGui::PushStyleColor(ImGuiCol_Text, UiColorMuted());
-
-                ImGui::TextUnformatted(entry.label.c_str());
-
-                ImGui::PopStyleColor();
-            }
-
-            ImGui::PopTextWrapPos();
-
-            ImGui::EndGroup();
-
-            // A linha tem pelo menos a altura da previa.
-            float bottom = rowTop + maxH + style.ItemSpacing.y;
-
-            if (ImGui::GetCursorPosY() < bottom)
-            {
-                ImGui::SetCursorPosY(bottom);
-            }
-        }
-        else
-        {
-            PersonRow(
-                entry.isMe ? entry.name + " (você)" : entry.name,
-                entry.label,
-                true,
-                buttonWidth + style.ItemSpacing.x,
-                0.0f,
-                entry.avatar);
-        }
-
-        float rowBottom = ImGui::GetCursorPosY();
-
-        // Botao alinhado a direita, no meio da linha.
-        ImGui::SameLine(
-            ImGui::GetContentRegionMax().x - buttonWidth);
-
-        ImGui::SetCursorPosY(
-            rowTop +
-            ((rowBottom - rowTop) - style.ItemSpacing.y -
-             ImGui::GetFrameHeight()) * 0.5f);
-
-        if (entry.isMe)
-        {
-            ImGui::BeginDisabled();
-
-            ImGui::Button("Você", ImVec2(buttonWidth, 0.0f));
-
-            ImGui::EndDisabled();
-        }
-        else if (entry.watching)
-        {
-            ImGui::BeginDisabled();
-
-            ImGui::Button(
-                model.connecting ? "Conectando" : "Assistindo",
-                ImVec2(buttonWidth, 0.0f));
-
-            ImGui::EndDisabled();
-        }
-        else
-        {
-            ImGui::BeginDisabled(model.connecting);
-
-            // (a acao principal da sala e "Transmitir"; aqui um
-            // botao comum, com o texto em destaque)
-            ImGui::PushStyleColor(ImGuiCol_Text, UiColorAccent());
-
-            bool watch =
-                ImGui::Button(
-                    "Assistir",
-                    ImVec2(buttonWidth, 0.0f));
-
-            ImGui::PopStyleColor();
-
-            if (watch)
-            {
-                actions.watch = static_cast<int>(i);
-            }
-
-            ImGui::EndDisabled();
-        }
-
-        ImGui::SetCursorPosY(rowBottom);
-
-        ImGui::PopID();
-
-        ImGui::Spacing();
     }
 
     if (model.connecting)
@@ -1353,163 +1536,12 @@ void DrawRoomScreen(
 
     if (!model.error.empty())
     {
-        UiWrappedColored(
-            UiColorError(),
-            model.error.c_str());
+        UiWrappedColored(UiColorError(), model.error.c_str());
     }
 
-    ImGui::Spacing();
+    ImGui::End();
 
-    ImGui::Separator();
-
-    ImGui::Spacing();
-
-
-    // --------------------------------------------------------
-    // A transmissao desta pessoa
-    // --------------------------------------------------------
-
-    if (model.sharing)
-    {
-        std::string text =
-            "Você está transmitindo: " +
-            model.sharingLabel +
-            "  ·  " +
-            std::to_string(model.sharingViewers) +
-            " assistindo";
-
-        UiWrappedColored(UiColorSuccess(), text.c_str());
-
-        float half =
-            (ImGui::GetContentRegionAvail().x -
-             style.ItemSpacing.x) * 0.5f;
-
-        // Coluna estreita: textos curtos (nada cortado).
-        bool narrow =
-            ImGui::CalcTextSize("Opções da transmissão").x +
-                style.FramePadding.x * 2.0f > half;
-
-        if (ImGui::Button(
-                narrow ? "Opções##opcoestransm"
-                       : "Opções da transmissão",
-                ImVec2(half, 0.0f)))
-        {
-            actions.openShare = true;
-        }
-
-        ImGui::SameLine();
-
-        if (ImGui::Button(
-                narrow ? "Parar##parartransm"
-                       : "Parar de transmitir",
-                ImVec2(half, 0.0f)))
-        {
-            actions.stopShare = true;
-        }
-    }
-    else if (UiPrimaryButton("Transmitir minha tela"))
-    {
-        actions.openShare = true;
-    }
-
-    ImGui::Spacing();
-
-    if (ImGui::Button(
-            "Sair da sala",
-            ImVec2(ImGui::GetContentRegionAvail().x, 0.0f)))
-    {
-        actions.leave = true;
-    }
-
-
-    // --------------------------------------------------------
-    // Pessoas + chat (segunda coluna, ou embaixo)
-    // --------------------------------------------------------
-
-    if (table)
-    {
-        ImGui::TableNextColumn();
-    }
-    else
-    {
-        ImGui::Spacing();
-        ImGui::Separator();
-    }
-
-    UiFieldLabel(
-        ("Na sala (" + std::to_string(model.members.size()) +
-         ")").c_str());
-
-    ImGui::Spacing();
-
-    for (size_t i = 0; i < model.members.size(); ++i)
-    {
-        bool live =
-            i < model.memberLive.size() &&
-            model.memberLive[i];
-
-        MemberVoice voice =
-            i < model.memberVoice.size()
-            ? model.memberVoice[i]
-            : MemberVoice::Out;
-
-        bool isMe =
-            i < model.memberIsMe.size() &&
-            model.memberIsMe[i];
-
-        ImGui::PushID(static_cast<int>(1000 + i));
-
-        float volume =
-            i < model.memberVolume.size()
-            ? model.memberVolume[i]
-            : 1.0f;
-
-        float newVolume = volume;
-
-        if (MemberRow(
-                model.members[i],
-                live,
-                voice,
-                isMe,
-                model.voiceJoined,
-                volume,
-                newVolume,
-                i < model.memberSpeak.size() ? model.memberSpeak[i] : 0.0f,
-                i < model.memberAvatar.size() ? model.memberAvatar[i] : nullptr))
-        {
-            actions.volumeMember = static_cast<int>(i);
-            actions.volumeValue = newVolume;
-        }
-
-        ImGui::PopID();
-    }
-
-    ImGui::Spacing();
-
-    DrawVoiceSection(model, actions);
-
-    ImGui::Spacing();
-
-    UiFieldLabel("Chat");
-
-    if (model.chatInput &&
-        DrawChatBox(
-            "salachat",
-            model.chat,
-            model.chatInput,
-            model.chatInputSize,
-            (twoColumns ? 230.0f : 180.0f) * UiScale(),
-            false))
-    {
-        actions.sendChat = true;
-    }
-
-    if (table)
-    {
-        ImGui::EndTable();
-    }
-
-    UiEndPanel();
+    ImGui::PopStyleVar(3);
 }
 
 
@@ -2129,9 +2161,28 @@ void SidePeopleList(
 // Rodape do painel: entrar / silenciar / sair da voz.
 void SideVoiceControls(
     const PeoplePanelModel& model,
-    PeoplePanelActions& actions)
+    PeoplePanelActions& actions,
+    bool showGear,
+    bool& outOpenSettings)
 {
     const ImGuiStyle& style = ImGui::GetStyle();
+
+    // Engrenagem a direita da linha de botoes (lista da sala).
+    float gear = showGear ? ImGui::GetFrameHeight() + style.ItemSpacing.x : 0.0f;
+
+    auto gearButton =
+        [&]()
+        {
+            if (!showGear)
+                return;
+
+            ImGui::SameLine();
+
+            if (GearButton("##painel_config", "Configurações de voz e atalhos"))
+            {
+                outOpenSettings = true;
+            }
+        };
 
     if (model.voiceJoining)
     {
@@ -2145,15 +2196,17 @@ void SideVoiceControls(
     {
         if (ImGui::Button(
                 "Entrar na voz",
-                ImVec2(ImGui::GetContentRegionAvail().x, 0.0f)))
+                ImVec2(ImGui::GetContentRegionAvail().x - gear, 0.0f)))
         {
             actions.voiceJoin = true;
         }
+
+        gearButton();
     }
     else
     {
         float half =
-            (ImGui::GetContentRegionAvail().x -
+            (ImGui::GetContentRegionAvail().x - gear -
              style.ItemSpacing.x) * 0.5f;
 
         ImVec4 micColor =
@@ -2190,6 +2243,8 @@ void SideVoiceControls(
         {
             actions.voiceLeave = true;
         }
+
+        gearButton();
 
         ImGui::PushStyleColor(
             ImGuiCol_PlotHistogram,
@@ -2340,7 +2395,7 @@ void DrawRoomSidePanel(
         ImVec2(width, viewport->WorkSize.y),
         ImGuiCond_Always);
 
-    ImGui::SetNextWindowBgAlpha(0.97f);
+    ImGui::SetNextWindowBgAlpha(1.0f);
 
     ImGui::PushStyleVar(ImGuiStyleVar_Alpha, eased);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
@@ -2386,13 +2441,16 @@ void DrawRoomSidePanel(
 
     float button = ImGui::GetFrameHeight();
 
+    if (!model.docked)
+    {
     ImGui::SameLine(
         ImGui::GetContentRegionMax().x -
-        button * 2.0f - style.ItemSpacing.x);
+        (model.showPin ? button * 2.0f + style.ItemSpacing.x : button));
 
     ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
 
-    if (UiIconButton(
+    if (model.showPin &&
+        UiIconButton(
             "##fixar",
             model.pinned ? UiIcon::Pin : UiIcon::PinOff,
             model.pinned
@@ -2403,7 +2461,10 @@ void DrawRoomSidePanel(
         actions.togglePin = true;
     }
 
-    ImGui::SameLine();
+    if (model.showPin)
+    {
+        ImGui::SameLine();
+    }
 
     if (UiIconButton("##fecharpainel", UiIcon::Close, "Fechar"))
     {
@@ -2411,6 +2472,7 @@ void DrawRoomSidePanel(
     }
 
     ImGui::PopStyleColor();
+    }
 
     ImGui::Separator();
 
@@ -2454,7 +2516,7 @@ void DrawRoomSidePanel(
 
     float footerStart = ImGui::GetCursorPosY();
 
-    SideVoiceControls(model.people, actions.people);
+    SideVoiceControls(model.people, actions.people, model.showGear, actions.openVoiceSettings);
 
     if (ImGui::SmallButton("Atalhos"))
     {
@@ -2653,9 +2715,49 @@ void DrawRoomBar(
         ImGui::SameLine();
     }
 
+    if (!model.watching && model.sharingLive)
+    {
+        std::string liveTip =
+            "Transmissão  ·  " + std::to_string(model.viewers) +
+            (model.viewers == 1 ? " pessoa assistindo" : " pessoas assistindo");
+
+        if (UiIconButton(
+                "##barvivo",
+                UiIcon::Screen,
+                liveTip.c_str(),
+                model.livePanelOpen))
+        {
+            actions.toggleLivePanel = true;
+        }
+
+        ImGui::SameLine();
+    }
+
     if (GearButton("##barconfig", "Configurações"))
     {
         actions.openSettings = true;
+    }
+
+    if (!model.watching && model.sharingLive)
+    {
+        ImGui::SameLine();
+
+        if (UiIconButton(
+                "##barparar",
+                UiIcon::Stop,
+                "Parar de transmitir",
+                false,
+                true))
+        {
+            actions.stopSharing = true;
+        }
+
+        ImGui::SameLine();
+
+        if (UiIconButton("##barvoltarsala", UiIcon::Exit, "Voltar à sala"))
+        {
+            actions.backToRoom = true;
+        }
     }
 
     if (model.watching)
@@ -2854,6 +2956,9 @@ void DrawRoomBar(
     }
 
     actions.popupOpen = anyPopup;
+
+    actions.centerX = ImGui::GetWindowPos().x + ImGui::GetWindowWidth() * 0.5f;
+    actions.top = ImGui::GetWindowPos().y;
 
     actions.hovered =
         anyPopup ||

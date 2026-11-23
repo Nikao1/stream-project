@@ -1085,6 +1085,8 @@ void ParseRoomState(
 {
     outState = RoomState{};
 
+    outState.title = UrlDecode(fields["room_title"]);
+
     int members =
         std::atoi(fields["member_count"].c_str());
 
@@ -1148,6 +1150,7 @@ std::string RoomPath(
 
 bool SignalingCreateRoom(
     const std::string& name,
+    const std::string& title,
     const std::string& saltHex,
     RoomMembership& outMembership,
     RoomState& outState,
@@ -1161,7 +1164,9 @@ bool SignalingCreateRoom(
             "/rooms",
             "name=" + UrlEncode(name) +
                 (saltHex.empty() ? std::string()
-                                 : "&e2e=1&salt=" + saltHex),
+                                 : "&e2e=1&salt=" + saltHex) +
+                (title.empty() ? std::string()
+                               : "&title=" + UrlEncode(title)),
             "code",
             status,
             response,
@@ -1418,6 +1423,39 @@ bool SignalingRoomChat(
             RoomPath(membership, "chat"),
             MemberBody(membership) +
                 "&text=" + UrlEncode(text),
+            status,
+            response,
+            outError))
+    {
+        return false;
+    }
+
+    if (status != 200)
+    {
+        outError =
+            "servidor de sinalizacao respondeu HTTP " +
+            std::to_string(status);
+
+        return false;
+    }
+
+    return true;
+}
+
+
+bool SignalingRoomTitle(
+    const RoomMembership& membership,
+    const std::string& title,
+    std::string& outError)
+{
+    DWORD status = 0;
+
+    std::string response;
+
+    if (!HttpPost(
+            RoomPath(membership, "title"),
+            MemberBody(membership) +
+                "&title=" + UrlEncode(title),
             status,
             response,
             outError))

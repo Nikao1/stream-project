@@ -34,6 +34,13 @@ bool g_roomPreviewUi = true;
 
 std::atomic<bool> g_roomPreview{ true };
 
+// Painel da transmissao numa sala (abre pela barra de baixo).
+bool g_roomPanelOpen = false;
+
+float g_roomPanelX = 0.0f;
+float g_roomPanelY = 0.0f;
+bool g_roomPanelHidden = false;
+
 
 
 namespace
@@ -845,6 +852,14 @@ void DrawUi(
     model.replyInput = g_replyInput;
     model.replyInputSize = sizeof(g_replyInput);
 
+    if (g_roomMode)
+    {
+        model.roomPanelOpen = &g_roomPanelOpen;
+        model.anchorX = g_roomPanelX;
+        model.anchorY = g_roomPanelY;
+        model.hidden = g_roomPanelHidden;
+    }
+
     DrawClientLiveScreen(
         model,
         actions
@@ -1503,6 +1518,30 @@ void StopSharing()
     {
         StopSharingInternal();
     }
+}
+
+
+bool RoomPanelOpen()
+{
+    return g_roomPanelOpen;
+}
+
+
+void SetRoomPanelOpen(
+    bool open)
+{
+    g_roomPanelOpen = open;
+}
+
+
+void SetRoomPanelAnchor(
+    float centerX,
+    float bottomY,
+    bool hidden)
+{
+    g_roomPanelX = centerX;
+    g_roomPanelY = bottomY;
+    g_roomPanelHidden = hidden;
 }
 
 

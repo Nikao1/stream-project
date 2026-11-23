@@ -4971,7 +4971,7 @@ void HomeWorker(
             g_homeStatus = "Criando a sala";
         }
 
-        if (g_room.Create(name, error))
+        if (g_room.Create(name, std::string(), error))
         {
             g_homeResult = HomeResult::Room;
         }
@@ -5285,6 +5285,9 @@ MemberVoice MemberVoiceState(
         if (!g_voice.IsJoined())
             return MemberVoice::Out;
 
+        if (g_voice.IsMuted())
+            return MemberVoice::Muted;
+
         return SpeakingNow(member.id) ? MemberVoice::Speaking : MemberVoice::In;
     }
 
@@ -5296,6 +5299,9 @@ MemberVoice MemberVoiceState(
 
     if (!g_voice.IsConnected(member.id))
         return MemberVoice::Connecting;
+
+    if (g_voice.IsPeerMuted(member.id))
+        return MemberVoice::Muted;
 
     return SpeakingNow(member.id) ? MemberVoice::Speaking : MemberVoice::In;
 }
@@ -6353,12 +6359,186 @@ float SmoothStep01(float x)
 }
 
 
+// Pessoas e voz do painel lateral (video, transmitindo e lista
+// da sala).
+void FillSidePeople(
+    const RoomState& state,
+    PeoplePanelModel& people)
+{
+    std::string myId = g_room.GetMemberId();
+
+    for (const RoomMember& member : state.members)
+    {
+        PeopleEntry entry;
+
+        entry.name = member.name;
+        entry.isMe = member.id == myId;
+
+        for (const RoomPresenter& presenter : state.presenters)
+        {
+            if (presenter.memberId == member.id)
+            {
+                entry.live = true;
+            }
+        }
+
+        entry.voice = MemberVoiceState(member, entry.isMe);
+        entry.speakAmount = SpeakAmount(member.id);
+        entry.avatar = MemberAvatar(member.id);
+        entry.volume = g_voice.PeerVolume(member.id);
+
+        people.people.push_back(entry);
+    }
+
+    people.voiceJoined = g_voice.IsJoined();
+    people.voiceJoining = g_voice.IsJoining();
+    people.voiceMuted = g_voice.IsMuted();
+    people.voiceTransmitting = g_voice.IsTransmitting();
+    people.micLevel = g_voice.MicLevel();
+    people.pttKey = ShortcutName(SHORTCUT_PUSH_TO_TALK);
+    people.muteKey = ShortcutName(SHORTCUT_TOGGLE_MIC);
+    people.voiceError = g_voice.ErrorText();
+}
+
+
+// O que a pessoa fez nas pessoas/voz do painel lateral.
+void ApplySidePeople(
+    const RoomState& state,
+    const PeoplePanelActions& people)
+{
+    if (people.voiceJoin)
+    {
+        StartVoice();
+    }
+
+    if (people.voiceLeave)
+    {
+        g_voice.Leave();
+    }
+
+    if (people.toggleMute)
+    {
+        g_voice.SetMuted(!g_voice.IsMuted());
+    }
+
+    if (people.volumeMember >= 0 &&
+        people.volumeMember < static_cast<int>(state.members.size()))
+    {
+        g_voice.SetPeerVolume(
+            state.members[people.volumeMember].id,
+            people.volumeValue);
+    }
+
+    if (people.openShortcuts)
+    {
+        OpenSettings(SETTINGS_TAB_SHORTCUTS);
+    }
+}
+
+
+// Lista da sala: aba escolhida e, em janela estreita, o painel
+// aberto por cima (animado).
+int g_lobbyTab = 0;
+bool g_lobbyPanelOpen = false;
+float g_lobbyProgress = 0.0f;
+
+
+// Janela larga o bastante pra lista + painel lado a lado?
+bool LobbyIsWide()
+{
+    return ImGui::GetIO().DisplaySize.x >= 720.0f * UiScale();
+}
+
+
+// Painel Pessoas/Chat da lista da sala (a direita; preso em
+// janela larga, por cima em estreita). Devolve true se a
+// pessoa enviou uma mensagem.
+bool DrawLobbySidePanel(
+    const RoomState& state,
+    const std::vector<ChatLine>& chat,
+    int unread,
+    bool togglePressed)
+{
+    ImGuiIO& io = ImGui::GetIO();
+
+    bool wide = LobbyIsWide();
+
+    float dt = (std::min)(io.DeltaTime, 0.1f);
+
+    g_lobbyProgress =
+        wide
+        ? 1.0f
+        : Approach(g_lobbyProgress, g_lobbyPanelOpen ? 1.0f : 0.0f, dt, 0.2f, 0.2f);
+
+    RoomSidePanelModel panel;
+
+    FillSidePeople(state, panel.people);
+
+    panel.chat = &chat;
+    panel.chatInput = g_chatInput;
+    panel.chatInputSize = sizeof(g_chatInput);
+    panel.focusChat = g_chatFocus && g_lobbyProgress >= 0.5f;
+    panel.tab = g_lobbyTab;
+    panel.unreadChat = unread;
+    panel.progress = g_lobbyProgress;
+    panel.docked = wide;
+    panel.showGear = true;
+    panel.showPin = false;
+
+    RoomSidePanelActions actions;
+
+    DrawRoomSidePanel(panel, actions);
+
+    if (panel.focusChat)
+    {
+        g_chatFocus = false;
+    }
+
+    // Estreita: clicar fora fecha.
+    if (!wide &&
+        g_lobbyPanelOpen &&
+        !togglePressed &&
+        g_lobbyProgress >= 1.0f &&
+        ImGui::IsMouseClicked(ImGuiMouseButton_Left) &&
+        !actions.hovered &&
+        !g_settingsOpen &&
+        !ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId) &&
+        ImGui::IsMousePosValid() &&
+        io.MousePos.x < io.DisplaySize.x - RoomSidePanelWidth())
+    {
+        g_lobbyPanelOpen = false;
+    }
+
+    if (actions.setTab >= 0)
+    {
+        g_lobbyTab = actions.setTab;
+
+        g_chatFocus = actions.setTab == 1;
+    }
+
+    if (actions.close)
+    {
+        g_lobbyPanelOpen = false;
+    }
+
+    if (actions.openVoiceSettings)
+    {
+        OpenSettings(SETTINGS_TAB_VOICE);
+    }
+
+    ApplySidePeople(state, actions.people);
+
+    return actions.sendChat;
+}
+
+
 struct RoomControlsResult
 {
     bool backToRoom = false;
     int switchTo = -1;
     bool sendChat = false;
     bool toggleFullscreen = false;
+    bool stopSharing = false;
 };
 
 
@@ -6451,37 +6631,7 @@ void DrawRoomControls(
 
     RoomSidePanelModel panel;
 
-    for (const RoomMember& member : state.members)
-    {
-        PeopleEntry entry;
-
-        entry.name = member.name;
-        entry.isMe = member.id == myId;
-
-        for (const RoomPresenter& presenter : state.presenters)
-        {
-            if (presenter.memberId == member.id)
-            {
-                entry.live = true;
-            }
-        }
-
-        entry.voice = MemberVoiceState(member, entry.isMe);
-        entry.speakAmount = SpeakAmount(member.id);
-        entry.avatar = MemberAvatar(member.id);
-        entry.volume = g_voice.PeerVolume(member.id);
-
-        panel.people.people.push_back(entry);
-    }
-
-    panel.people.voiceJoined = g_voice.IsJoined();
-    panel.people.voiceJoining = g_voice.IsJoining();
-    panel.people.voiceMuted = g_voice.IsMuted();
-    panel.people.voiceTransmitting = g_voice.IsTransmitting();
-    panel.people.micLevel = g_voice.MicLevel();
-    panel.people.pttKey = ShortcutName(SHORTCUT_PUSH_TO_TALK);
-    panel.people.muteKey = ShortcutName(SHORTCUT_TOGGLE_MIC);
-    panel.people.voiceError = g_voice.ErrorText();
+    FillSidePeople(state, panel.people);
 
     panel.chat = &chat;
     panel.chatInput = g_chatInput;
@@ -6551,6 +6701,13 @@ void DrawRoomControls(
     bar.presenterName = g_watchName;
     bar.otherPresenters = others;
 
+    if (!watching)
+    {
+        bar.sharingLive = sender::IsLive();
+        bar.livePanelOpen = sender::RoomPanelOpen();
+        bar.viewers = sender::ViewerCount();
+    }
+
     {
         std::string hint;
 
@@ -6578,6 +6735,17 @@ void DrawRoomControls(
     DrawRoomBar(bar, barActions);
 
     g_barHovered = bar.alpha > 0.05f && barActions.hovered;
+
+    // Painel da transmissao (quem transmite) abre logo acima.
+    if (!watching)
+    {
+        sender::SetRoomPanelAnchor(
+            barActions.top > 0.0f
+            ? barActions.centerX
+            : (io.DisplaySize.x - panelWidth) * 0.5f,
+            barActions.top > 0.0f ? barActions.top : io.DisplaySize.y,
+            g_controlsHidden);
+    }
 
     // ---------------- Clique fora fecha (sem fixar) ----------------
 
@@ -6619,34 +6787,16 @@ void DrawRoomControls(
         out.sendChat = true;
     }
 
-    const PeoplePanelActions& people = panelActions.people;
+    ApplySidePeople(state, panelActions.people);
 
-    if (people.voiceJoin || barActions.joinVoice)
+    if (barActions.joinVoice && !panelActions.people.voiceJoin)
     {
         StartVoice();
     }
 
-    if (people.voiceLeave)
-    {
-        g_voice.Leave();
-    }
-
-    if (people.toggleMute || barActions.toggleMic)
+    if (barActions.toggleMic)
     {
         g_voice.SetMuted(!g_voice.IsMuted());
-    }
-
-    if (people.volumeMember >= 0 &&
-        people.volumeMember < static_cast<int>(state.members.size()))
-    {
-        g_voice.SetPeerVolume(
-            state.members[people.volumeMember].id,
-            people.volumeValue);
-    }
-
-    if (people.openShortcuts)
-    {
-        OpenSettings(SETTINGS_TAB_SHORTCUTS);
     }
 
     if (barActions.togglePeople)
@@ -6678,6 +6828,16 @@ void DrawRoomControls(
     if (barActions.backToRoom)
     {
         out.backToRoom = true;
+    }
+
+    if (barActions.toggleLivePanel)
+    {
+        sender::SetRoomPanelOpen(!sender::RoomPanelOpen());
+    }
+
+    if (barActions.stopSharing)
+    {
+        out.stopSharing = true;
     }
 
     out.switchTo = barActions.switchTo;
@@ -7094,6 +7254,17 @@ void DrawReceiverUi()
                 controls);
 
             sendChat |= controls.sendChat;
+
+            if (controls.stopSharing)
+            {
+                sender::StopSharing();
+
+                shareGoHome = true;
+            }
+            else if (controls.backToRoom)
+            {
+                shareGoHome = true;
+            }
         }
         else if (g_roomView == RoomView::Watch)
         {
@@ -7344,22 +7515,44 @@ void DrawReceiverUi()
             }
             room.voiceError = g_voice.ErrorText();
 
+            room.title = roomState.title;
+            room.memberCount = static_cast<int>(roomState.members.size());
+
+            bool wide = LobbyIsWide();
+
             int unread = 0;
 
-            room.chat = CollectChat(true, unread);
-            room.chatInput = g_chatInput;
-            room.chatInputSize = sizeof(g_chatInput);
+            std::vector<ChatLine> chat =
+                CollectChat(
+                    g_lobbyTab == 1 && (wide || g_lobbyPanelOpen),
+                    unread);
 
             chatHandled = true;
+
+            room.rightInset = wide ? RoomSidePanelWidth() : 0.0f;
+            room.narrow = !wide;
+            room.panelOpen = g_lobbyPanelOpen;
+            room.unreadChat = unread;
 
             DrawRoomScreen(
                 room,
                 roomActions
             );
 
-            if (roomActions.sendChat)
+            if (roomActions.togglePanel)
+            {
+                g_lobbyPanelOpen = !g_lobbyPanelOpen;
+            }
+
+            if (DrawLobbySidePanel(
+                    roomState, chat, unread, roomActions.togglePanel))
             {
                 sendChat = true;
+            }
+
+            if (roomActions.setTitle)
+            {
+                g_room.SetTitle(roomActions.titleText);
             }
         }
     }

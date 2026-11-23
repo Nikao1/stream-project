@@ -1,3 +1,4 @@
+#include <algorithm>
 #include "client_screens.h"
 
 #include "imgui.h"
@@ -234,7 +235,83 @@ void DrawClientLiveScreen(
     // sala) sem o painel na frente.
     static bool minimized = false;
 
-    if (minimized)
+    // Numa sala: o painel abre pela barra de icones de baixo e
+    // aparece/some com fade logo acima dela.
+    bool roomPanel = model.roomPanelOpen != nullptr;
+
+    static float roomAlpha = 0.0f;
+
+    if (roomPanel)
+    {
+        float dt = (std::min)(ImGui::GetIO().DeltaTime, 0.1f);
+
+        float target = *model.roomPanelOpen && !model.hidden ? 1.0f : 0.0f;
+
+        roomAlpha =
+            roomAlpha < target
+            ? (std::min)(target, roomAlpha + dt / 0.15f)
+            : (std::max)(target, roomAlpha - dt / 0.2f);
+
+        if (roomAlpha <= 0.0f)
+            return;
+
+        float eased = roomAlpha * roomAlpha * (3.0f - 2.0f * roomAlpha);
+
+        float width = 380.0f * UiScale();
+
+        const ImGuiViewport* viewport = ImGui::GetMainViewport();
+
+        float margin = 16.0f * UiScale();
+
+        float x =
+            (std::max)(
+                viewport->WorkPos.x + margin + width * 0.5f,
+                (std::min)(
+                    model.anchorX,
+                    viewport->WorkPos.x + viewport->WorkSize.x - margin - width * 0.5f));
+
+        // Sobe um pouco ao aparecer.
+        float y = model.anchorY - 10.0f * UiScale() + (1.0f - eased) * 12.0f * UiScale();
+
+        ImGui::SetNextWindowPos(ImVec2(x, y), ImGuiCond_Always, ImVec2(0.5f, 1.0f));
+
+        ImGui::SetNextWindowSize(ImVec2(width, 0.0f), ImGuiCond_Always);
+
+        ImGui::SetNextWindowSizeConstraints(
+            ImVec2(width, 0.0f),
+            ImVec2(width, (std::max)(200.0f, y - viewport->WorkPos.y - margin)));
+
+        ImGui::PushStyleVar(ImGuiStyleVar_Alpha, eased);
+
+        ImGui::Begin(
+            "##aovivosala",
+            nullptr,
+            ImGuiWindowFlags_NoTitleBar |
+            ImGuiWindowFlags_NoResize |
+            ImGuiWindowFlags_NoMove |
+            ImGuiWindowFlags_NoCollapse |
+            ImGuiWindowFlags_NoSavedSettings |
+            ImGuiWindowFlags_NoFocusOnAppearing |
+            (roomAlpha < 0.5f ? ImGuiWindowFlags_NoInputs : 0));
+
+        UiTitle("Transmitindo");
+
+        float closeSize = ImGui::GetFrameHeight();
+
+        ImGui::SameLine(ImGui::GetContentRegionMax().x - closeSize);
+
+        ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 4.0f * UiScale());
+
+        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
+
+        if (ImGui::Button("×##fecharaovivo", ImVec2(closeSize, closeSize)))
+        {
+            *model.roomPanelOpen = false;
+        }
+
+        ImGui::PopStyleColor();
+    }
+    else if (minimized)
     {
         UiBeginCornerPanel("##aovivomin", 300.0f);
 
@@ -270,6 +347,8 @@ void DrawClientLiveScreen(
         return;
     }
 
+    if (!roomPanel)
+    {
     // O painel fica no canto, pra previa aparecer atras.
     UiBeginCornerPanel("##aovivo", 380.0f);
 
@@ -292,6 +371,7 @@ void DrawClientLiveScreen(
         {
             minimized = true;
         }
+    }
     }
 
     if (!model.sharingLabel.empty())
@@ -347,7 +427,8 @@ void DrawClientLiveScreen(
             }
         }
 
-        if (UiPrimaryButton("Voltar para a sala"))
+        // (Na sala, "Voltar a sala" fica na barra de baixo.)
+        if (!roomPanel && UiPrimaryButton("Voltar para a sala"))
         {
             actions.goHome = true;
         }
@@ -626,6 +707,15 @@ void DrawClientLiveScreen(
     }
 
     ImGui::EndDisabled();
+
+    if (roomPanel)
+    {
+        ImGui::End();
+
+        ImGui::PopStyleVar();
+
+        return;
+    }
 
     UiEndPanel();
 }

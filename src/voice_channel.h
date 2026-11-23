@@ -164,6 +164,11 @@ public:
         const std::string& memberId
     );
 
+    // Essa pessoa desligou o microfone (aviso dela pela voz).
+    bool IsPeerMuted(
+        const std::string& memberId
+    );
+
 private:
     void JoinWorker();
 
@@ -185,6 +190,10 @@ private:
     std::atomic<bool> m_joining{ false };
     std::atomic<bool> m_joined{ false };
     std::atomic<bool> m_muted{ false };
+
+    // Ultimo estado avisado aos outros (thread do microfone).
+    bool m_sentMuted = false;
+    unsigned long long m_lastStatusSent = 0;
     std::atomic<bool> m_transmitting{ false };
     std::atomic<int> m_pushToTalkKey{ 0 };
 

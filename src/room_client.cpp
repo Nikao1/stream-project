@@ -17,6 +17,7 @@ constexpr ULONGLONG OFFLINE_AFTER_MS = 8000;
 // Contextos da criptografia (cada campo so abre no lugar dele).
 const char CONTEXT_NAME[] = "nome";
 const char CONTEXT_LABEL[] = "descricao";
+const char CONTEXT_TITLE[] = "titulo";
 
 std::string ChatContext(
     const std::string& memberId)
@@ -58,6 +59,16 @@ void RoomClient::OpenState(
     RoomState& state,
     const RoomKey& key)
 {
+    if (!state.title.empty())
+    {
+        std::string title;
+
+        state.title =
+            RoomOpenText(key, CONTEXT_TITLE, state.title, title)
+            ? title
+            : std::string();
+    }
+
     for (RoomMember& member : state.members)
     {
         std::string name;
@@ -100,6 +111,7 @@ RoomClient::~RoomClient()
 
 bool RoomClient::Create(
     const std::string& name,
+    const std::string& title,
     std::string& outError)
 {
     RoomMembership membership;
@@ -124,8 +136,14 @@ bool RoomClient::Create(
     std::string sealedName =
         RoomSealText(key, CONTEXT_NAME, TruncateUtf8(name, 32));
 
+    std::string sealedTitle =
+        title.empty()
+        ? std::string()
+        : RoomSealText(key, CONTEXT_TITLE, TruncateUtf8(title, 32));
+
     if (!SignalingCreateRoom(
             sealedName,
+            sealedTitle,
             salt,
             membership,
             state,
@@ -452,6 +470,22 @@ void RoomClient::SetVoice(
 }
 
 
+void RoomClient::SetTitle(
+    const std::string& title)
+{
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+
+        m_titleWanted = TruncateUtf8(title, 32);
+        m_titlePending = true;
+
+        m_wake = true;
+    }
+
+    m_cv.notify_all();
+}
+
+
 void RoomClient::SendChat(
     const std::string& text)
 {
@@ -546,6 +580,37 @@ void RoomClient::Loop()
                     << "transmissao: "
                     << error
                     << "\n";
+            }
+        }
+
+
+        // ----------------------------------------------------
+        // Nome da sala
+        // ----------------------------------------------------
+
+        {
+            std::string title;
+            bool pending = false;
+
+            {
+                std::lock_guard<std::mutex> lock(m_mutex);
+
+                pending = m_titlePending;
+                title = m_titleWanted;
+                m_titlePending = false;
+            }
+
+            if (pending &&
+                !SignalingRoomTitle(
+                    membership,
+                    title.empty()
+                    ? std::string()
+                    : RoomSealText(key, CONTEXT_TITLE, title),
+                    error))
+            {
+                std::cout
+                    << "Sala: nao deu pra trocar o nome: "
+                    << error << "\n";
             }
         }
 

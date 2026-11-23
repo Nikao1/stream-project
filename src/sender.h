@@ -76,6 +76,22 @@ bool CaptureRoomThumbnail(
 // Quantas pessoas estao assistindo esta transmissao.
 int ViewerCount();
 
+// Numa sala, o painel da transmissao abre pela barra de icones
+// de baixo (receiver.cpp), logo acima dela.
+bool RoomPanelOpen();
+
+void SetRoomPanelOpen(
+    bool open
+);
+
+// Onde o painel fica: centro x e base y (topo da barra);
+// hidden = controles escondidos (Tab).
+void SetRoomPanelAnchor(
+    float centerX,
+    float bottomY,
+    bool hidden
+);
+
 void Shutdown();
 
 } // namespace sender

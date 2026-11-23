@@ -126,7 +126,8 @@ enum class MemberVoice
     Out,        // fora da voz
     Connecting, // na voz, ainda sem som chegando
     In,         // na voz
-    Speaking    // falando agora
+    Speaking,   // falando agora
+    Muted       // na voz, microfone desligado
 };
 
 
@@ -153,6 +154,22 @@ struct RoomPresenterEntry
 struct RoomScreenModel
 {
     std::string code;
+
+    // Nome da sala (vazio = sem nome).
+    std::string title;
+
+    int memberCount = 0;
+
+    // Largura ocupada a direita pelo painel Pessoas/Chat (a
+    // lista usa o resto). 0 = janela estreita: o painel abre
+    // por cima pelo botao do cabecalho.
+    float rightInset = 0.0f;
+
+    // Janela estreita: botao pra abrir o painel (aberto agora?)
+    // e mensagens nao lidas (bolinha).
+    bool narrow = false;
+    bool panelOpen = false;
+    int unreadChat = 0;
 
     // Link de convite (abre o programa direto na sala). Vazio =
     // sem servidor publico (so o codigo).
@@ -252,6 +269,13 @@ struct RoomScreenActions
     bool stopShare = false;
 
     bool leave = false;
+
+    // Renomear a sala (titleText; vazio = tirar o nome).
+    bool setTitle = false;
+    std::string titleText;
+
+    // Janela estreita: abrir/fechar o painel Pessoas/Chat.
+    bool togglePanel = false;
 
     // Enviar o que esta em chatInput.
     bool sendChat = false;
@@ -394,6 +418,16 @@ struct RoomSidePanelModel
 
     // 0 = fechado, 1 = aberto (anima o deslize e o fade).
     float progress = 1.0f;
+
+    // Preso na tela (lista da sala em janela larga): sem
+    // fixar/fechar.
+    bool docked = false;
+
+    // Engrenagem no rodape (configuracoes de voz).
+    bool showGear = false;
+
+    // Alfinete (fixar); a lista da sala nao usa.
+    bool showPin = true;
 };
 
 struct RoomSidePanelActions
@@ -404,6 +438,7 @@ struct RoomSidePanelActions
     bool togglePin = false;
     bool close = false;
     bool sendChat = false;
+    bool openVoiceSettings = false;
 
     // Mouse em cima do painel.
     bool hovered = false;
@@ -467,6 +502,12 @@ struct RoomBarModel
 
     // Outras pessoas transmitindo ("Nome · o que mostra").
     std::vector<std::string> otherPresenters;
+
+    // Esta pessoa transmitindo (sem watching): painel da
+    // transmissao, parar e voltar a sala.
+    bool sharingLive = false;
+    bool livePanelOpen = false;
+    int viewers = 0;
 };
 
 struct RoomBarActions
@@ -482,9 +523,16 @@ struct RoomBarActions
     // Indice em otherPresenters (-1 = nenhum).
     int switchTo = -1;
 
+    bool toggleLivePanel = false;
+    bool stopSharing = false;
+
     // Mouse em cima (ou um popover aberto): mantem visivel.
     bool hovered = false;
     bool popupOpen = false;
+
+    // Centro x e topo da barra (pra paineis abrirem acima).
+    float centerX = 0.0f;
+    float top = 0.0f;
 };
 
 void DrawRoomBar(

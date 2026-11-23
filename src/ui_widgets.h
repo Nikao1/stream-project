@@ -148,7 +148,10 @@ enum class UiIcon
     Exit,
     Pin,
     PinOff,
-    Close
+    Close,
+    Screen,
+    Stop,
+    Edit
 };
 
 void UiIconAt(

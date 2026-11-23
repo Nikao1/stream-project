@@ -164,6 +164,16 @@ struct ClientLiveModel
     std::string replyStatus;
 
     bool replyOk = false;
+
+    // Numa sala: o painel abre pela barra de icones (acima
+    // dela, em anchorX/anchorY) e fecha pelo X ou pela barra.
+    bool* roomPanelOpen = nullptr;
+
+    float anchorX = 0.0f;
+    float anchorY = 0.0f;
+
+    // Controles escondidos (Tab): o painel some junto.
+    bool hidden = false;
 };
 
 void DrawClientLiveScreen(

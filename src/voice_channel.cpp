@@ -63,6 +63,15 @@ public:
         return m_receiving;
     }
 
+    // Microfone desta pessoa desligado (estado recebido nos
+    // ultimos 4 s).
+    bool IsRemoteMuted() const
+    {
+        return
+            m_remoteMuted &&
+            GetTickCount64() - m_lastStatus.load() < 4000;
+    }
+
     // Pede pra parar sem esperar (a thread pode estar presa
     // numa chamada ao servidor por alguns segundos).
     void RequestStop()
@@ -99,6 +108,9 @@ private:
     std::atomic<bool> m_running{ false };
     std::atomic<bool> m_receiving{ false };
     std::atomic<bool> m_finished{ false };
+
+    std::atomic<bool> m_remoteMuted{ false };
+    std::atomic<ULONGLONG> m_lastStatus{ 0 };
 };
 
 
@@ -380,6 +392,23 @@ void VoicePeer::RunConnection()
         uint32_t payloadSize = ntohl(header.payloadSize);
 
         uint32_t sequence = ntohl(header.sequence);
+
+        // Estado (sem audio): microfone ligado/desligado. Tambem
+        // vale como "conectado".
+        if (payloadSize == 0 && plainSize == AUDIO_HEADER_SIZE)
+        {
+            m_remoteMuted = (ntohl(header.timestampMs) & 1u) != 0;
+            m_lastStatus = GetTickCount64();
+
+            if (!m_receiving)
+            {
+                m_receiving = true;
+
+                chosen = from;
+            }
+
+            continue;
+        }
 
         if (payloadSize == 0 ||
             AUDIO_HEADER_SIZE + payloadSize != plainSize)
@@ -808,6 +837,22 @@ void VoiceChannel::OnMicFrame(
 
     m_transmitting = transmit;
 
+    // Estado pros outros (microfone desligado aparece na lista):
+    // a cada segundo e na hora em que muda.
+    {
+        ULONGLONG now = GetTickCount64();
+
+        bool muted = m_muted;
+
+        if (muted != m_sentMuted || now - m_lastStatusSent >= 1000)
+        {
+            m_server.SendStatusPacket(muted ? 1u : 0u);
+
+            m_sentMuted = muted;
+            m_lastStatusSent = now;
+        }
+    }
+
     if (!transmit ||
         !m_encoder ||
         count != VoiceCapture::FRAME_SAMPLES)
@@ -1211,6 +1256,19 @@ bool VoiceChannel::IsSpeaking(
     const std::string& memberId)
 {
     return m_mixer.GetLevel(memberId) > 0.02f;
+}
+
+
+bool VoiceChannel::IsPeerMuted(
+    const std::string& memberId)
+{
+    std::lock_guard<std::mutex> lock(m_mutex);
+
+    auto found = m_peers.find(memberId);
+
+    return
+        found != m_peers.end() &&
+        found->second->IsRemoteMuted();
 }
 
 

@@ -32,6 +32,16 @@ precisa para conectar as pessoas: que a sala existe, quantas
 pessoas estão nela e os endereços de internet.
 
 Dentro da sala:
+- A sala ocupa a janela inteira: as transmissões à esquerda,
+  em cartões com prévia, e Pessoas/Chat à direita (o mesmo
+  painel do vídeo, com a voz no rodapé). Em janela estreita, o
+  painel abre pelo botão de pessoas no topo.
+- Dê um nome à sala pelo lápis ao lado do título (opcional; todo
+  mundo vê, e o servidor não consegue ler). O código fica nos
+  botões "Copiar convite" e "Copiar código".
+- Na lista de pessoas, um sinal ao lado do nome: bolinha verde =
+  na voz, microfone cortado = microfone desligado, som cortado =
+  você silenciou a pessoa. Quem fala ganha um anel verde na foto.
 - "Transmitir minha tela": escolha a qualidade, o FPS e o que
   vai compartilhar (uma tela inteira ou uma janela - cada uma
   aparece com uma prévia).
@@ -55,9 +65,10 @@ Dentro da sala:
 - Teclas: Enter abre o chat, P mostra as pessoas, M liga/desliga
   o som e as setas mudam o volume (dá para trocar em Atalhos).
 - Dá para transmitir e assistir ao mesmo tempo. Transmitindo,
-  a mesma barra e o mesmo painel ficam disponíveis.
-- Transmitindo, o painel da transmissão pode ser minimizado
-  (botão Minimizar) para ver melhor a prévia.
+  a mesma barra e o mesmo painel ficam disponíveis: o ícone de
+  tela abre o painel da transmissão (o que está sendo
+  compartilhado, qualidade, quem assiste), o quadrado vermelho
+  para a transmissão e a porta volta para a sala.
 - Se a conexão cair, o programa tenta voltar sozinho.
 - Cabem até 9 pessoas por sala; cada transmissão aceita até 8
   pessoas assistindo.
