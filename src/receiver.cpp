@@ -44,6 +44,8 @@
 #include "voice_channel.h"
 #include <map>
 #include "shortcuts.h"
+#include "ui_sounds.h"
+#include <set>
 #include "image_codec.h"
 #include "version.h"
 
@@ -3393,6 +3395,17 @@ bool g_muted = false;
 // Canal de voz da sala (ver voice_channel.h).
 VoiceChannel g_voice;
 
+// Sons de aviso (ver ui_sounds.h): ligados e volume (0..1),
+// salvos; o player roda enquanto esta numa sala.
+UiSoundPlayer g_sounds;
+
+bool g_soundsEnabled = true;
+
+float g_soundsVolume = 0.6f;
+
+// Reducao de ruido do microfone (RNNoise), salva.
+bool g_noiseSuppression = true;
+
 // Atalhos (tecla virtual por atalho, 0 = nenhum; salvos - ver
 // shortcuts.h). Tela de atalhos aberta + linha esperando tecla.
 int g_shortcutKeys[SHORTCUT_COUNT]{};
@@ -3493,6 +3506,18 @@ void LoadReceiverSettings()
 
     g_voiceSpeaker =
         settings.GetString(L"VozSaida", L"");
+
+    g_soundsEnabled = settings.GetInt(L"SonsAviso", 1) != 0;
+
+    int soundsVolume = settings.GetInt(L"SonsVolume", 60);
+
+    g_soundsVolume =
+        static_cast<float>(soundsVolume < 0 ? 0 : (soundsVolume > 100 ? 100 : soundsVolume)) / 100.0f;
+
+    g_sounds.SetEnabled(g_soundsEnabled);
+    g_sounds.SetVolume(g_soundsVolume);
+
+    g_noiseSuppression = settings.GetInt(L"VozReduzirRuido", 1) != 0;
 }
 
 
@@ -4597,7 +4622,113 @@ void AddToast(
 
 char g_nameInput[64]{};
 
-char g_homeCodeInput[32]{};
+char g_homeCodeInput[256]{};
+
+// Convite recebido (link clicado: linha de comando ou repassado
+// por outra copia do programa). A thread da janela trata no
+// proximo frame.
+std::string g_pendingInvite;
+
+
+// Protocolo "streamproject://" no Windows (so pra este usuario,
+// sem administrador): clicar no link de convite abre o programa
+// nesta pasta. Refeito a cada abertura (a pasta pode mudar).
+void RegisterInviteProtocol()
+{
+    wchar_t exePath[MAX_PATH]{};
+
+    if (GetModuleFileNameW(nullptr, exePath, MAX_PATH) == 0)
+        return;
+
+    std::wstring exe = exePath;
+
+    struct Value
+    {
+        const wchar_t* key;
+        const wchar_t* name;
+        std::wstring data;
+    };
+
+    const Value values[] =
+    {
+        { L"Software\\Classes\\streamproject", nullptr,
+          L"URL:Stream Project" },
+        { L"Software\\Classes\\streamproject", L"URL Protocol",
+          L"" },
+        { L"Software\\Classes\\streamproject\\DefaultIcon", nullptr,
+          L"\"" + exe + L"\",0" },
+        { L"Software\\Classes\\streamproject\\shell\\open\\command",
+          nullptr,
+          L"\"" + exe + L"\" --convite \"%1\"" },
+    };
+
+    for (const Value& value : values)
+    {
+        HKEY key = nullptr;
+
+        if (RegCreateKeyExW(
+                HKEY_CURRENT_USER, value.key, 0, nullptr, 0,
+                KEY_SET_VALUE, nullptr, &key, nullptr) != ERROR_SUCCESS)
+        {
+            return;
+        }
+
+        RegSetValueExW(
+            key,
+            value.name,
+            0,
+            REG_SZ,
+            reinterpret_cast<const BYTE*>(value.data.c_str()),
+            static_cast<DWORD>((value.data.size() + 1) * sizeof(wchar_t)));
+
+        RegCloseKey(key);
+    }
+}
+
+
+// Convite na linha de comando ("--convite streamproject://...").
+// Vazio = nenhum.
+std::string InviteFromCommandLine(
+    const wchar_t* commandLine)
+{
+    if (!commandLine)
+        return std::string();
+
+    const wchar_t* link = wcsstr(commandLine, L"streamproject://");
+
+    if (!link)
+        return std::string();
+
+    std::wstring text = link;
+
+    size_t end = text.find_first_of(L"\" ");
+
+    if (end != std::wstring::npos)
+    {
+        text = text.substr(0, end);
+    }
+
+    std::string code;
+    std::string secret;
+
+    // (o link e so ASCII)
+    std::string narrow;
+
+    for (wchar_t c : text)
+    {
+        narrow += c < 128 ? static_cast<char>(c) : '?';
+    }
+
+    if (!ParseRoomInvite(narrow, code, secret))
+        return std::string();
+
+    return secret.empty() ? code : code + "-" + secret;
+}
+
+
+// Identificador da mensagem WM_COPYDATA com um convite.
+constexpr ULONG_PTR INVITE_COPYDATA_ID = 0x53505631; // "SPV1"
+
 
 enum class HomeResult
 {
@@ -4894,6 +5025,243 @@ void StartHomeWorker(
 // Entrar / sair da sala
 // ------------------------------------------------------------
 
+// ------------------------------------------------------------
+// Indicador "falando"
+// ------------------------------------------------------------
+//
+// O nivel da voz sobe e desce a cada silaba; ligado direto nele
+// o anel pisca. Entao:
+//   - dois limites: acende acima de um, so apaga abaixo de outro
+//     (bem menor);
+//   - segura aceso 300 ms depois da ultima silaba (uma frase
+//     inteira fica acesa);
+//   - o anel acende rapido (~80 ms) e some devagar (~250 ms).
+// ------------------------------------------------------------
+
+struct SpeakIndicator
+{
+    bool on = false;
+
+    ULONGLONG lastActive = 0;
+
+    // 0..1 (intensidade do anel)
+    float amount = 0.0f;
+
+    bool seen = false;
+};
+
+std::map<std::string, SpeakIndicator> g_speak;
+
+constexpr ULONGLONG SPEAK_HOLD_MS = 300;
+
+
+void UpdateSpeakIndicator(
+    const std::string& id,
+    bool aboveOn,
+    bool aboveKeep,
+    float dt)
+{
+    SpeakIndicator& s = g_speak[id];
+
+    ULONGLONG now = GetTickCount64();
+
+    if (s.on ? aboveKeep : aboveOn)
+    {
+        s.lastActive = now;
+    }
+
+    s.on =
+        s.lastActive != 0 &&
+        now - s.lastActive < SPEAK_HOLD_MS;
+
+    float target = s.on ? 1.0f : 0.0f;
+
+    float step = dt / (s.on ? 0.08f : 0.25f);
+
+    float diff = target - s.amount;
+
+    s.amount +=
+        diff > step ? step : (diff < -step ? -step : diff);
+
+    s.seen = true;
+}
+
+
+// Uma vez por frame: atualiza todo mundo da sala.
+void UpdateSpeakIndicators(
+    const RoomState& state,
+    float dt)
+{
+    for (auto& entry : g_speak)
+    {
+        entry.second.seen = false;
+    }
+
+    std::string myId = g_room.GetMemberId();
+
+    bool joined = g_voice.IsJoined();
+
+    for (const RoomMember& member : state.members)
+    {
+        if (!joined)
+        {
+            UpdateSpeakIndicator(member.id, false, false, dt);
+            continue;
+        }
+
+        if (member.id == myId)
+        {
+            bool sending = g_voice.IsTransmitting();
+
+            float level = g_voice.MicLevel();
+
+            // Com a reducao de ruido, a deteccao de voz dela
+            // (teclado e tosse nao acendem o anel).
+            float vad = g_voice.VoiceActivity();
+
+            bool aboveOn =
+                sending &&
+                (vad >= 0.0f ? vad > 0.7f && level > 0.008f
+                             : level > 0.03f);
+
+            bool aboveKeep =
+                sending &&
+                (vad >= 0.0f ? vad > 0.35f : level > 0.012f);
+
+            UpdateSpeakIndicator(member.id, aboveOn, aboveKeep, dt);
+        }
+        else
+        {
+            float level =
+                member.voiceSession.empty()
+                ? 0.0f
+                : g_voice.PeerLevel(member.id);
+
+            UpdateSpeakIndicator(
+                member.id, level > 0.03f, level > 0.012f, dt);
+        }
+    }
+
+    // Quem saiu da sala.
+    for (auto it = g_speak.begin(); it != g_speak.end();)
+    {
+        it = it->second.seen ? std::next(it) : g_speak.erase(it);
+    }
+}
+
+
+bool SpeakingNow(
+    const std::string& id)
+{
+    auto found = g_speak.find(id);
+
+    return found != g_speak.end() && found->second.on;
+}
+
+
+float SpeakAmount(
+    const std::string& id)
+{
+    auto found = g_speak.find(id);
+
+    return found == g_speak.end() ? 0.0f : found->second.amount;
+}
+
+
+// Situacao de alguem na voz (pra lista e o painel de pessoas).
+MemberVoice MemberVoiceState(
+    const RoomMember& member,
+    bool isMe)
+{
+    if (isMe)
+    {
+        if (!g_voice.IsJoined())
+            return MemberVoice::Out;
+
+        return SpeakingNow(member.id) ? MemberVoice::Speaking : MemberVoice::In;
+    }
+
+    if (member.voiceSession.empty())
+        return MemberVoice::Out;
+
+    if (!g_voice.IsJoined())
+        return MemberVoice::In;
+
+    if (!g_voice.IsConnected(member.id))
+        return MemberVoice::Connecting;
+
+    return SpeakingNow(member.id) ? MemberVoice::Speaking : MemberVoice::In;
+}
+
+
+// Sons da voz: microfone ligado/mudo (inclusive pelo atalho no
+// jogo), eu entrei/sai, outra pessoa entrou/saiu da voz.
+void UpdateVoiceSounds(
+    const RoomState& state)
+{
+    static bool wasJoined = false;
+    static bool wasMuted = false;
+    static std::set<std::string> inVoice;
+
+    bool joined = g_voice.IsJoined();
+    bool muted = g_voice.IsMuted();
+
+    std::string myId = g_room.GetMemberId();
+
+    std::set<std::string> now;
+
+    for (const RoomMember& member : state.members)
+    {
+        if (member.id != myId && !member.voiceSession.empty())
+        {
+            now.insert(member.id);
+        }
+    }
+
+    if (joined && !wasJoined)
+    {
+        g_sounds.Play(UiSound::VoiceJoin);
+    }
+    else if (!joined && wasJoined)
+    {
+        g_sounds.Play(UiSound::VoiceLeave);
+    }
+    else if (joined)
+    {
+        if (muted != wasMuted)
+        {
+            g_sounds.Play(muted ? UiSound::MicOff : UiSound::MicOn);
+        }
+
+        // Lista vazia = resposta da sala ainda nao chegou.
+        if (!state.members.empty())
+        {
+            bool someoneJoined = false;
+            bool someoneLeft = false;
+
+            for (const std::string& id : now)
+                someoneJoined |= inVoice.count(id) == 0;
+
+            for (const std::string& id : inVoice)
+                someoneLeft |= now.count(id) == 0;
+
+            if (someoneJoined)
+                g_sounds.Play(UiSound::VoiceJoin);
+            else if (someoneLeft)
+                g_sounds.Play(UiSound::VoiceLeave);
+        }
+    }
+
+    if (!state.members.empty() || !joined)
+    {
+        inVoice = now;
+    }
+
+    wasJoined = joined;
+    wasMuted = muted;
+}
+
+
 // Entrar na voz (botao na sala ou no painel de pessoas).
 void StartVoice()
 {
@@ -4902,6 +5270,8 @@ void StartVoice()
     g_voice.SetMicrophone(g_voiceMicrophone);
 
     g_voice.SetSpeaker(g_voiceSpeaker);
+
+    g_voice.SetNoiseSuppression(g_noiseSuppression);
 
     g_microphones = VoiceCapture::ListMicrophones();
 
@@ -5014,6 +5384,8 @@ void EnterRoom()
 
     g_room.Start();
 
+    g_sounds.Start(g_voiceSpeaker);
+
     g_haveRoomBaseline = false;
     g_previousRoomState = RoomState{};
 
@@ -5051,6 +5423,8 @@ void LeaveRoom(
     sender::SetRoomMode(false);
 
     g_voice.Leave();
+
+    g_sounds.Stop();
 
     g_room.Leave();
 
@@ -5260,6 +5634,8 @@ void RoomSync(
                         g_previousRoomState,
                         presenter.sessionCode))
                 {
+                    g_sounds.Play(UiSound::StreamStart);
+
                     AddToast(
                         presenter.name +
                         " começou a transmitir" +
@@ -5486,13 +5862,22 @@ std::vector<ChatLine> CollectChat(
             ? messages.size() - static_cast<size_t>(fresh)
             : 0;
 
+        bool fromOthers = false;
+
         for (size_t i = first; i < messages.size(); ++i)
         {
             if (messages[i].memberId != myId)
             {
                 AddToast(
                     messages[i].name + ": " + messages[i].text);
+
+                fromOthers = true;
             }
+        }
+
+        if (fromOthers)
+        {
+            g_sounds.Play(UiSound::ChatMessage);
         }
     }
 
@@ -5616,35 +6001,9 @@ float DrawRoomPeoplePanel(
             }
         }
 
-        if (entry.isMe)
-        {
-            if (g_voice.IsJoined())
-            {
-                entry.voice =
-                    g_voice.IsTransmitting() &&
-                    g_voice.MicLevel() > 0.02f
-                    ? MemberVoice::Speaking
-                    : MemberVoice::In;
-            }
-        }
-        else if (!member.voiceSession.empty())
-        {
-            if (!g_voice.IsJoined())
-            {
-                entry.voice = MemberVoice::In;
-            }
-            else if (!g_voice.IsConnected(member.id))
-            {
-                entry.voice = MemberVoice::Connecting;
-            }
-            else
-            {
-                entry.voice =
-                    g_voice.IsSpeaking(member.id)
-                    ? MemberVoice::Speaking
-                    : MemberVoice::In;
-            }
-        }
+        entry.voice = MemberVoiceState(member, entry.isMe);
+
+        entry.speakAmount = SpeakAmount(member.id);
 
         entry.volume = g_voice.PeerVolume(member.id);
 
@@ -5953,6 +6312,10 @@ void DrawReceiverUi()
 
         roomState = g_room.GetState();
 
+        UpdateSpeakIndicators(roomState, ImGui::GetIO().DeltaTime);
+
+        UpdateVoiceSounds(roomState);
+
         RoomSync(roomState);
 
         // RoomSync pode ter saido da sala.
@@ -6223,7 +6586,7 @@ void DrawReceiverUi()
                 for (const RoomMember& member : roomState.members)
                 {
                     if (member.id != myId &&
-                        g_voice.IsSpeaking(member.id))
+                        SpeakingNow(member.id))
                     {
                         speaking.push_back(member.name);
                     }
@@ -6308,6 +6671,19 @@ void DrawReceiverUi()
             RoomScreenModel room;
 
             room.code = g_room.GetCode();
+
+            // Link de convite: pagina do servidor que abre o
+            // programa; o codigo vai depois do # (o navegador nao
+            // manda essa parte pro servidor).
+            {
+                std::string server = GetSignalingUrl();
+
+                if (server.rfind("https://", 0) == 0 ||
+                    server.rfind("http://", 0) == 0)
+                {
+                    room.inviteLink = server + "/j#" + room.code;
+                }
+            }
 
             std::string myId =
                 g_room.GetMemberId();
@@ -6401,37 +6777,9 @@ void DrawReceiverUi()
 
                 bool isMe = member.id == myId;
 
-                MemberVoice voice = MemberVoice::Out;
+                MemberVoice voice = MemberVoiceState(member, isMe);
 
-                if (isMe)
-                {
-                    if (g_voice.IsJoined())
-                    {
-                        voice =
-                            g_voice.IsTransmitting() &&
-                            g_voice.MicLevel() > 0.02f
-                            ? MemberVoice::Speaking
-                            : MemberVoice::In;
-                    }
-                }
-                else if (!member.voiceSession.empty())
-                {
-                    if (!g_voice.IsJoined())
-                    {
-                        voice = MemberVoice::In;
-                    }
-                    else if (!g_voice.IsConnected(member.id))
-                    {
-                        voice = MemberVoice::Connecting;
-                    }
-                    else
-                    {
-                        voice =
-                            g_voice.IsSpeaking(member.id)
-                            ? MemberVoice::Speaking
-                            : MemberVoice::In;
-                    }
-                }
+                room.memberSpeak.push_back(SpeakAmount(member.id));
 
                 room.memberIsMe.push_back(isMe);
                 room.memberVoice.push_back(voice);
@@ -6446,6 +6794,10 @@ void DrawReceiverUi()
             room.voiceEchoCancel =
                 !room.voiceJoined || g_voice.EchoCancellation();
             room.voiceMicLevel = g_voice.MicLevel();
+            room.soundsEnabled = &g_soundsEnabled;
+            room.soundsVolume = &g_soundsVolume;
+            room.noiseSuppression = &g_noiseSuppression;
+
             room.voicePttKey = ShortcutName(SHORTCUT_PUSH_TO_TALK);
             room.voiceMuteKey = ShortcutName(SHORTCUT_TOGGLE_MIC);
 
@@ -6695,6 +7047,43 @@ void DrawReceiverUi()
         StartHomeWorker(true, std::string());
     }
 
+    // Link de convite clicado: preenche o codigo e entra (se ja
+    // tiver nome e estiver na tela inicial).
+    if (!g_pendingInvite.empty())
+    {
+        std::string invite = g_pendingInvite;
+
+        g_pendingInvite.clear();
+
+        strncpy_s(g_homeCodeInput, invite.c_str(), _TRUNCATE);
+
+        bool hasName =
+            std::string(g_nameInput).find_first_not_of(" \t") !=
+            std::string::npos;
+
+        if (g_appMode == AppMode::Room)
+        {
+            AddToast(
+                "Você já está numa sala. Saia dela para entrar na "
+                "do convite (o código ficou na tela inicial).");
+        }
+        else if (g_appMode != AppMode::Home || g_homeBusy)
+        {
+            // Assistindo / transmitindo sem sala: nao interrompe.
+            AddToast(
+                "Convite recebido: o código está na tela inicial.");
+        }
+        else if (!hasName)
+        {
+            g_homeError =
+                "Convite pronto: escreva seu nome e clique em Entrar.";
+        }
+        else
+        {
+            homeActions.enter = true;
+        }
+    }
+
     if (homeActions.enter)
     {
         std::string code = g_homeCodeInput;
@@ -6772,6 +7161,27 @@ void DrawReceiverUi()
         g_shortcutsOpen = true;
     }
 
+    if (roomActions.voiceSettingsChanged)
+    {
+        g_sounds.SetEnabled(g_soundsEnabled);
+        g_sounds.SetVolume(g_soundsVolume);
+
+        g_voice.SetNoiseSuppression(g_noiseSuppression);
+
+        AppSettings& settings = ReceiverSettings();
+
+        settings.SetInt(L"SonsAviso", g_soundsEnabled ? 1 : 0);
+        settings.SetInt(
+            L"SonsVolume",
+            static_cast<int>(g_soundsVolume * 100.0f + 0.5f));
+        settings.SetInt(L"VozReduzirRuido", g_noiseSuppression ? 1 : 0);
+    }
+
+    if (roomActions.previewSound)
+    {
+        g_sounds.Play(UiSound::MicOn);
+    }
+
     if (roomActions.voiceRefreshDevices)
     {
         g_microphones = VoiceCapture::ListMicrophones();
@@ -6793,6 +7203,11 @@ void DrawReceiverUi()
             L"VozSaida", g_voiceSpeaker);
 
         g_voice.SetSpeaker(g_voiceSpeaker);
+
+        if (g_sounds.IsRunning())
+        {
+            g_sounds.Start(g_voiceSpeaker);
+        }
     }
 
     if (roomActions.voiceMicrophone >= 0)
@@ -7456,6 +7871,36 @@ LRESULT CALLBACK WindowProc(
     }
 
 
+    case WM_COPYDATA:
+    {
+        const COPYDATASTRUCT* data =
+            reinterpret_cast<const COPYDATASTRUCT*>(lParam);
+
+        if (data &&
+            data->dwData == INVITE_COPYDATA_ID &&
+            data->lpData &&
+            data->cbData > 0 &&
+            data->cbData < 64)
+        {
+            std::string code(
+                static_cast<const char*>(data->lpData),
+                data->cbData);
+
+            std::string room;
+            std::string secret;
+
+            if (ParseRoomInvite(code, room, secret))
+            {
+                g_pendingInvite =
+                    secret.empty() ? room : room + "-" + secret;
+            }
+
+            return TRUE;
+        }
+
+        break;
+    }
+
     case WM_DESTROY:
     {
         SaveReceiverWindowPlacement();
@@ -7530,6 +7975,48 @@ void ShowFatalError(
 int AppMain(
     const wchar_t* commandLine)
 {
+    // ========================================================
+    // LINK DE CONVITE
+    //
+    // Programa ja aberto: entrega o convite pra ele (traz a
+    // janela pra frente) e esta copia fecha sem abrir nada.
+    // ========================================================
+
+    std::string invite = InviteFromCommandLine(commandLine);
+
+    if (!invite.empty())
+    {
+        HWND running =
+            FindWindowW(L"StreamProjectWindow", nullptr);
+
+        if (running)
+        {
+            COPYDATASTRUCT data{};
+
+            data.dwData = INVITE_COPYDATA_ID;
+            data.cbData = static_cast<DWORD>(invite.size());
+            data.lpData = const_cast<char*>(invite.data());
+
+            SendMessageW(
+                running, WM_COPYDATA, 0,
+                reinterpret_cast<LPARAM>(&data));
+
+            if (IsIconic(running))
+            {
+                ShowWindow(running, SW_RESTORE);
+            }
+
+            SetForegroundWindow(running);
+
+            return 0;
+        }
+
+        g_pendingInvite = invite;
+    }
+
+    // Clicar no link de convite abre este programa.
+    RegisterInviteProtocol();
+
     // ========================================================
     // LINHA DE COMANDO
     //
@@ -7816,6 +8303,12 @@ int AppMain(
         return 1;
     }
 
+    // Convites vindos de outra copia do programa: aceitos mesmo
+    // com esta aberta como administrador (o Windows bloquearia a
+    // mensagem de um programa "comum").
+    ChangeWindowMessageFilterEx(
+        g_hwnd, WM_COPYDATA, MSGFLT_ALLOW, nullptr);
+
     if (!InitializeD3D11Renderer(g_hwnd))
     {
         ShowFatalError(
@@ -7973,6 +8466,8 @@ int AppMain(
     // Sala: avisa que saiu (senao os outros continuam vendo
     // esta pessoa por ~20 s).
     g_voice.Leave();
+
+    g_sounds.Stop();
 
     if (g_room.IsActive())
     {

@@ -692,7 +692,7 @@ void PersonRow(
     const std::string& detail,
     bool live,
     float rightReserve,
-    bool speaking = false)
+    float speaking = 0.0f)
 {
     float avatar = ImGui::GetFrameHeight() * 1.15f;
 
@@ -743,7 +743,8 @@ bool MemberRow(
     bool isMe,
     bool voiceJoined,
     float volume,
-    float& outVolume)
+    float& outVolume,
+    float speakAmount)
 {
     const char* detail = "";
 
@@ -772,7 +773,7 @@ bool MemberRow(
         detailText,
         live,
         0.0f,
-        voice == MemberVoice::Speaking);
+        speakAmount);
 
     ImGui::EndGroup();
 
@@ -1067,6 +1068,14 @@ void DrawVoiceSection(
                  " para falar (funciona com o jogo aberto).").c_str());
         }
 
+        if (model.noiseSuppression &&
+            ImGui::Checkbox(
+                "Reduzir ruído (teclado, ventoinha...)",
+                model.noiseSuppression))
+        {
+            actions.voiceSettingsChanged = true;
+        }
+
         if (!model.voiceEchoCancel)
         {
             UiWrappedColored(
@@ -1080,6 +1089,38 @@ void DrawVoiceSection(
     if (!model.voiceError.empty())
     {
         UiWrappedColored(UiColorError(), model.voiceError.c_str());
+    }
+
+    // Sons de aviso (valem mesmo fora da voz: transmissao nova,
+    // chat).
+    if (model.soundsEnabled && model.soundsVolume)
+    {
+        if (ImGui::Checkbox("Sons de aviso", model.soundsEnabled))
+        {
+            actions.voiceSettingsChanged = true;
+        }
+
+        if (*model.soundsEnabled)
+        {
+            ImGui::SameLine();
+
+            ImGui::SetNextItemWidth(-1.0f);
+
+            float percent = *model.soundsVolume * 100.0f;
+
+            if (ImGui::SliderFloat(
+                    "##volsons", &percent, 0.0f, 100.0f, "volume %.0f%%"))
+            {
+                *model.soundsVolume = percent / 100.0f;
+
+                actions.voiceSettingsChanged = true;
+            }
+
+            if (ImGui::IsItemDeactivatedAfterEdit())
+            {
+                actions.previewSound = true;
+            }
+        }
     }
 }
 
@@ -1108,26 +1149,72 @@ void DrawRoomScreen(
     UiTitle(("Sala " + model.code).c_str());
 
     {
-        bool recentlyCopied =
-            codeCopiedAt > 0.0 &&
-            ImGui::GetTime() - codeCopiedAt < 2.0;
+        static double linkCopiedAt = 0.0;
 
-        const char* copyLabel =
-            recentlyCopied
-            ? "Copiado!##copiarsala"
-            : "Copiar código##copiarsala";
+        auto recently =
+            [](double at)
+            {
+                return at > 0.0 && ImGui::GetTime() - at < 2.0;
+            };
 
-        float copyWidth =
+        float codeWidth =
             ImGui::CalcTextSize("Copiar código").x +
             style.FramePadding.x * 4.0f;
 
-        ImGui::SameLine(
-            ImGui::GetContentRegionMax().x - copyWidth);
+        float linkWidth =
+            model.inviteLink.empty()
+            ? 0.0f
+            : ImGui::CalcTextSize("Copiar convite").x +
+                  style.FramePadding.x * 4.0f;
 
-        ImGui::SetCursorPosY(
-            ImGui::GetCursorPosY() + 4.0f * UiScale());
+        float total =
+            codeWidth +
+            (linkWidth > 0.0f ? linkWidth + style.ItemSpacing.x : 0.0f);
 
-        if (ImGui::Button(copyLabel, ImVec2(copyWidth, 0.0f)))
+        // Ao lado do titulo se couber; senao, na linha de baixo.
+        float titleWidth = ImGui::GetItemRectSize().x;
+
+        if (titleWidth + total + style.ItemSpacing.x * 2.0f <=
+            ImGui::GetContentRegionAvail().x)
+        {
+            ImGui::SameLine(ImGui::GetContentRegionMax().x - total);
+
+            ImGui::SetCursorPosY(
+                ImGui::GetCursorPosY() + 4.0f * UiScale());
+        }
+
+        float buttonsY = ImGui::GetCursorPosY();
+
+        if (linkWidth > 0.0f)
+        {
+            if (UiPrimaryButtonSized(
+                    recently(linkCopiedAt)
+                    ? "Copiado!##copiarlink"
+                    : "Copiar convite##copiarlink",
+                    ImVec2(linkWidth, 0.0f)))
+            {
+                ImGui::SetClipboardText(model.inviteLink.c_str());
+
+                linkCopiedAt = ImGui::GetTime();
+            }
+
+            if (ImGui::IsItemHovered())
+            {
+                ImGui::SetTooltip(
+                    "Link que abre o programa direto nesta sala.\n"
+                    "A chave vai depois do # e não passa pelo servidor.");
+            }
+
+            ImGui::SameLine();
+
+            ImGui::SetCursorPosY(buttonsY);
+        }
+
+        if (ImGui::Button(
+                recently(codeCopiedAt)
+                ? "Copiado!##copiarsala"
+                : "Copiar código##copiarsala",
+                ImVec2(codeWidth, 0.0f)))
         {
             ImGui::SetClipboardText(model.code.c_str());
 
@@ -1136,9 +1223,11 @@ void DrawRoomScreen(
     }
 
     UiMutedText(
-        ("Passe o código inteiro para quem vai entrar  ·  cabem "
-         "até " + std::to_string(model.maxMembers) + " pessoas").c_str());
-
+        (std::string(model.inviteLink.empty()
+                         ? "Passe o código inteiro para quem vai entrar"
+                         : "Mande o convite (ou o código inteiro) para quem vai entrar") +
+         "  ·  cabem até " + std::to_string(model.maxMembers) +
+         " pessoas").c_str());
 
     if (model.offline)
     {
@@ -1499,7 +1588,8 @@ void DrawRoomScreen(
                 isMe,
                 model.voiceJoined,
                 volume,
-                newVolume))
+                newVolume,
+                i < model.memberSpeak.size() ? model.memberSpeak[i] : 0.0f))
         {
             actions.volumeMember = static_cast<int>(i);
             actions.volumeValue = newVolume;
@@ -2202,7 +2292,8 @@ float DrawPeoplePanel(
                 person.isMe,
                 model.voiceJoined,
                 person.volume,
-                newVolume))
+                newVolume,
+                person.speakAmount))
         {
             actions.volumeMember = static_cast<int>(i);
             actions.volumeValue = newVolume;

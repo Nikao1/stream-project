@@ -102,6 +102,51 @@ target_include_directories(monocypher PUBLIC
 
 
 # ================================================================
+# RNNoise (reducao de ruido do microfone no canal de voz)
+#
+# Da Xiph.Org (a mesma do Opus), licenca BSD. Baixa o pacote da
+# versao 0.2 (que ja traz o modelo treinado) e monta a biblioteca
+# aqui - o pacote usa autotools, sem CMakeLists. Codigo em C puro
+# (sem as otimizacoes AVX2 opcionais: ~1-2% de um nucleo).
+# ================================================================
+
+FetchContent_Declare(
+    rnnoise
+    URL      https://github.com/xiph/rnnoise/releases/download/v0.2/rnnoise-0.2.tar.gz
+    URL_HASH SHA256=90fce4b00b9ff24c08dbfe31b82ffd43bae383d85c5535676d28b0a2b11c0d37
+)
+
+FetchContent_MakeAvailable(rnnoise)
+
+add_library(rnnoise STATIC
+    ${rnnoise_SOURCE_DIR}/src/denoise.c
+    ${rnnoise_SOURCE_DIR}/src/rnn.c
+    ${rnnoise_SOURCE_DIR}/src/pitch.c
+    ${rnnoise_SOURCE_DIR}/src/kiss_fft.c
+    ${rnnoise_SOURCE_DIR}/src/celt_lpc.c
+    ${rnnoise_SOURCE_DIR}/src/nnet.c
+    ${rnnoise_SOURCE_DIR}/src/nnet_default.c
+    ${rnnoise_SOURCE_DIR}/src/rnnoise_data.c
+    ${rnnoise_SOURCE_DIR}/src/rnnoise_tables.c
+    ${rnnoise_SOURCE_DIR}/src/parse_lpcnet_weights.c
+)
+
+# C11: o codigo usa "restrict".
+set_target_properties(rnnoise PROPERTIES C_STANDARD 11)
+
+target_include_directories(rnnoise
+    PUBLIC  ${rnnoise_SOURCE_DIR}/include
+    PRIVATE ${rnnoise_SOURCE_DIR}/src
+)
+
+if(MSVC)
+    # Avisos do proprio RNNoise (conversoes de tipo) e o aviso
+    # de "so SSE2" - nao sao problemas.
+    target_compile_options(rnnoise PRIVATE /w)
+endif()
+
+
+# ================================================================
 # Dear ImGui (interface grafica, desenhada por cima do Direct3D 11)
 #
 # Tambem nao traz CMakeLists proprio: a biblioteca e montada aqui
@@ -196,6 +241,10 @@ add_executable(stream-project WIN32
     src/ui_widgets.h
     src/signaling_client.cpp
     src/signaling_client.h
+    src/noise_suppressor.cpp
+    src/noise_suppressor.h
+    src/ui_sounds.cpp
+    src/ui_sounds.h
     src/room_client.cpp
     src/room_crypto.cpp
     src/room_crypto.h
@@ -252,6 +301,7 @@ target_link_libraries(stream-project PRIVATE
     winhttp
     winmm
     monocypher
+    rnnoise
     bcrypt
     imgui
     dwmapi

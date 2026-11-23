@@ -14,9 +14,11 @@ Os dois arquivos precisam ficar juntos na mesma pasta:
 SALA (o jeito normal de usar)
 -----------------------------
 1. Abra o StreamProject.exe e escreva seu nome.
-2. Uma pessoa clica em "Criar uma sala" e passa o código da
-   sala para os outros - o código INTEIRO, ex.: RWRSAP-K7F9QM2X.
-3. Os outros digitam o código e clicam em Entrar.
+2. Uma pessoa clica em "Criar uma sala" e "Copiar convite", e
+   manda o link para os outros (WhatsApp, Discord...). Clicando
+   no link, o programa abre direto na sala.
+3. Sem o link: passe o código INTEIRO (ex.: RWRSAP-K7F9QM2X); os
+   outros digitam e clicam em Entrar.
 
 PRIVACIDADE
 -----------
@@ -67,6 +69,12 @@ também entrou. A voz vai direto entre vocês, criptografada.
   ou silenciar só essa pessoa.
 - Durante o vídeo, quem está falando aparece no canto superior
   esquerdo, e o painel de opções tem o botão do microfone.
+- "Reduzir ruído" (ligado) tira do seu microfone teclado,
+  mouse, ventoinha e barulho de fundo.
+- "Sons de aviso" (ligado) toca um som curto quando o microfone
+  liga ou fica mudo (útil com o atalho dentro do jogo), quando
+  alguém entra ou sai da voz, começa a transmitir ou manda
+  mensagem com o chat fechado.
 - Se aparecer o aviso de cancelamento de eco, use fone de
   ouvido (senão os outros ouvem a própria voz de volta).
 - Se o microfone não funcionar: Configurações do Windows >

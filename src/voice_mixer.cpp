@@ -195,9 +195,11 @@ void VoiceMixer::MixBlock(
             ? static_cast<float>(std::sqrt(energy / take))
             : 0.0f;
 
-        // Sobe na hora, desce devagar (o indicador nao pisca).
+        // Sobe na hora, desce devagar. Sem o volume escolhido
+        // por quem ouve: o indicador de "falando" vale mesmo com
+        // a pessoa silenciada.
         source.level =
-            (std::max)(rms * source.gain, source.level * 0.85f);
+            (std::max)(rms, source.level * 0.85f);
     }
 
     // Evita estourar quando varias pessoas falam alto juntas.

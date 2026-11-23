@@ -14,6 +14,7 @@
 #include "udp_audio_server.h"
 #include "voice_capture.h"
 #include "voice_mixer.h"
+#include "noise_suppressor.h"
 
 struct OpusEncoder;
 
@@ -103,6 +104,14 @@ public:
         const std::wstring& deviceId
     );
 
+    // Reducao de ruido (RNNoise) no microfone. Pode mudar a
+    // qualquer momento.
+    void SetNoiseSuppression(
+        bool enabled)
+    {
+        m_noiseSuppression = enabled;
+    }
+
     // Saida onde a voz dos outros toca (vazio = padrao). Na
     // voz: troca na hora.
     void SetSpeaker(
@@ -133,6 +142,18 @@ public:
     );
 
     // Falando agora (nivel recente da voz).
+    // Nivel recente da voz dessa pessoa (0..1, antes do volume).
+    float PeerLevel(
+        const std::string& memberId
+    );
+
+    // Probabilidade de voz no microfone (0..1), da reducao de
+    // ruido. -1 = sem a reducao (vale o nivel).
+    float VoiceActivity() const
+    {
+        return m_joined ? m_voiceActivity.load() : -1.0f;
+    }
+
     bool IsSpeaking(
         const std::string& memberId
     );
@@ -165,6 +186,13 @@ private:
     // Atalho global de ligar/desligar o microfone (lido na
     // thread do microfone, como o de falar).
     std::atomic<int> m_muteToggleKey{ 0 };
+
+    std::atomic<float> m_voiceActivity{ -1.0f };
+
+    std::atomic<bool> m_noiseSuppression{ true };
+
+    // So a thread do microfone usa (criado antes dela comecar).
+    std::unique_ptr<NoiseSuppressor> m_denoiser;
 
     bool m_muteToggleWasDown = false;
 

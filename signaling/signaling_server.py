@@ -40,6 +40,10 @@ sessao pelo fluxo normal acima ("join"/"announce"):
                                       -> code, member_id, token,
                                          ttl + estado da sala
     POST /rooms/<code>/info           -> e2e (0|1), [salt]
+    GET  /j                           pagina do link de convite
+                                      (/j#RWRSAP-K7F9QM2X abre o
+                                      programa; o codigo depois do
+                                      # nao chega aqui)
     POST /rooms/<code>/join           name, [e2e=1]
                                       -> member_id, token, ttl +
                                          estado da sala
@@ -316,6 +320,85 @@ def _room_state(room):
     return fields
 
 
+# Pagina do link de convite (GET /j#RWRSAP-K7F9QM2X). O codigo vai
+# depois do "#": o navegador NUNCA manda essa parte pro servidor -
+# a pagina (no navegador) le e abre o programa por
+# streamproject://sala/<codigo>.
+INVITE_PAGE = """<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Convite - Stream Project</title>
+<style>
+  body { margin: 0; min-height: 100vh; display: flex;
+         align-items: center; justify-content: center;
+         background: #0f1115; color: #e8e9ec;
+         font-family: "Segoe UI", system-ui, sans-serif; }
+  main { max-width: 420px; margin: 24px; padding: 28px;
+         background: #181a20; border: 1px solid #2a2d36;
+         border-radius: 14px; }
+  h1 { font-size: 22px; margin: 0 0 8px; }
+  p { line-height: 1.45; margin: 12px 0; }
+  .muted { color: #9aa0ab; font-size: 14px; }
+  .btn { display: block; text-align: center; padding: 11px 14px;
+         background: #6366f1; color: #fff; border-radius: 9px;
+         text-decoration: none; font-weight: 600; }
+  .row { display: flex; gap: 8px; align-items: center; }
+  code { flex: 1; padding: 9px 12px; background: #0f1115;
+         border: 1px solid #2a2d36; border-radius: 8px;
+         font-size: 17px; letter-spacing: 1px; }
+  button { padding: 9px 14px; background: #262933; color: #e8e9ec;
+           border: 1px solid #343846; border-radius: 8px;
+           cursor: pointer; font: inherit; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Convite para uma sala</h1>
+  <p id="status">Abrindo o Stream Project...</p>
+  <p><a id="open" class="btn" href="#">Abrir no Stream Project</a></p>
+  <p class="muted">N\u00e3o abriu? Abra o programa e cole este c\u00f3digo
+     na tela inicial:</p>
+  <div class="row"><code id="code">-</code>
+    <button id="copy" type="button">Copiar</button></div>
+  <p class="muted">A parte depois do # fica s\u00f3 no seu navegador:
+     ela n\u00e3o \u00e9 enviada a este servidor.</p>
+</main>
+<script>
+(function () {
+  var raw = (location.hash || "").slice(1).toUpperCase();
+  var code = raw.replace(/[^A-Z0-9-]/g, "");
+  var ok = /^[A-Z0-9]{6}-?[A-Z0-9]{8}$/.test(code) ||
+           /^[A-Z0-9]{6}$/.test(code);
+  var status = document.getElementById("status");
+  var open = document.getElementById("open");
+  var copy = document.getElementById("copy");
+  if (!ok) {
+    status.textContent = "Link de convite incompleto. Pe\u00e7a o link de novo.";
+    open.style.display = "none";
+    copy.disabled = true;
+    return;
+  }
+  var url = "streamproject://sala/" + code;
+  open.href = url;
+  document.getElementById("code").textContent = code;
+  copy.onclick = function () {
+    if (navigator.clipboard) {
+      navigator.clipboard.writeText(code).then(function () {
+        copy.textContent = "Copiado!";
+      });
+    }
+  };
+  setTimeout(function () { location.href = url; }, 300);
+})();
+</script>
+</body>
+</html>
+"""
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "StreamSignaling/1.0"
     protocol_version = "HTTP/1.1"
@@ -363,6 +446,9 @@ class Handler(BaseHTTPRequestHandler):
     # ------------------------- rotas --------------------------
 
     def do_GET(self):
+        path = self.path.split("?")[0]
+        if path in ("/j", "/j/"):
+            return self._invite_page()
         if self.path == "/health":
             with _lock:
                 _purge_expired()
@@ -431,6 +517,22 @@ class Handler(BaseHTTPRequestHandler):
                 return self._room_thumb_get(code, form)
 
         self._error(404, "not_found")
+
+    def _invite_page(self):
+        body = INVITE_PAGE.encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "public, max-age=3600")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header(
+            "Content-Security-Policy",
+            "default-src 'none'; style-src 'unsafe-inline'; "
+            "script-src 'unsafe-inline'; base-uri 'none'; "
+            "form-action 'none'; frame-ancestors 'none'")
+        self.end_headers()
+        self.wfile.write(body)
 
     # ----------------------- operacoes ------------------------
 

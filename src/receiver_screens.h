@@ -148,6 +148,10 @@ struct RoomScreenModel
 {
     std::string code;
 
+    // Link de convite (abre o programa direto na sala). Vazio =
+    // sem servidor publico (so o codigo).
+    std::string inviteLink;
+
     std::vector<RoomPresenterEntry> presenters;
 
     // Nomes de quem esta na sala (o desta pessoa marcado).
@@ -181,6 +185,9 @@ struct RoomScreenModel
     std::vector<bool> memberIsMe;
     std::vector<MemberVoice> memberVoice;
 
+    // Anel de "falando" (0..1, suavizado), mesma ordem.
+    std::vector<float> memberSpeak;
+
     // Volume de cada pessoa na voz (0 a 2; 1 = normal).
     std::vector<float> memberVolume;
 
@@ -210,6 +217,12 @@ struct RoomScreenModel
     // Saidas de som (onde a voz dos outros toca), mesmo esquema.
     std::vector<std::string> speakers;
     int speaker = 0;
+
+    // Sons de aviso e reducao de ruido (a tela altera direto e
+    // avisa em actions.voiceSettingsChanged).
+    bool* soundsEnabled = nullptr;
+    float* soundsVolume = nullptr;
+    bool* noiseSuppression = nullptr;
 
     std::string voiceError;
 
@@ -252,6 +265,12 @@ struct RoomScreenActions
     // Uma das listas de dispositivos acabou de ser aberta:
     // atualizar.
     bool voiceRefreshDevices = false;
+
+    // Sons / reducao de ruido mudaram (salvar e aplicar).
+    bool voiceSettingsChanged = false;
+
+    // Soltou o volume dos sons: tocar um de exemplo.
+    bool previewSound = false;
 
     // Volume de uma pessoa mudou (indice em members, -1 = nada).
     int volumeMember = -1;
@@ -306,6 +325,9 @@ struct PeopleEntry
 
     // 0 a 2 (1 = normal).
     float volume = 1.0f;
+
+    // Anel de "falando" (0..1, ja suavizado).
+    float speakAmount = 0.0f;
 };
 
 struct PeoplePanelModel

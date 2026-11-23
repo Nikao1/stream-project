@@ -574,7 +574,7 @@ void UiAvatar(
     const char* name,
     float diameter,
     bool live,
-    bool speaking)
+    float speaking)
 {
     // Paleta: cores medias, legiveis com texto branco.
     static const ImU32 palette[] =
@@ -623,12 +623,16 @@ void UiAvatar(
             2.0f * g_uiScale);
     }
 
-    if (speaking)
+    // Anel verde com intensidade (acende e apaga suave).
+    if (speaking > 0.01f)
     {
+        int alpha =
+            static_cast<int>((speaking > 1.0f ? 1.0f : speaking) * 255.0f);
+
         draw->AddCircle(
             center,
             radius + (live ? 4.5f : 1.5f) * g_uiScale,
-            IM_COL32(34, 197, 94, 255),
+            IM_COL32(34, 197, 94, alpha),
             32,
             2.0f * g_uiScale);
     }

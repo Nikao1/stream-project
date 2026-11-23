@@ -103,7 +103,7 @@ void UiAvatar(
     const char* name,
     float diameter,
     bool live = false,
-    bool speaking = false
+    float speaking = 0.0f
 );
 
 // Icone de microfone desenhado (sem fonte de icones), num

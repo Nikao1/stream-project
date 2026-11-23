@@ -106,10 +106,33 @@ bool ParseRoomInvite(
     outCode.clear();
     outSecret.clear();
 
+    // Link de convite: "https://.../j#RWRSAP-K7F9QM2X" ou
+    // "streamproject://sala/RWRSAP-K7F9QM2X" - fica o que vem
+    // depois do # (ou da ultima barra).
+    std::string text = input;
+
+    while (!text.empty() &&
+           (text.back() == '/' || text.back() == ' ' ||
+            text.back() == '\r' || text.back() == '\n'))
+    {
+        text.pop_back();
+    }
+
+    size_t hash = text.rfind('#');
+
+    if (hash != std::string::npos)
+    {
+        text = text.substr(hash + 1);
+    }
+    else if (text.find("://") != std::string::npos)
+    {
+        text = text.substr(text.rfind('/') + 1);
+    }
+
     // So letras/numeros, em maiusculas (ignora espacos, tracos).
     std::string clean;
 
-    for (char c : input)
+    for (char c : text)
     {
         if (c == ' ' || c == '-' || c == '\t' || c == '.')
             continue;

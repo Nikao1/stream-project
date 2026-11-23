@@ -637,6 +637,11 @@ void VoiceChannel::JoinWorker()
             m_capture.SetSpeaker(m_speaker);
         }
 
+        if (!m_denoiser)
+        {
+            m_denoiser = std::make_unique<NoiseSuppressor>();
+        }
+
         m_capture.Start(
             [this](const float* samples, size_t count)
             {
@@ -709,6 +714,26 @@ void VoiceChannel::OnMicFrame(
         }
 
         m_muteToggleWasDown = down;
+    }
+
+    // Reducao de ruido (sempre que ligada, mesmo sem transmitir:
+    // a rede precisa do audio continuo, e a deteccao de voz
+    // serve pro indicador).
+    float cleaned[NoiseSuppressor::FRAME_SAMPLES];
+
+    if (m_noiseSuppression &&
+        m_denoiser && m_denoiser->IsValid() &&
+        count == NoiseSuppressor::FRAME_SAMPLES)
+    {
+        std::memcpy(cleaned, samples, sizeof(cleaned));
+
+        m_voiceActivity = m_denoiser->Process(cleaned);
+
+        samples = cleaned;
+    }
+    else
+    {
+        m_voiceActivity = -1.0f;
     }
 
     // Segurar para falar: a tecla e lida aqui (a cada 20 ms),
@@ -1055,6 +1080,13 @@ float VoiceChannel::PeerVolume(
     auto found = m_volumes.find(memberId);
 
     return found == m_volumes.end() ? 1.0f : found->second;
+}
+
+
+float VoiceChannel::PeerLevel(
+    const std::string& memberId)
+{
+    return m_mixer.GetLevel(memberId);
 }
 
 
