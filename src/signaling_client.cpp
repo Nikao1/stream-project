@@ -30,7 +30,7 @@ constexpr int POLL_INTERVAL_SECONDS = 2;
 // um local pra desenvolvimento - define a variavel de ambiente
 // STREAM_SIGNALING_URL, sem precisar recompilar.
 constexpr const char* DEFAULT_SIGNALING_URL =
-    "https://stream-signaling-2uaz.onrender.com";
+    "https://colae.onrender.com";
 
 
 std::wstring ToWide(
