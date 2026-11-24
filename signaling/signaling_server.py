@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Stream Project - servidor de sinalizacao
+Chegae - servidor de sinalizacao
 
 Servidor HTTP minimo que so faz UMA coisa: apresentar as duas
 pontas de uma sessao. Ele NUNCA ve video nem audio - guarda
@@ -338,27 +338,27 @@ def _room_state(room):
 # Pagina do link de convite (GET /j#RWRSAP-K7F9QM2X). O codigo vai
 # depois do "#": o navegador NUNCA manda essa parte pro servidor -
 # a pagina (no navegador) le e abre o programa por
-# streamproject://sala/<codigo>.
+# chegae://sala/<codigo>.
 INVITE_PAGE = """<!doctype html>
 <html lang="pt-BR">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex">
-<title>Convite - Stream Project</title>
+<title>Convite - Chega\u00ea</title>
 <style>
   body { margin: 0; min-height: 100vh; display: flex;
          align-items: center; justify-content: center;
-         background: #0f1115; color: #e8e9ec;
+         background: #0E1116; color: #E8EAED;
          font-family: "Segoe UI", system-ui, sans-serif; }
   main { max-width: 420px; margin: 24px; padding: 28px;
-         background: #181a20; border: 1px solid #2a2d36;
+         background: #14171C; border: 1px solid #262A32;
          border-radius: 14px; }
   h1 { font-size: 22px; margin: 0 0 8px; }
   p { line-height: 1.45; margin: 12px 0; }
   .muted { color: #9aa0ab; font-size: 14px; }
   .btn { display: block; text-align: center; padding: 11px 14px;
-         background: #6366f1; color: #fff; border-radius: 9px;
+         background: #FF7A45; color: #1A0E08; border-radius: 9px;
          text-decoration: none; font-weight: 600; }
   .row { display: flex; gap: 8px; align-items: center; }
   code { flex: 1; padding: 9px 12px; background: #0f1115;
@@ -372,8 +372,8 @@ INVITE_PAGE = """<!doctype html>
 <body>
 <main>
   <h1>Convite para uma sala</h1>
-  <p id="status">Abrindo o Stream Project...</p>
-  <p><a id="open" class="btn" href="#">Abrir no Stream Project</a></p>
+  <p id="status">Abrindo o Chega\u00ea...</p>
+  <p><a id="open" class="btn" href="#">Abrir no Chega\u00ea</a></p>
   <p class="muted">N\u00e3o abriu? Abra o programa e cole este c\u00f3digo
      na tela inicial:</p>
   <div class="row"><code id="code">-</code>
@@ -396,7 +396,7 @@ INVITE_PAGE = """<!doctype html>
     copy.disabled = true;
     return;
   }
-  var url = "streamproject://sala/" + code;
+  var url = "chegae://sala/" + code;
   open.href = url;
   document.getElementById("code").textContent = code;
   copy.onclick = function () {
