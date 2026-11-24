@@ -4,7 +4,7 @@
 # O Render le este arquivo e cria o servico sozinho.
 services:
   - type: web
-    name: stream-signaling
+    name: colae
     runtime: python
     plan: free
     buildCommand: echo "sem dependencias"

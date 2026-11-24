@@ -11,6 +11,9 @@
          LEIA-ME.txt
     3. Compacta em dist\Colae-<versao>-windows.zip e mostra
        o SHA-256 do arquivo.
+    4. Se o Inno Setup 6 estiver instalado, gera tambem o
+       instalador dist\Instalar-Colae-<versao>.exe (veja
+       installer\Colae.iss).
 
     O ffmpeg.exe e conferido antes de entrar no pacote: atalhos
     criados por Chocolatey/Scoop/winget (poucos KB) e versoes que
@@ -27,6 +30,9 @@
 .PARAMETER PastaBuild
     Pasta de build do CMake (padrao: build).
 
+.PARAMETER SemInstalador
+    So o .zip, sem gerar o instalador.
+
 .EXAMPLE
     powershell -ExecutionPolicy Bypass -File tools\empacotar.ps1
 
@@ -37,7 +43,8 @@
 param(
     [string] $Ffmpeg = "",
     [switch] $SemCompilar,
-    [string] $PastaBuild = "build"
+    [string] $PastaBuild = "build",
+    [switch] $SemInstalador
 )
 
 $ErrorActionPreference = "Stop"
@@ -289,9 +296,63 @@ Compress-Archive -Path $pasta -DestinationPath $zip
 
 $hash = (Get-FileHash $zip -Algorithm SHA256).Hash
 
+# ------------------------------------------------------------
+# 4. Instalador (Inno Setup 6.3+)
+# ------------------------------------------------------------
+
+$instalador = $null
+
+if (-not $SemInstalador)
+{
+    $iscc = $null
+
+    $comando = Get-Command ISCC.exe -ErrorAction SilentlyContinue
+
+    if ($comando) { $iscc = $comando.Source }
+
+    if (-not $iscc)
+    {
+        $bases = @(${env:ProgramFiles(x86)}, $env:ProgramFiles, (Join-Path $env:LOCALAPPDATA "Programs")) |
+            Where-Object { $_ }
+
+        foreach ($base in $bases)
+        {
+            $caminho = Join-Path $base "Inno Setup 6\ISCC.exe"
+
+            if (Test-Path $caminho) { $iscc = $caminho; break }
+        }
+    }
+
+    if ($iscc)
+    {
+        Passo "Gerando o instalador (Inno Setup)"
+
+        & $iscc "/Q" "/DAppVersion=$versao" "/DPacote=$pasta" "/DSaida=$dist" (Join-Path $projeto "installer\Colae.iss")
+
+        if ($LASTEXITCODE -ne 0) { Falhar "O Inno Setup nao conseguiu gerar o instalador." }
+
+        $instalador = Join-Path $dist "Instalar-Colae-$versao.exe"
+    }
+    else
+    {
+        Write-Host ""
+        Write-Host "Inno Setup nao encontrado: so o .zip foi gerado." -ForegroundColor Yellow
+        Write-Host "  Para gerar o instalador: winget install JRSoftware.InnoSetup"
+    }
+}
+
 Write-Host ""
 Write-Host "Pronto!" -ForegroundColor Green
 Write-Host ("  {0} ({1:N0} MB)" -f $zip, ((Get-Item $zip).Length / 1MB))
 Write-Host "  SHA-256: $hash"
+
+if ($instalador -and (Test-Path $instalador))
+{
+    $hashInstalador = (Get-FileHash $instalador -Algorithm SHA256).Hash
+
+    Write-Host ("  {0} ({1:N0} MB)" -f $instalador, ((Get-Item $instalador).Length / 1MB))
+    Write-Host "  SHA-256: $hashInstalador"
+}
+
 Write-Host ""
-Write-Host "Mande o .zip inteiro (nao o .exe solto)."
+Write-Host "Mande o instalador (ou o .zip inteiro - nao o .exe solto)."

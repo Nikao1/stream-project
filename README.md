@@ -46,9 +46,12 @@ A ideia é ser o contrário de pesado e de "passa tudo pelo servidor de alguém"
 
 ## Como usar
 
-1. Baixe o `.zip` da versão mais recente em
-   [Releases](https://github.com/Nikao1/stream-project/releases) e extraia.
-   Mantenha o `Colae.exe` e o `ffmpeg.exe` na mesma pasta.
+1. Baixe o **`Instalar-Colae-<versão>.exe`** da versão mais recente em
+   [Releases](https://github.com/Nikao1/stream-project/releases) e rode. Ele
+   instala só para o seu usuário (sem pedir administrador), cria o atalho no
+   Menu Iniciar e já deixa os links de convite funcionando.
+   Prefere sem instalar? Baixe o `.zip`, extraia e mantenha o `Colae.exe` e o
+   `ffmpeg.exe` na mesma pasta.
 2. Abra o `Colae.exe`, escolha seu nome e clique em **Criar sala**.
 3. Clique em **Copiar convite** e mande para os amigos. Quem clicar no link abre
    o Colaê direto na sala (ou cola o código na tela inicial).
@@ -104,7 +107,8 @@ O executável sai em `build\Release\Colae.exe`. Para rodar, coloque um
 `ffmpeg.exe` na mesma pasta (por exemplo, de https://www.gyan.dev/ffmpeg/builds/).
 
 Para montar o pacote de distribuição (`.zip` com o `.exe`, o `ffmpeg.exe` e o
-LEIA-ME):
+LEIA-ME) e o instalador (se o [Inno Setup 6.3+](https://jrsoftware.org/isinfo.php)
+estiver instalado — `winget install JRSoftware.InnoSetup`):
 
 ```bat
 powershell -ExecutionPolicy Bypass -File tools\empacotar.ps1
@@ -133,6 +137,7 @@ Passo a passo em [HOSPEDAR.md](HOSPEDAR.md).
 | `src/stream_crypto.cpp`, `src/room_crypto.cpp` | Criptografia |
 | `signaling/` | Servidor de sinalização (Python) |
 | `tools/` | Empacotamento e LEIA-ME do pacote |
+| `installer/` | Script do instalador (Inno Setup) |
 
 ## Limitações conhecidas
 
