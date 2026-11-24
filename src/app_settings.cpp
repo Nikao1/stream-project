@@ -3,6 +3,7 @@
 #include <shlobj.h>
 
 #include <cwchar>
+#include <initializer_list>
 
 namespace
 {
@@ -27,12 +28,14 @@ AppSettings::AppSettings(
     }
 
     std::wstring folder =
-        std::wstring(appData) + L"\\Chegae";
+        std::wstring(appData) + L"\\Colae";
 
-    // Versoes "Stream Project" guardavam em ...\StreamProject:
-    // na primeira vez, a pasta muda de nome (nada se perde).
+    // Versoes anteriores guardavam em ...\Chegae (0.8.x) ou
+    // ...\StreamProject: na primeira vez, a pasta muda de nome
+    // (nada se perde).
+    for (const wchar_t* previous : { L"\\Chegae", L"\\StreamProject" })
     {
-        std::wstring old = std::wstring(appData) + L"\\StreamProject";
+        std::wstring old = std::wstring(appData) + previous;
 
         if (GetFileAttributesW(folder.c_str()) == INVALID_FILE_ATTRIBUTES &&
             GetFileAttributesW(old.c_str()) != INVALID_FILE_ATTRIBUTES)

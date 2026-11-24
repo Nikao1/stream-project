@@ -3346,7 +3346,7 @@ std::atomic<UiState> g_uiState{ UiState::Connect };
 // Modo do programa
 // ============================================================
 //
-// Um programa so (Chegae.exe) com dois modos:
+// Um programa so (Colae.exe) com dois modos:
 //
 //   Home   tela inicial: "Assistir" ou "Transmitir"
 //   Watch  assistir - o fluxo do antigo stream-receiver (este
@@ -3421,6 +3421,16 @@ bool g_micTestLoopback = false;
 
 // Tema claro (salvo; aplicado depois que a interface abre).
 bool g_lightThemeSetting = false;
+
+std::string WideToUtf8(const std::wstring& text);
+std::wstring Utf8ToWide(const std::string& text);
+
+// Servidor de sinalizacao (Configuracoes > Geral): campo, e o
+// teste em andamento ("Testar").
+char g_serverInput[256]{};
+std::string g_serverStatus;
+bool g_serverStatusOk = false;
+std::future<std::pair<bool, std::string>> g_serverTest;
 
 // Painel lateral da sala (Pessoas/Chat) fixado: nao fecha ao
 // clicar no video. Salvo.
@@ -3604,6 +3614,15 @@ void LoadReceiverSettings()
     g_lightThemeSetting = settings.GetInt(L"TemaClaro", 0) != 0;
 
     g_sidePinned = settings.GetInt(L"PainelFixo", 0) != 0;
+
+    // Servidor de sinalizacao proprio (vazio = o padrao).
+    {
+        std::string server = WideToUtf8(settings.GetString(L"Servidor", L""));
+
+        SignalingSetConfiguredUrl(server);
+
+        strncpy_s(g_serverInput, server.c_str(), _TRUNCATE);
+    }
 
     RoomSidePanelSetSavedWidth(
         static_cast<float>(settings.GetInt(L"LarguraPainel", 300)));
@@ -4749,7 +4768,7 @@ std::string g_clipboardDismissed;
 std::string g_pendingInvite;
 
 
-// Protocolo "chegae://" no Windows (so pra este usuario,
+// Protocolo "colae://" no Windows (so pra este usuario,
 // sem administrador): clicar no link de convite abre o programa
 // nesta pasta. Refeito a cada abertura (a pasta pode mudar).
 void RegisterInviteProtocol()
@@ -4761,8 +4780,10 @@ void RegisterInviteProtocol()
 
     std::wstring exe = exePath;
 
-    // Protocolo antigo (versoes "Stream Project"): sai.
+    // Protocolos antigos (versoes "Stream Project" e "Chegae"):
+    // saem.
     RegDeleteTreeW(HKEY_CURRENT_USER, L"Software\\Classes\\streamproject");
+    RegDeleteTreeW(HKEY_CURRENT_USER, L"Software\\Classes\\chegae");
 
     struct Value
     {
@@ -4773,13 +4794,13 @@ void RegisterInviteProtocol()
 
     const Value values[] =
     {
-        { L"Software\\Classes\\chegae", nullptr,
-          L"URL:Chega\u00ea" },
-        { L"Software\\Classes\\chegae", L"URL Protocol",
+        { L"Software\\Classes\\colae", nullptr,
+          L"URL:Cola\u00ea" },
+        { L"Software\\Classes\\colae", L"URL Protocol",
           L"" },
-        { L"Software\\Classes\\chegae\\DefaultIcon", nullptr,
+        { L"Software\\Classes\\colae\\DefaultIcon", nullptr,
           L"\"" + exe + L"\",0" },
-        { L"Software\\Classes\\chegae\\shell\\open\\command",
+        { L"Software\\Classes\\colae\\shell\\open\\command",
           nullptr,
           L"\"" + exe + L"\" --convite \"%1\"" },
     };
@@ -4808,7 +4829,7 @@ void RegisterInviteProtocol()
 }
 
 
-// Convite na linha de comando ("--convite chegae://...").
+// Convite na linha de comando ("--convite colae://...").
 // Vazio = nenhum.
 std::string InviteFromCommandLine(
     const wchar_t* commandLine)
@@ -4816,7 +4837,7 @@ std::string InviteFromCommandLine(
     if (!commandLine)
         return std::string();
 
-    const wchar_t* link = wcsstr(commandLine, L"chegae://");
+    const wchar_t* link = wcsstr(commandLine, L"colae://");
 
     if (!link)
         return std::string();
@@ -4841,10 +4862,18 @@ std::string InviteFromCommandLine(
         narrow += c < 128 ? static_cast<char>(c) : '?';
     }
 
-    if (!ParseRoomInvite(narrow, code, secret))
+    // Servidor junto no convite ("?s=..."): segue com a sala.
+    std::string invite;
+    std::string server;
+
+    SplitInviteServer(narrow, invite, server);
+
+    if (!ParseRoomInvite(invite, code, secret))
         return std::string();
 
-    return secret.empty() ? code : code + "-" + secret;
+    std::string full = secret.empty() ? code : code + "-" + secret;
+
+    return server.empty() ? full : full + "@" + server;
 }
 
 
@@ -5008,6 +5037,27 @@ void LoadRecentRooms()
 }
 
 
+// Codigo pra passar adiante: o da sala e, se ela esta num
+// servidor que nao e o padrao, "@servidor" junto (quem colar
+// entra no servidor certo).
+std::string RoomShareCode()
+{
+    std::string code = g_room.GetCode();
+
+    std::string server = GetSignalingUrl();
+
+    if (code.empty() || server == GetDefaultSignalingUrl())
+        return code;
+
+    if (server.rfind("https://", 0) == 0)
+    {
+        server = server.substr(8);
+    }
+
+    return code + "@" + server;
+}
+
+
 // Entrou (ou o nome mudou): vai pro topo da lista.
 void RememberRoom(
     const std::string& code,
@@ -5045,9 +5095,16 @@ void RememberRoom(
 void ForgetRoom(
     const std::string& code)
 {
+    // Compara so o codigo (sem o "@servidor").
+    auto plain =
+        [](const std::string& text)
+        {
+            return text.substr(0, text.find('@'));
+        };
+
     for (auto it = g_recentRooms.begin(); it != g_recentRooms.end(); ++it)
     {
-        if (it->code == code)
+        if (plain(it->code) == plain(code))
         {
             g_recentRooms.erase(it);
 
@@ -5950,6 +6007,9 @@ void EnterRoom()
 void LeaveRoom(
     const std::string& message)
 {
+    // Proximas salas: o servidor das configuracoes.
+    SignalingSetRoomUrl(std::string());
+
     ViewerDisconnect();
 
     g_watchSessionCode.clear();
@@ -6461,7 +6521,7 @@ void UpdateWindowTitle()
         return;
 
     std::wstring title =
-        L"Chega\u00ea " STREAM_APP_VERSION_W;
+        L"Cola\u00ea " STREAM_APP_VERSION_W;
 
     if (g_appMode == AppMode::Room)
     {
@@ -7340,6 +7400,13 @@ void DrawReceiverUi()
     // novas viram avisos mesmo assim - ex.: transmitindo).
     bool chatHandled = false;
 
+    // Na tela inicial (sem criar/entrar em andamento), nenhuma
+    // sala: vale o servidor das configuracoes.
+    if (mode == AppMode::Home && !g_homeBusy)
+    {
+        SignalingSetRoomUrl(std::string());
+    }
+
     if (mode == AppMode::Room)
     {
         // Previas: so baixa com a lista na tela.
@@ -7375,7 +7442,7 @@ void DrawReceiverUi()
 
             EnterRoom();
 
-            RememberRoom(g_room.GetCode(), g_room.GetState().title);
+            RememberRoom(RoomShareCode(), g_room.GetState().title);
 
             roomState = g_room.GetState();
         }
@@ -7466,12 +7533,23 @@ void DrawReceiverUi()
                 std::string roomCode;
                 std::string secret;
 
-                if (text &&
-                    strlen(text) < 300 &&
-                    ParseRoomInvite(text, roomCode, secret) &&
+                std::string invite;
+                std::string server;
+
+                if (text && strlen(text) < 600)
+                {
+                    invite = text;
+
+                    SplitInviteServer(text, invite, server);
+                }
+
+                if (!invite.empty() &&
+                    ParseRoomInvite(invite, roomCode, secret) &&
                     !secret.empty())
                 {
-                    g_clipboardInvite = roomCode + "-" + secret;
+                    g_clipboardInvite =
+                        roomCode + "-" + secret +
+                        (server.empty() ? std::string() : "@" + server);
                 }
             }
 
@@ -7656,7 +7734,11 @@ void DrawReceiverUi()
         {
             RoomScreenModel room;
 
-            room.code = g_room.GetCode();
+            // Copiar codigo: com o servidor junto se nao for o
+            // padrao; o link de convite ja e do proprio servidor.
+            room.code = RoomShareCode();
+
+            std::string plainCode = g_room.GetCode();
 
             // Link de convite: pagina do servidor que abre o
             // programa; o codigo vai depois do # (o navegador nao
@@ -7667,7 +7749,7 @@ void DrawReceiverUi()
                 if (server.rfind("https://", 0) == 0 ||
                     server.rfind("http://", 0) == 0)
                 {
-                    room.inviteLink = server + "/j#" + room.code;
+                    room.inviteLink = server + "/j#" + plainCode;
                 }
             }
 
@@ -7819,7 +7901,7 @@ void DrawReceiverUi()
                 static std::string rememberedTitle;
                 static std::string rememberedCode;
 
-                std::string code = g_room.GetCode();
+                std::string code = RoomShareCode();
 
                 if (code != rememberedCode || roomState.title != rememberedTitle)
                 {
@@ -7864,6 +7946,34 @@ void DrawReceiverUi()
                     roomState, chat, unread, roomActions.togglePanel))
             {
                 sendChat = true;
+            }
+
+            // Transmitindo: as opcoes da transmissao abrem aqui mesmo,
+            // embaixo no meio da lista (sem ir pra tela da
+            // transmissao).
+            if (roomActions.toggleShareOptions)
+            {
+                sender::SetRoomPanelOpen(!sender::RoomPanelOpen());
+            }
+
+            if (sender::IsLive())
+            {
+                ImGuiIO& io = ImGui::GetIO();
+
+                sender::SetRoomPanelAnchor(
+                    (io.DisplaySize.x - room.rightInset) * 0.5f,
+                    io.DisplaySize.y - 16.0f * UiScale(),
+                    false);
+
+                bool stopped = false;
+                bool openShareView = false;
+
+                sender::DrawOptionsPanel(stopped, openShareView);
+
+                if (openShareView)
+                {
+                    g_roomView = RoomView::Share;
+                }
             }
 
             if (roomActions.setTitle)
@@ -8018,6 +8128,32 @@ void DrawReceiverUi()
 
         // Geral
         shortcuts.lightTheme = &g_lightThemeSetting;
+
+        // Servidor de sinalizacao
+        {
+            if (g_serverTest.valid() &&
+                g_serverTest.wait_for(std::chrono::seconds(0)) == std::future_status::ready)
+            {
+                std::pair<bool, std::string> result = g_serverTest.get();
+
+                g_serverStatusOk = result.first;
+                g_serverStatus =
+                    result.first
+                    ? "Funcionando: o servidor respondeu."
+                    : "Não funcionou: " + result.second + ".";
+            }
+
+            std::string configured = SignalingGetConfiguredUrl();
+
+            shortcuts.serverInput = g_serverInput;
+            shortcuts.serverInputSize = sizeof(g_serverInput);
+            shortcuts.serverCurrent = configured;
+            shortcuts.serverIsDefault = configured == GetDefaultSignalingUrl();
+            shortcuts.serverStatus = g_serverStatus;
+            shortcuts.serverStatusOk = g_serverStatusOk;
+            shortcuts.serverTesting = g_serverTest.valid();
+        }
+
         shortcuts.myAvatar = MyAvatarTexture();
         shortcuts.myName = CurrentName();
         shortcuts.avatarError = g_avatarError;
@@ -8073,6 +8209,71 @@ void DrawReceiverUi()
 
             ReceiverSettings().SetInt(
                 L"TemaClaro", g_lightThemeSetting ? 1 : 0);
+        }
+
+        if (shortcutActions.serverTest && !g_serverTest.valid())
+        {
+            std::string url = g_serverInput[0] ? std::string(g_serverInput) : GetDefaultSignalingUrl();
+
+            g_serverTest =
+                std::async(
+                    std::launch::async,
+                    [url]()
+                    {
+                        std::string error;
+
+                        bool ok = SignalingTestServer(url, error);
+
+                        return std::make_pair(ok, error);
+                    });
+        }
+
+        if (shortcutActions.serverApply)
+        {
+            std::string typed = g_serverInput;
+
+            std::string url = NormalizeSignalingUrl(typed);
+
+            bool empty = typed.find_first_not_of(" \t") == std::string::npos;
+
+            if (!empty && url.empty())
+            {
+                g_serverStatusOk = false;
+                g_serverStatus =
+                    "Endereço inválido. Use algo como https://meu-servidor.com "
+                    "ou http://192.168.0.10:8080.";
+            }
+            else
+            {
+                if (url == GetDefaultSignalingUrl())
+                {
+                    url.clear();
+                }
+
+                SignalingSetConfiguredUrl(url);
+
+                ReceiverSettings().SetString(L"Servidor", Utf8ToWide(url));
+
+                strncpy_s(g_serverInput, url.c_str(), _TRUNCATE);
+
+                g_serverStatusOk = true;
+                g_serverStatus =
+                    url.empty()
+                    ? "Usando o servidor padrão."
+                    : "Servidor salvo. Vale a partir da próxima sala.";
+            }
+        }
+
+        if (shortcutActions.serverDefault)
+        {
+            SignalingSetConfiguredUrl(std::string());
+
+            ReceiverSettings().SetString(L"Servidor", L"");
+
+            g_serverInput[0] = '\0';
+
+            g_serverStatusOk = true;
+            g_serverStatus = "Usando o servidor padrão.";
         }
 
         if (shortcutActions.chooseAvatar)
@@ -8175,6 +8376,9 @@ void DrawReceiverUi()
     // Tela inicial
     if (homeActions.createRoom)
     {
+        // Sala nova: no servidor das configuracoes.
+        SignalingSetRoomUrl(std::string());
+
         StartHomeWorker(true, std::string());
     }
 
@@ -8302,6 +8506,19 @@ void DrawReceiverUi()
         std::string roomCode;
         std::string secret;
 
+        // Convite com servidor proprio junto ("@servidor", "?s=",
+        // ou o link da pagina de convite de outro servidor).
+        std::string inviteServer;
+
+        {
+            std::string invitePart;
+
+            if (SplitInviteServer(code, invitePart, inviteServer))
+            {
+                code = invitePart;
+            }
+        }
+
         if (code.empty())
         {
             g_homeError =
@@ -8309,6 +8526,11 @@ void DrawReceiverUi()
         }
         else if (ParseRoomInvite(code, roomCode, secret))
         {
+            // A sala (e as transmissoes e a voz dela) ficam no
+            // servidor do convite; sem servidor no convite, o das
+            // configuracoes.
+            SignalingSetRoomUrl(inviteServer);
+
             // Sala (com ou sem o segredo) ou codigo de sessao.
             StartHomeWorker(
                 false,
@@ -9116,19 +9338,25 @@ LRESULT CALLBACK WindowProc(
             data->dwData == INVITE_COPYDATA_ID &&
             data->lpData &&
             data->cbData > 0 &&
-            data->cbData < 64)
+            data->cbData < 600)
         {
             std::string code(
                 static_cast<const char*>(data->lpData),
                 data->cbData);
 
+            std::string invite;
+            std::string server;
+
+            SplitInviteServer(code, invite, server);
+
             std::string room;
             std::string secret;
 
-            if (ParseRoomInvite(code, room, secret))
+            if (ParseRoomInvite(invite, room, secret))
             {
-                g_pendingInvite =
-                    secret.empty() ? room : room + "-" + secret;
+                std::string full = secret.empty() ? room : room + "-" + secret;
+
+                g_pendingInvite = server.empty() ? full : full + "@" + server;
             }
 
             return TRUE;
@@ -9202,7 +9430,7 @@ void ShowFatalError(
     MessageBoxW(
         nullptr,
         message,
-        L"Chega\u00ea",
+        L"Cola\u00ea",
         MB_OK | MB_ICONERROR
     );
 }
@@ -9223,7 +9451,7 @@ int AppMain(
     if (!invite.empty())
     {
         HWND running =
-            FindWindowW(L"ChegaeWindow", nullptr);
+            FindWindowW(L"ColaeWindow", nullptr);
 
         if (running)
         {
@@ -9323,12 +9551,12 @@ int AppMain(
     // LOG EM ARQUIVO
     //
     // O programa nao tem mais console: tudo que antes aparecia
-    // nele (std::cout / std::cerr) vai pra chegae.log,
+    // nele (std::cout / std::cerr) vai pra colae.log,
     // na pasta do programa. E o arquivo a enviar quando algo
     // der errado.
     //
     // Cada receiver aberto ao mesmo tempo escreve no SEU
-    // arquivo (chegae.log, chegae-2.log...).
+    // arquivo (colae.log, colae-2.log...).
     // Dois programas nao podem gravar no mesmo arquivo: sem
     // isso, o segundo receiver falhava ao abrir o log e
     // encerrava logo na abertura.
@@ -9343,7 +9571,7 @@ int AppMain(
         for (; instance <= 8; ++instance)
         {
             std::wstring name =
-                L"ChegaeInstance" +
+                L"ColaeInstance" +
                 std::to_wstring(instance);
 
             HANDLE marker =
@@ -9368,8 +9596,8 @@ int AppMain(
 
         std::string logName =
             instance == 1
-            ? "chegae.log"
-            : "chegae-" +
+            ? "colae.log"
+            : "colae-" +
               std::to_string(instance) +
               ".log";
 
@@ -9410,8 +9638,8 @@ int AppMain(
         // e um .dmp pra diagnostico (ver crash_report.h).
         std::wstring dumpName =
             instance == 1
-            ? L"chegae-crash.dmp"
-            : L"chegae-" +
+            ? L"colae-crash.dmp"
+            : L"colae-" +
               std::to_wstring(instance) +
               L"-crash.dmp";
 
@@ -9471,7 +9699,7 @@ int AppMain(
     // ========================================================
 
     const wchar_t CLASS_NAME[] =
-        L"ChegaeWindow";
+        L"ColaeWindow";
 
     HINSTANCE hInstance =
         GetModuleHandleW(nullptr);
@@ -9516,7 +9744,7 @@ int AppMain(
         CreateWindowExW(
             0,
             CLASS_NAME,
-            L"Chega\u00ea " STREAM_APP_VERSION_W,
+            L"Cola\u00ea " STREAM_APP_VERSION_W,
             WS_OVERLAPPEDWINDOW,
             CW_USEDEFAULT,
             CW_USEDEFAULT,

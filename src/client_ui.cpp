@@ -1150,7 +1150,9 @@ void StopSharingInternal()
 // ============================================================
 
 void ClientUiDrawFrame(
-    bool& outGoHome)
+    bool& outGoHome,
+    bool panelOnly = false,
+    bool* outOpenShareView = nullptr)
 {
     ClientViewNewFrame();
 
@@ -1220,21 +1222,40 @@ void ClientUiDrawFrame(
 
     SaveClientSettingsIfChanged();
 
-    ClientViewDrawBackground();
-
-    // Numa sala, sem tela de opcoes antes: vai direto escolher
-    // o que transmitir (qualidade, FPS e som ficam no painel da
-    // transmissao, com as escolhas salvas da ultima vez).
-    if (g_roomMode &&
-        g_state == State::Setup &&
-        !g_captureRunning)
-    {
-        BeginStreaming();
-    }
-
     ClientScreenActions actions;
 
-    DrawUi(actions);
+    if (panelOnly)
+    {
+        // Na lista da sala: so o painel das opcoes, por cima, e so
+        // transmitindo (sem a previa ao fundo nem as outras telas).
+        if (g_state == State::Live)
+        {
+            DrawUi(actions);
+        }
+    }
+    else
+    {
+        ClientViewDrawBackground();
+
+        // Numa sala, sem tela de opcoes antes: vai direto escolher
+        // o que transmitir (qualidade, FPS e som ficam no painel da
+        // transmissao, com as escolhas salvas da ultima vez).
+        if (g_roomMode &&
+            g_state == State::Setup &&
+            !g_captureRunning)
+        {
+            BeginStreaming();
+        }
+
+        DrawUi(actions);
+    }
+
+    // "Trocar o que esta sendo compartilhado" na lista da sala: o
+    // seletor fica na tela da transmissao.
+    if (panelOnly && actions.openPicker && outOpenShareView)
+    {
+        *outOpenShareView = true;
+    }
 
     outGoHome =
         actions.goHome;
@@ -1417,7 +1438,7 @@ bool Open(
     {
         outError =
             "O modo Transmitir não conseguiu iniciar. Veja o "
-            "chegae.log.";
+            "colae.log.";
 
         return false;
     }
@@ -1457,6 +1478,20 @@ void Draw(
 
     ClientUiDrawFrame(
         outGoHome);
+}
+
+
+void DrawOptionsPanel(
+    bool& outGoHome,
+    bool& outOpenShareView)
+{
+    outGoHome = false;
+    outOpenShareView = false;
+
+    if (!g_open)
+        return;
+
+    ClientUiDrawFrame(outGoHome, true, &outOpenShareView);
 }
 
 

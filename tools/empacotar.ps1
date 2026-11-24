@@ -1,15 +1,15 @@
 <#
 .SYNOPSIS
-    Monta o pacote para distribuir o Chegae (um .zip pronto
+    Monta o pacote para distribuir o Colae (um .zip pronto
     para mandar para outras pessoas).
 
 .DESCRIPTION
     1. Compila o projeto em Release (a menos que use -SemCompilar).
     2. Junta numa pasta:
-         Chegae.exe    (assistir e transmitir)
+         Colae.exe    (assistir e transmitir)
          ffmpeg.exe           (o verdadeiro - nao um atalho)
          LEIA-ME.txt
-    3. Compacta em dist\Chegae-<versao>-windows.zip e mostra
+    3. Compacta em dist\Colae-<versao>-windows.zip e mostra
        o SHA-256 do arquivo.
 
     O ffmpeg.exe e conferido antes de entrar no pacote: atalhos
@@ -85,7 +85,7 @@ if (-not $achou.Success)
 
 $versao = $achou.Groups[1].Value
 
-Write-Host "Chegae $versao"
+Write-Host "Colae $versao"
 
 
 # ------------------------------------------------------------
@@ -135,7 +135,7 @@ function Achar-Exe([string] $nome)
 
 Passo "Procurando os executaveis"
 
-$programa = Achar-Exe "Chegae.exe"
+$programa = Achar-Exe "Colae.exe"
 
 Write-Host "  $programa"
 
@@ -250,7 +250,7 @@ Write-Host ("  {0} ({1:N0} MB)" -f $ffmpegOk, ((Get-Item $ffmpegOk).Length / 1MB
 # 4. Montar a pasta e o .zip
 # ------------------------------------------------------------
 
-$nome = "Chegae-$versao"
+$nome = "Colae-$versao"
 $dist = Join-Path $projeto "dist"
 $pasta = Join-Path $dist $nome
 $zip = Join-Path $dist "$nome-windows.zip"
@@ -262,8 +262,15 @@ if (Test-Path $zip) { Remove-Item $zip -Force }
 
 New-Item -ItemType Directory -Path $pasta -Force | Out-Null
 
-Copy-Item $programa (Join-Path $pasta "Chegae.exe")
+Copy-Item $programa (Join-Path $pasta "Colae.exe")
 Copy-Item $ffmpegOk (Join-Path $pasta "ffmpeg.exe")
+
+# Licencas: a do Colae e os avisos de terceiros (o do FFmpeg/GPL
+# precisa ir junto do ffmpeg.exe).
+$raiz = Split-Path $PSScriptRoot -Parent
+Copy-Item (Join-Path $raiz "LICENSE") (Join-Path $pasta "LICENSE.txt")
+Copy-Item (Join-Path $raiz "THIRD_PARTY_NOTICES.md") (Join-Path $pasta "AVISOS-DE-TERCEIROS.txt")
+Copy-Item (Join-Path $raiz "PRIVACIDADE.md") (Join-Path $pasta "PRIVACIDADE.txt")
 
 # LEIA-ME com a versao preenchida. Gravado em UTF-8 com BOM, pra o
 # Bloco de Notas mostrar os acentos em qualquer Windows.

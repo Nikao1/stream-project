@@ -59,7 +59,7 @@ using namespace winrt::Windows::Graphics::DirectX::Direct3D11;
 // ============================================================
 //
 // Este arquivo era o programa stream-client inteiro. No
-// programa unico (Chegae.exe) ele virou o motor do modo
+// programa unico (Colae.exe) ele virou o motor do modo
 // Transmitir: captura, encoder, rede e audio - sem janela
 // propria. A janela, o Direct3D da tela e a interface sao do
 // programa (ver receiver.cpp); client_ui.cpp liga as duas

@@ -998,9 +998,9 @@ void UiWordmark()
     // por cima na cor de destaque.
     ImVec2 pos = ImGui::GetCursorScreenPos();
 
-    ImGui::TextUnformatted("Chegaê");
+    ImGui::TextUnformatted("Colaê");
 
-    float offset = ImGui::CalcTextSize("Chega").x;
+    float offset = ImGui::CalcTextSize("Cola").x;
 
     ImVec4 accent = UiColorAccent();
 

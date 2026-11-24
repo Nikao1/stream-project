@@ -39,7 +39,7 @@ struct RoomKey
 // Separa "rwrsap-k7f9qm2x" / "RWRSAP K7F9QM2X" / "RWRSAPK7F9QM2X"
 // em codigo (6) e segredo (8), em maiusculas. So o codigo (6)
 // tambem vale (segredo vazio). Aceita tambem o link de convite
-// (".../j#RWRSAP-K7F9QM2X", "chegae://sala/..."). false =
+// (".../j#RWRSAP-K7F9QM2X", "colae://sala/..."). false =
 // nao e um codigo de sala.
 bool ParseRoomInvite(
     const std::string& input,

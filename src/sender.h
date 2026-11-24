@@ -42,6 +42,15 @@ void Draw(
 
 bool IsOpen();
 
+// Na lista da sala, transmitindo: so o painel das opcoes (abre
+// com SetRoomPanelOpen, no lugar de SetRoomPanelAnchor). Sem a
+// previa ao fundo. outOpenShareView = pediu pra trocar o que e
+// compartilhado (o seletor fica na tela da transmissao).
+void DrawOptionsPanel(
+    bool& outGoHome,
+    bool& outOpenShareView
+);
+
 bool IsLive();
 
 // Modo sala: o painel troca o codigo da sessao por "Voltar para

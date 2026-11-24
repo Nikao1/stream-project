@@ -11,7 +11,7 @@
 // Guarda as escolhas do usuario (qualidade, FPS, volume,
 // tamanho da janela...) num .ini em
 //
-//   %APPDATA%\Chegae\<arquivo>
+//   %APPDATA%\Colae\<arquivo>
 //
 // - por usuario do Windows e fora da pasta do programa, entao
 // sobrevive a trocar de versao (descompactar o .zip novo em
@@ -62,7 +62,7 @@ public:
         const WINDOWPLACEMENT& placement
     );
 
-    // Outro arquivo na mesma pasta (%APPDATA%\Chegae).
+    // Outro arquivo na mesma pasta (%APPDATA%\Colae).
     // Vazio se a pasta nao existe.
     std::wstring SiblingPath(
         const wchar_t* fileName) const

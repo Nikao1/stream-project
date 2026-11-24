@@ -1772,7 +1772,7 @@ void DrawRoomScreen(
         {
             if (UiIconButton("##opcoesminha", UiIcon::Sliders, "Opções da transmissão"))
             {
-                actions.openShare = true;
+                actions.toggleShareOptions = true;
             }
 
             ImGui::SameLine();
@@ -1942,7 +1942,7 @@ void DrawRoomScreen(
 
             if (ImGui::Button("Opções##opcoestransm", ImVec2(half, 0.0f)))
             {
-                actions.openShare = true;
+                actions.toggleShareOptions = true;
             }
 
             ImGui::SameLine();
@@ -3838,6 +3838,94 @@ void DrawGeneralSettingsTab(
     UiMutedText(
         "Aparece para quem está na sala com você. Vai "
         "criptografada, como o chat - o servidor não vê a imagem.");
+
+    // Servidor de sinalizacao
+    if (model.serverInput)
+    {
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::Spacing();
+
+        UiFieldLabel("Servidor de sinalização");
+
+        UiMutedText(
+            "Só apresenta as pessoas umas às outras: tela, som e voz "
+            "vão direto entre vocês, e nomes e chat chegam "
+            "criptografados. Você pode usar o seu próprio (veja "
+            "HOSPEDAR.md no GitHub do projeto).");
+
+        ImGui::Spacing();
+
+        float testWidth =
+            ImGui::CalcTextSize("Testar").x + style.FramePadding.x * 2.0f;
+
+        float useWidth =
+            ImGui::CalcTextSize("Usar").x + style.FramePadding.x * 2.0f;
+
+        ImGui::SetNextItemWidth(
+            ImGui::GetContentRegionAvail().x - testWidth - useWidth -
+            style.ItemSpacing.x * 2.0f);
+
+        bool enter =
+            ImGui::InputTextWithHint(
+                "##servidor",
+                "https://meu-servidor.com  ou  http://192.168.0.10:8080",
+                model.serverInput,
+                model.serverInputSize,
+                ImGuiInputTextFlags_EnterReturnsTrue);
+
+        ImGui::SameLine();
+
+        ImGui::BeginDisabled(model.serverTesting);
+
+        if (ImGui::Button("Testar", ImVec2(testWidth, 0.0f)))
+        {
+            actions.serverTest = true;
+        }
+
+        ImGui::EndDisabled();
+
+        ImGui::SameLine();
+
+        if (UiPrimaryButtonSized("Usar", ImVec2(useWidth, 0.0f)) || enter)
+        {
+            actions.serverApply = true;
+        }
+
+        if (model.serverTesting)
+        {
+            UiSpinner(7.0f * UiScale());
+
+            ImGui::SameLine();
+
+            UiMutedText((std::string("Testando") + UiBusyDots()).c_str());
+        }
+        else if (!model.serverStatus.empty())
+        {
+            UiWrappedColored(
+                model.serverStatusOk ? UiColorSuccess() : UiColorError(),
+                model.serverStatus.c_str());
+        }
+
+        std::string current =
+            model.serverIsDefault
+            ? "Em uso: o servidor público do Colaê (padrão)."
+            : "Em uso: " + model.serverCurrent;
+
+        UiMutedText(current.c_str());
+
+        if (!model.serverIsDefault)
+        {
+            if (ImGui::SmallButton("Voltar ao padrão"))
+            {
+                actions.serverDefault = true;
+            }
+        }
+
+        UiMutedText(
+            "Vale para as próximas salas. O convite leva o servidor "
+            "junto: quem entra pelo link não precisa configurar nada.");
+    }
 }
 
 
@@ -4042,8 +4130,13 @@ void DrawSettingsWindow(
 
     // Fica na frente das outras telas - mas sem roubar o foco de
     // uma lista aberta (antes, os dropdowns fechavam na hora).
+    // (Nem no meio de um clique em outro lugar: tomar o foco ali
+    // cancelava o clique - ex.: a engrenagem que fecha esta
+    // janela.)
     if (model.openTab >= 0 ||
         (!ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) &&
+         !ImGui::IsAnyItemActive() &&
+         !ImGui::IsMouseDown(ImGuiMouseButton_Left) &&
          !ImGui::IsPopupOpen(
              "",
              ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel)))

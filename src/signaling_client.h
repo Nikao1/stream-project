@@ -35,6 +35,45 @@
 
 std::string GetSignalingUrl();
 
+// Servidor padrao (o publico, embutido no programa).
+std::string GetDefaultSignalingUrl();
+
+// Endereco digitado -> URL usavel ("meu.servidor.com" vira
+// "https://meu.servidor.com", sem "/" no fim). Vazio = invalido.
+std::string NormalizeSignalingUrl(
+    const std::string& text
+);
+
+// Servidor escolhido nas configuracoes (vazio = o padrao).
+void SignalingSetConfiguredUrl(
+    const std::string& url
+);
+
+std::string SignalingGetConfiguredUrl();
+
+// Servidor da sala atual (veio no convite). Vazio = o das
+// configuracoes. Vale ate ser trocado (ao sair da sala, limpar).
+void SignalingSetRoomUrl(
+    const std::string& url
+);
+
+// Convite com servidor junto: "colae://sala/COD?s=<url>",
+// "COD@servidor" ou "https://servidor/j#COD". Separa o convite do
+// servidor; false = o convite nao diz servidor.
+bool SplitInviteServer(
+    const std::string& input,
+    std::string& outInvite,
+    std::string& outServer
+);
+
+// Confere se ha um servidor do Colae nesse endereco (GET
+// /health). Demora ate alguns segundos - chamar fora da thread
+// da janela.
+bool SignalingTestServer(
+    const std::string& url,
+    std::string& outError
+);
+
 
 // true quando STREAM_SIGNALING_URL=none: o usuario escolheu nao
 // usar servidor de sinalizacao (a conexao e feita por convite

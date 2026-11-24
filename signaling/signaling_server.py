@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Chegae - servidor de sinalizacao
+Colae - servidor de sinalizacao
 
 Servidor HTTP minimo que so faz UMA coisa: apresentar as duas
 pontas de uma sessao. Ele NUNCA ve video nem audio - guarda
@@ -171,6 +171,10 @@ MAX_AVATAR_BYTES = 12000        # foto de perfil (96x96)
 # de um proxy da hospedagem (Render, Fly etc.): TRUST_PROXY=1
 TRUST_PROXY = os.environ.get("TRUST_PROXY", "0") == "1"
 
+# Registro de cada requisicao (IP + caminho) no log: desligado por
+# padrao (privacidade); LOG_REQUESTS=1 liga pra depurar.
+LOG_REQUESTS = os.environ.get("LOG_REQUESTS", "0") == "1"
+
 # ------------------------------------------------------------
 # Estado (em memoria - sessoes sao temporarias por natureza)
 # ------------------------------------------------------------
@@ -338,14 +342,14 @@ def _room_state(room):
 # Pagina do link de convite (GET /j#RWRSAP-K7F9QM2X). O codigo vai
 # depois do "#": o navegador NUNCA manda essa parte pro servidor -
 # a pagina (no navegador) le e abre o programa por
-# chegae://sala/<codigo>.
+# colae://sala/<codigo>.
 INVITE_PAGE = """<!doctype html>
 <html lang="pt-BR">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex">
-<title>Convite - Chega\u00ea</title>
+<title>Convite - Cola\u00ea</title>
 <style>
   body { margin: 0; min-height: 100vh; display: flex;
          align-items: center; justify-content: center;
@@ -372,8 +376,8 @@ INVITE_PAGE = """<!doctype html>
 <body>
 <main>
   <h1>Convite para uma sala</h1>
-  <p id="status">Abrindo o Chega\u00ea...</p>
-  <p><a id="open" class="btn" href="#">Abrir no Chega\u00ea</a></p>
+  <p id="status">Abrindo o Cola\u00ea...</p>
+  <p><a id="open" class="btn" href="#">Abrir no Cola\u00ea</a></p>
   <p class="muted">N\u00e3o abriu? Abra o programa e cole este c\u00f3digo
      na tela inicial:</p>
   <div class="row"><code id="code">-</code>
@@ -396,12 +400,16 @@ INVITE_PAGE = """<!doctype html>
     copy.disabled = true;
     return;
   }
-  var url = "chegae://sala/" + code;
+  // O servidor vai junto: quem abrir entra na sala neste mesmo
+  // servidor (pode ser um servidor proprio, nao o padrao).
+  var server = location.origin;
+  var url = "colae://sala/" + code + "?s=" + encodeURIComponent(server);
+  var full = code + "@" + server;
   open.href = url;
   document.getElementById("code").textContent = code;
   copy.onclick = function () {
     if (navigator.clipboard) {
-      navigator.clipboard.writeText(code).then(function () {
+      navigator.clipboard.writeText(full).then(function () {
         copy.textContent = "Copiado!";
       });
     }
@@ -456,6 +464,11 @@ class Handler(BaseHTTPRequestHandler):
         return {k: v[0] for k, v in parsed.items()}
 
     def log_message(self, fmt, *args):
+        # Sem registro de acesso por padrao: o servidor nao guarda
+        # (nem manda pro log da hospedagem) IPs nem codigos de sala.
+        # LOG_REQUESTS=1 liga, pra depurar.
+        if not LOG_REQUESTS:
+            return
         sys.stderr.write("[%s] %s %s\n" % (
             time.strftime("%H:%M:%S"), self._client_ip(), fmt % args))
 

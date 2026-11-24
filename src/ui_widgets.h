@@ -235,7 +235,7 @@ void UiLogo(
     float size
 );
 
-// "Chegaê" (o "ê" na cor de destaque), na fonte de titulo.
+// "Colaê" (o "ê" na cor de destaque), na fonte de titulo.
 void UiWordmark();
 
 

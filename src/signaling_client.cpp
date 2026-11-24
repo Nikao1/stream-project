@@ -12,6 +12,7 @@
 #include <cstdlib>
 #include <iostream>
 #include <map>
+#include <mutex>
 #include <sstream>
 
 #pragma comment(lib, "winhttp.lib")
@@ -116,7 +117,32 @@ bool ParseEndpoint(
 // etc.) retorna true com o status preenchido.
 // ------------------------------------------------------------
 
+bool HttpRequestTo(
+    const std::string& baseUrl,
+    const wchar_t* method,
+    const std::string& path,
+    const std::string& body,
+    DWORD& outStatus,
+    std::string& outResponse,
+    std::string& outError);
+
+
 bool HttpPost(
+    const std::string& path,
+    const std::string& body,
+    DWORD& outStatus,
+    std::string& outResponse,
+    std::string& outError)
+{
+    return HttpRequestTo(
+        GetSignalingUrl(), L"POST", path, body,
+        outStatus, outResponse, outError);
+}
+
+
+bool HttpRequestTo(
+    const std::string& baseUrl,
+    const wchar_t* method,
     const std::string& path,
     const std::string& body,
     DWORD& outStatus,
@@ -127,7 +153,7 @@ bool HttpPost(
     outResponse.clear();
 
     std::wstring url =
-        ToWide(GetSignalingUrl());
+        ToWide(baseUrl);
 
     wchar_t host[256]{};
 
@@ -145,7 +171,7 @@ bool HttpPost(
     {
         outError =
             "endereco do servidor de sinalizacao invalido: " +
-            GetSignalingUrl();
+            baseUrl;
 
         return false;
     }
@@ -163,7 +189,7 @@ bool HttpPost(
     {
         session =
             WinHttpOpen(
-                L"Chegae/1.0",
+                L"Colae/1.0",
                 WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
                 WINHTTP_NO_PROXY_NAME,
                 WINHTTP_NO_PROXY_BYPASS,
@@ -199,7 +225,7 @@ bool HttpPost(
         request =
             WinHttpOpenRequest(
                 connection,
-                L"POST",
+                method,
                 widePath.c_str(),
                 nullptr,
                 WINHTTP_NO_REFERER,
@@ -291,7 +317,7 @@ bool HttpPost(
     {
         outError =
             "sem resposta do servidor de sinalizacao (" +
-            GetSignalingUrl() +
+            baseUrl +
             ", erro " +
             std::to_string(GetLastError()) +
             ")";
@@ -404,6 +430,188 @@ bool HttpPostWaking(
 // GetSignalingUrl
 // ============================================================
 
+namespace
+{
+
+std::string UrlDecode(const std::string& text);
+
+std::mutex g_urlMutex;
+
+// Servidor escolhido nas configuracoes (vazio = o padrao) e o da
+// sala atual (veio no convite; vazio = nenhuma sala com servidor
+// proprio).
+std::string g_configuredUrl;
+std::string g_roomUrl;
+
+}
+
+
+std::string GetDefaultSignalingUrl()
+{
+    return DEFAULT_SIGNALING_URL;
+}
+
+
+std::string NormalizeSignalingUrl(
+    const std::string& text)
+{
+    std::string url;
+
+    // Sem espacos nas pontas.
+    size_t first = text.find_first_not_of(" \t\r\n");
+    size_t last = text.find_last_not_of(" \t\r\n");
+
+    if (first == std::string::npos)
+        return std::string();
+
+    url = text.substr(first, last - first + 1);
+
+    while (!url.empty() && url.back() == '/')
+    {
+        url.pop_back();
+    }
+
+    if (url.empty())
+        return url;
+
+    // Sem esquema: HTTPS (o normal de servicos hospedados).
+    if (url.find("://") == std::string::npos)
+    {
+        url = "https://" + url;
+    }
+
+    if (url.rfind("http://", 0) != 0 && url.rfind("https://", 0) != 0)
+        return std::string();
+
+    // So ASCII e sem espacos no meio (vai pro WinHTTP e pra URLs).
+    for (char c : url)
+    {
+        if (static_cast<unsigned char>(c) <= 32 || static_cast<unsigned char>(c) >= 127)
+            return std::string();
+    }
+
+    return url;
+}
+
+
+void SignalingSetConfiguredUrl(
+    const std::string& url)
+{
+    std::lock_guard<std::mutex> lock(g_urlMutex);
+
+    g_configuredUrl = NormalizeSignalingUrl(url);
+}
+
+
+std::string SignalingGetConfiguredUrl()
+{
+    std::lock_guard<std::mutex> lock(g_urlMutex);
+
+    return g_configuredUrl.empty() ? std::string(DEFAULT_SIGNALING_URL) : g_configuredUrl;
+}
+
+
+void SignalingSetRoomUrl(
+    const std::string& url)
+{
+    std::lock_guard<std::mutex> lock(g_urlMutex);
+
+    g_roomUrl = NormalizeSignalingUrl(url);
+}
+
+
+bool SplitInviteServer(
+    const std::string& input,
+    std::string& outInvite,
+    std::string& outServer)
+{
+    outInvite = input;
+    outServer.clear();
+
+    // "...?s=<servidor codificado>" (link colae:// vindo da
+    // pagina de convite)
+    size_t query = input.find("?s=");
+
+    if (query != std::string::npos)
+    {
+        outInvite = input.substr(0, query);
+
+        std::string encoded = input.substr(query + 3);
+
+        size_t end = encoded.find_first_of("&\" ");
+
+        if (end != std::string::npos)
+        {
+            encoded = encoded.substr(0, end);
+        }
+
+        outServer = NormalizeSignalingUrl(UrlDecode(encoded));
+
+        return !outServer.empty();
+    }
+
+    // "CODIGO@servidor" (codigo copiado de uma sala num servidor
+    // proprio)
+    size_t at = input.find('@');
+
+    if (at != std::string::npos && input.find("://") > at)
+    {
+        outInvite = input.substr(0, at);
+        outServer = NormalizeSignalingUrl(input.substr(at + 1));
+
+        return !outServer.empty();
+    }
+
+    // Link da pagina de convite: "http(s)://servidor/j#CODIGO" - o
+    // proprio servidor da pagina.
+    size_t page = input.find("/j#");
+
+    if (page != std::string::npos &&
+        (input.rfind("http://", 0) == 0 || input.rfind("https://", 0) == 0))
+    {
+        outServer = NormalizeSignalingUrl(input.substr(0, page));
+
+        return !outServer.empty();
+    }
+
+    return false;
+}
+
+
+bool SignalingTestServer(
+    const std::string& url,
+    std::string& outError)
+{
+    std::string base = NormalizeSignalingUrl(url);
+
+    if (base.empty())
+    {
+        outError = "endereço inválido";
+
+        return false;
+    }
+
+    DWORD status = 0;
+    std::string response;
+
+    if (!HttpRequestTo(base, L"GET", "/health", std::string(), status, response, outError))
+    {
+        outError = "sem resposta";
+
+        return false;
+    }
+
+    if (status != 200 || response.find("ok=1") == std::string::npos)
+    {
+        outError = "respondeu, mas não é um servidor do Colaê (HTTP " + std::to_string(status) + ")";
+
+        return false;
+    }
+
+    return true;
+}
+
+
 std::string GetSignalingUrl()
 {
     char value[512]{};
@@ -427,6 +635,14 @@ std::string GetSignalingUrl()
         if (!url.empty())
             return url;
     }
+
+    std::lock_guard<std::mutex> lock(g_urlMutex);
+
+    if (!g_roomUrl.empty())
+        return g_roomUrl;
+
+    if (!g_configuredUrl.empty())
+        return g_configuredUrl;
 
     return DEFAULT_SIGNALING_URL;
 }

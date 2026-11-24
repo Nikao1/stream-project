@@ -1,19 +1,23 @@
-CHEGAÊ {VERSAO}
-===============
+COLAÊ {VERSAO}
+==============
 
-Chegaê: compartilhe a tela (ou uma janela) com som e converse
+Colaê: compartilhe a tela (ou uma janela) com som e converse
 por voz, direto de um computador para outro. Numa sala, várias pessoas podem
 transmitir e cada uma escolhe quem quer assistir.
 
 Os dois arquivos precisam ficar juntos na mesma pasta:
 
-  Chegae.exe    o programa
+  Colae.exe    o programa
   ffmpeg.exe    usado pelo programa (não apague)
+
+Também vêm a licença (LICENSE.txt), os avisos de componentes de
+terceiros (AVISOS-DE-TERCEIROS.txt) e o que o programa faz com os
+seus dados (PRIVACIDADE.txt).
 
 
 SALA (o jeito normal de usar)
 -----------------------------
-1. Abra o Chegae.exe e escreva seu nome.
+1. Abra o Colae.exe e escreva seu nome.
 2. Uma pessoa clica em "Criar uma sala" e "Copiar convite", e
    manda o link para os outros (WhatsApp, Discord...). Clicando
    no link, o programa abre direto na sala.
@@ -89,6 +93,14 @@ Dentro da sala:
 - Se a conexão cair, o programa tenta voltar sozinho.
 - Cabem até 10 pessoas por sala (todas na voz e no chat); cada transmissão aceita até 8
   pessoas assistindo.
+
+SERVIDOR PRÓPRIO (opcional)
+---------------------------
+O servidor do Colaê só apresenta as pessoas: tela, som e voz vão
+direto entre vocês, e nomes e chat vão criptografados. Se preferir,
+use o seu próprio servidor: engrenagem > Geral > Servidor de
+sinalização (como hospedar: HOSPEDAR.md no GitHub do projeto). O
+convite leva o servidor junto - quem entra não precisa configurar.
 
 CANAL DE VOZ
 ------------
@@ -173,7 +185,7 @@ Se aparecer "O Windows bloqueou a captura de tela", use o botão
 SE ALGO DER ERRADO
 ------------------
 O programa grava o que aconteceu em arquivos nesta pasta:
-chegae.log e ffmpeg-decoder.log. Se ele fechar
+colae.log e ffmpeg-decoder.log. Se ele fechar
 sozinho, aparece também um arquivo .dmp. Mande esses arquivos
 para quem te passou o programa.
 

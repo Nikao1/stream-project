@@ -433,7 +433,7 @@ std::string VoiceCapture::ErrorText() const
     default:
         return
             "Não foi possível abrir o microfone. Veja o "
-            "chegae.log.";
+            "colae.log.";
     }
 }
 

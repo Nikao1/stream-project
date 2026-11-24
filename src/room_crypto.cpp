@@ -107,7 +107,7 @@ bool ParseRoomInvite(
     outSecret.clear();
 
     // Link de convite: "https://.../j#RWRSAP-K7F9QM2X" ou
-    // "chegae://sala/RWRSAP-K7F9QM2X" - fica o que vem
+    // "colae://sala/RWRSAP-K7F9QM2X" - fica o que vem
     // depois do # (ou da ultima barra).
     std::string text = input;
 

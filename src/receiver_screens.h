@@ -309,8 +309,12 @@ struct RoomScreenActions
     // Indice em presenters (-1 = nenhum).
     int watch = -1;
 
-    // "Transmitir minha tela" / "Opções da transmissão"
+    // "Transmitir minha tela"
     bool openShare = false;
+
+    // Transmitindo: abrir/fechar as opcoes da transmissao ali
+    // mesmo (sem ir pra tela da transmissao).
+    bool toggleShareOptions = false;
 
     bool stopShare = false;
 
@@ -671,6 +675,18 @@ struct SettingsModel
 
     // Linha esperando a tecla (-1 = nenhuma).
     int capturing = -1;
+
+    // Servidor de sinalizacao (aba Geral). serverInput: campo
+    // editavel; serverCurrent: o que esta em uso; serverIsDefault:
+    // e o publico; serverStatus: resultado do "Testar" (vazio =
+    // nada); serverStatusOk: verde/vermelho; serverTesting.
+    char* serverInput = nullptr;
+    size_t serverInputSize = 0;
+    std::string serverCurrent;
+    bool serverIsDefault = true;
+    std::string serverStatus;
+    bool serverStatusOk = false;
+    bool serverTesting = false;
 };
 
 struct SettingsActions
@@ -704,6 +720,11 @@ struct SettingsActions
     bool restoreDefaults = false;
 
     bool close = false;
+
+    // Servidor: usar o digitado / voltar ao padrao / testar.
+    bool serverApply = false;
+    bool serverDefault = false;
+    bool serverTest = false;
 };
 
 void DrawSettingsWindow(
