@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.20)
 
 project(stream-project
-    VERSION 0.7.7
+    VERSION 0.8.4
     LANGUAGES C CXX
 )
 
@@ -188,7 +188,7 @@ target_compile_definitions(imgui PRIVATE
 
 
 # ============================================================
-# StreamProject.exe - programa unico (Assistir + Transmitir)
+# Chegae.exe - programa unico (Assistir + Transmitir)
 # ============================================================
 #
 # WIN32 = programa de janela: o Windows nao abre console junto.
@@ -281,12 +281,12 @@ add_executable(stream-project WIN32
     src/audio_protocol.h
 
     src/version.h.in
-    resources/stream-project.rc
+    resources/chegae.rc
 )
 
 
 set_target_properties(stream-project PROPERTIES
-    OUTPUT_NAME "StreamProject"
+    OUTPUT_NAME "Chegae"
 )
 
 

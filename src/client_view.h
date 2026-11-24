@@ -38,6 +38,11 @@ void ClientViewClearPreview();
 // interface (entre UiBeginFrame e UiEndFrame).
 void ClientViewDrawBackground();
 
+// Largura a direita ocupada pelo painel da sala.
+void ClientViewSetRightInset(
+    float inset
+);
+
 // Miniaturas do seletor: cada uma vira uma textura. Devolve o
 // identificador pra desenhar com o ImGui (nullptr se falhou).
 // Valem ate o proximo ClientViewClearThumbnails.

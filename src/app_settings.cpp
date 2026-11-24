@@ -27,7 +27,19 @@ AppSettings::AppSettings(
     }
 
     std::wstring folder =
-        std::wstring(appData) + L"\\StreamProject";
+        std::wstring(appData) + L"\\Chegae";
+
+    // Versoes "Stream Project" guardavam em ...\StreamProject:
+    // na primeira vez, a pasta muda de nome (nada se perde).
+    {
+        std::wstring old = std::wstring(appData) + L"\\StreamProject";
+
+        if (GetFileAttributesW(folder.c_str()) == INVALID_FILE_ATTRIBUTES &&
+            GetFileAttributesW(old.c_str()) != INVALID_FILE_ATTRIBUTES)
+        {
+            MoveFileW(old.c_str(), folder.c_str());
+        }
+    }
 
     CoTaskMemFree(appData);
 

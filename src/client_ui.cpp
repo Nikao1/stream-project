@@ -852,6 +852,9 @@ void DrawUi(
     model.replyInput = g_replyInput;
     model.replyInputSize = sizeof(g_replyInput);
 
+    model.audioDevices = &g_audioDeviceNames;
+    model.audioIndex = &g_audioIndex;
+
     if (g_roomMode)
     {
         model.roomPanelOpen = &g_roomPanelOpen;
@@ -1219,6 +1222,16 @@ void ClientUiDrawFrame(
 
     ClientViewDrawBackground();
 
+    // Numa sala, sem tela de opcoes antes: vai direto escolher
+    // o que transmitir (qualidade, FPS e som ficam no painel da
+    // transmissao, com as escolhas salvas da ultima vez).
+    if (g_roomMode &&
+        g_state == State::Setup &&
+        !g_captureRunning)
+    {
+        BeginStreaming();
+    }
+
     ClientScreenActions actions;
 
     DrawUi(actions);
@@ -1271,6 +1284,17 @@ void ClientUiDrawFrame(
         ApplyQualitySelection();
     }
 
+    if (actions.audioChanged)
+    {
+        g_audioCapture.SelectDevice(
+            g_audioIndex >= 1 &&
+            g_audioIndex <= static_cast<int>(g_audioDevices.size())
+            ? g_audioDevices[g_audioIndex - 1].id
+            : std::wstring());
+
+        g_audioRestartRequested = true;
+    }
+
     if (actions.openPicker)
     {
         OpenPicker();
@@ -1283,7 +1307,17 @@ void ClientUiDrawFrame(
         RefreshPickerLists();
     }
 
-    if (actions.cancelPicker)
+    // Na sala, desistir antes da primeira escolha volta pra
+    // lista (a sessao criada e descartada).
+    if (actions.cancelPicker &&
+        g_roomMode &&
+        !g_captureRunning)
+    {
+        StopSharingInternal();
+
+        outGoHome = true;
+    }
+    else if (actions.cancelPicker)
     {
         // Ja transmitindo: volta pra transmissao. Antes da
         // primeira escolha: volta pras opcoes.
@@ -1383,7 +1417,7 @@ bool Open(
     {
         outError =
             "O modo Transmitir não conseguiu iniciar. Veja o "
-            "stream-project.log.";
+            "chegae.log.";
 
         return false;
     }
@@ -1518,6 +1552,13 @@ void StopSharing()
     {
         StopSharingInternal();
     }
+}
+
+
+void SetPreviewRightInset(
+    float inset)
+{
+    ClientViewSetRightInset(inset);
 }
 
 

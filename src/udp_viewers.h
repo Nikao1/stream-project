@@ -31,6 +31,11 @@
 // estimativa no painel do modo Transmitir.
 constexpr size_t MAX_VIEWERS = 8;
 
+// Capacidade da lista: o canal de voz aceita mais conexoes que
+// uma transmissao (sala de 10 = 9 outras pessoas ouvindo; a voz
+// e leve, ~24 kbps por pessoa). Ver UdpViewerList::SetLimit.
+constexpr size_t MAX_LIST_CAPACITY = 9;
+
 constexpr ULONGLONG VIEWER_TIMEOUT_MS = 15000;
 
 
@@ -47,6 +52,16 @@ struct UdpViewer
 class UdpViewerList
 {
 public:
+
+    // Quantos cabem (padrao: MAX_VIEWERS, o de uma transmissao;
+    // no maximo MAX_LIST_CAPACITY).
+    void SetLimit(
+        size_t limit)
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+
+        m_limit = limit < MAX_LIST_CAPACITY ? limit : MAX_LIST_CAPACITY;
+    }
 
     enum class TouchResult
     {
@@ -93,7 +108,7 @@ public:
         if (!sessionKey)
             return TouchResult::Unknown;
 
-        if (m_viewers.size() >= MAX_VIEWERS)
+        if (m_viewers.size() >= m_limit)
             return TouchResult::Full;
 
         Entry entry{};
@@ -145,7 +160,7 @@ public:
     // alocar memoria - e chamado a cada frame/pacote enviado).
     // Devolve quantos copiou.
     size_t Snapshot(
-        UdpViewer outViewers[MAX_VIEWERS])
+        UdpViewer outViewers[MAX_LIST_CAPACITY])
     {
         std::lock_guard<std::mutex> lock(m_mutex);
 
@@ -237,6 +252,8 @@ private:
             a.sin_port == b.sin_port;
     }
 
+
+    size_t m_limit = MAX_VIEWERS;
 
     std::mutex m_mutex;
 

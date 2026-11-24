@@ -76,6 +76,12 @@ bool CaptureRoomThumbnail(
 // Quantas pessoas estao assistindo esta transmissao.
 int ViewerCount();
 
+// Largura a direita ocupada pelo painel Pessoas/Chat: a previa
+// da transmissao encolhe pro lado (como o video de quem assiste).
+void SetPreviewRightInset(
+    float inset
+);
+
 // Numa sala, o painel da transmissao abre pela barra de icones
 // de baixo (receiver.cpp), logo acima dela.
 bool RoomPanelOpen();

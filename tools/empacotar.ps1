@@ -1,15 +1,15 @@
 <#
 .SYNOPSIS
-    Monta o pacote para distribuir o Stream Project (um .zip pronto
+    Monta o pacote para distribuir o Chegae (um .zip pronto
     para mandar para outras pessoas).
 
 .DESCRIPTION
     1. Compila o projeto em Release (a menos que use -SemCompilar).
     2. Junta numa pasta:
-         StreamProject.exe    (assistir e transmitir)
+         Chegae.exe    (assistir e transmitir)
          ffmpeg.exe           (o verdadeiro - nao um atalho)
          LEIA-ME.txt
-    3. Compacta em dist\StreamProject-<versao>-windows.zip e mostra
+    3. Compacta em dist\Chegae-<versao>-windows.zip e mostra
        o SHA-256 do arquivo.
 
     O ffmpeg.exe e conferido antes de entrar no pacote: atalhos
@@ -85,7 +85,7 @@ if (-not $achou.Success)
 
 $versao = $achou.Groups[1].Value
 
-Write-Host "Stream Project $versao"
+Write-Host "Chegae $versao"
 
 
 # ------------------------------------------------------------
@@ -135,7 +135,7 @@ function Achar-Exe([string] $nome)
 
 Passo "Procurando os executaveis"
 
-$programa = Achar-Exe "StreamProject.exe"
+$programa = Achar-Exe "Chegae.exe"
 
 Write-Host "  $programa"
 
@@ -250,7 +250,7 @@ Write-Host ("  {0} ({1:N0} MB)" -f $ffmpegOk, ((Get-Item $ffmpegOk).Length / 1MB
 # 4. Montar a pasta e o .zip
 # ------------------------------------------------------------
 
-$nome = "StreamProject-$versao"
+$nome = "Chegae-$versao"
 $dist = Join-Path $projeto "dist"
 $pasta = Join-Path $dist $nome
 $zip = Join-Path $dist "$nome-windows.zip"
@@ -262,7 +262,7 @@ if (Test-Path $zip) { Remove-Item $zip -Force }
 
 New-Item -ItemType Directory -Path $pasta -Force | Out-Null
 
-Copy-Item $programa (Join-Path $pasta "StreamProject.exe")
+Copy-Item $programa (Join-Path $pasta "Chegae.exe")
 Copy-Item $ffmpegOk (Join-Path $pasta "ffmpeg.exe")
 
 # LEIA-ME com a versao preenchida. Gravado em UTF-8 com BOM, pra o

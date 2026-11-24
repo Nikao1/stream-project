@@ -469,7 +469,7 @@ bool UdpServer::SendVideoFrame(
     // Foto da lista de espectadores neste instante: o frame
     // inteiro vai pros mesmos destinos, mesmo que alguem entre
     // ou saia no meio do envio.
-    UdpViewer viewers[MAX_VIEWERS];
+    UdpViewer viewers[MAX_LIST_CAPACITY];
 
     size_t viewerCount =
         m_viewers.Snapshot(viewers);
@@ -580,7 +580,7 @@ void UdpServer::SendAlivePings()
 
     m_lastSendMs = now;
 
-    UdpViewer viewers[MAX_VIEWERS];
+    UdpViewer viewers[MAX_LIST_CAPACITY];
 
     size_t count = m_viewers.Snapshot(viewers);
 

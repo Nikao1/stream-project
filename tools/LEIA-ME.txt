@@ -1,19 +1,19 @@
-STREAM PROJECT {VERSAO}
-=======================
+CHEGAÊ {VERSAO}
+===============
 
-Compartilhe a tela (ou uma janela) com som, direto de um
-computador para outro. Numa sala, várias pessoas podem
+Chegaê: compartilhe a tela (ou uma janela) com som e converse
+por voz, direto de um computador para outro. Numa sala, várias pessoas podem
 transmitir e cada uma escolhe quem quer assistir.
 
 Os dois arquivos precisam ficar juntos na mesma pasta:
 
-  StreamProject.exe    o programa
-  ffmpeg.exe           usado pelo programa (não apague)
+  Chegae.exe    o programa
+  ffmpeg.exe    usado pelo programa (não apague)
 
 
 SALA (o jeito normal de usar)
 -----------------------------
-1. Abra o StreamProject.exe e escreva seu nome.
+1. Abra o Chegae.exe e escreva seu nome.
 2. Uma pessoa clica em "Criar uma sala" e "Copiar convite", e
    manda o link para os outros (WhatsApp, Discord...). Clicando
    no link, o programa abre direto na sala.
@@ -31,12 +31,29 @@ também criptografadas. O servidor só fica sabendo o que
 precisa para conectar as pessoas: que a sala existe, quantas
 pessoas estão nela e os endereços de internet.
 
+Tela inicial:
+- Na primeira vez, o programa pede só seu nome e (se quiser) uma
+  foto. Depois, o lápis ao lado do nome muda os dois.
+- Copiou um convite de sala? Ao abrir o programa aparece
+  "Convite copiado" com o botão Entrar.
+- Salas recentes: as últimas 5 salas em que você entrou, para
+  voltar com um clique (ficam salvas só neste PC; a sala some
+  da lista se já tiver fechado).
+- "Testar microfone" abre o teste do microfone sem entrar em
+  sala nenhuma.
+
 Dentro da sala:
 - A sala ocupa a janela inteira: as transmissões à esquerda,
   em cartões com prévia, e Pessoas/Chat à direita (o mesmo
   painel do vídeo, com a voz no rodapé). Em janela estreita, o
   painel abre pelo botão de pessoas no topo.
-- Dê um nome à sala pelo lápis ao lado do título (opcional; todo
+- A borda esquerda do painel Pessoas/Chat pode ser arrastada
+  para deixá-lo mais largo ou mais estreito (fica salvo).
+- Ao clicar em "Transmitir minha tela" você já escolhe o que
+  compartilhar; qualidade, FPS e som ficam no painel da
+  transmissão, depois que ela começa.
+- Dê um nome à sala na tela inicial (opcional) ou pelo lápis ao
+  lado do título (todo
   mundo vê, e o servidor não consegue ler). O código fica nos
   botões "Copiar convite" e "Copiar código".
 - Na lista de pessoas, um sinal ao lado do nome: bolinha verde =
@@ -70,7 +87,7 @@ Dentro da sala:
   compartilhado, qualidade, quem assiste), o quadrado vermelho
   para a transmissão e a porta volta para a sala.
 - Se a conexão cair, o programa tenta voltar sozinho.
-- Cabem até 9 pessoas por sala; cada transmissão aceita até 8
+- Cabem até 10 pessoas por sala (todas na voz e no chat); cada transmissão aceita até 8
   pessoas assistindo.
 
 CANAL DE VOZ
@@ -156,7 +173,7 @@ Se aparecer "O Windows bloqueou a captura de tela", use o botão
 SE ALGO DER ERRADO
 ------------------
 O programa grava o que aconteceu em arquivos nesta pasta:
-stream-project.log e ffmpeg-decoder.log. Se ele fechar
+chegae.log e ffmpeg-decoder.log. Se ele fechar
 sozinho, aparece também um arquivo .dmp. Mande esses arquivos
 para quem te passou o programa.
 

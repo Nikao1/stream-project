@@ -240,20 +240,25 @@ void DrawHomeScreen(
     HomeScreenModel& model,
     HomeScreenActions& actions)
 {
-    UiBeginCenteredPanel("##inicio", 440.0f);
+    const ImGuiStyle& style = ImGui::GetStyle();
+
+    // Largura: duas colunas (criar | entrar) se a janela deixar.
+    float panelWidth =
+        (std::min)(600.0f, ImGui::GetIO().DisplaySize.x / UiScale() - 40.0f);
+
+    UiBeginCenteredPanel("##inicio", model.firstRun ? 420.0f : panelWidth);
+
+    // ---------------- Titulo + engrenagem ----------------
 
     UiLogo(ImGui::GetFrameHeight() * 1.7f);
 
     ImGui::SameLine();
 
-    ImGui::SetCursorPosY(
-        ImGui::GetCursorPosY() + 6.0f * UiScale());
+    ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 6.0f * UiScale());
 
-    UiTitle("Stream Project");
+    UiWordmark();
 
-    // Configuracoes (canto direito do titulo).
-    ImGui::SameLine(
-        ImGui::GetContentRegionMax().x - ImGui::GetFrameHeight());
+    ImGui::SameLine(ImGui::GetContentRegionMax().x - ImGui::GetFrameHeight());
 
     if (GearButton("##inicio_config", "Configurações"))
     {
@@ -262,69 +267,342 @@ void DrawHomeScreen(
 
     UiMutedText(
         "Tela e som direto de um computador para outro, sem "
-        "passar por servidor."
-    );
+        "passar por servidor.");
 
     ImGui::Spacing();
+
+
+    // ---------------- Primeira vez: so nome e foto ----------------
+
+    if (model.firstRun)
+    {
+        UiFieldLabel("Como os outros vão te ver?");
+
+        ImGui::Spacing();
+
+        float avatar = ImGui::GetFrameHeight() * 2.2f;
+
+        ImVec2 avatarPos = ImGui::GetCursorScreenPos();
+
+        UiAvatar(
+            model.name && model.name[0] ? model.name : "?",
+            avatar, false, 0.0f, model.avatar);
+
+        ImGui::SetCursorScreenPos(avatarPos);
+
+        if (ImGui::InvisibleButton("##fotoinicio", ImVec2(avatar, avatar)))
+        {
+            actions.chooseAvatar = true;
+        }
+
+        if (ImGui::IsItemHovered())
+        {
+            ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+            ImGui::SetTooltip("Escolher uma foto (opcional)");
+        }
+
+        ImGui::SameLine();
+
+        ImGui::BeginGroup();
+
+        ImGui::SetCursorPosY(
+            ImGui::GetCursorPosY() + (avatar - ImGui::GetFrameHeight()) * 0.5f);
+
+        ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x);
+
+        if (ImGui::IsWindowAppearing())
+        {
+            ImGui::SetKeyboardFocusHere();
+        }
+
+        bool submitted =
+            ImGui::InputTextWithHint(
+                "##nomeinicio",
+                "Seu nome",
+                model.name,
+                model.nameSize,
+                ImGuiInputTextFlags_EnterReturnsTrue);
+
+        ImGui::EndGroup();
+
+        if (!model.avatarError.empty())
+        {
+            UiWrappedColored(UiColorError(), model.avatarError.c_str());
+        }
+
+        ImGui::Spacing();
+
+        bool hasName = false;
+
+        for (const char* c = model.name; c && *c; ++c)
+        {
+            hasName |= *c != ' ' && *c != '\t';
+        }
+
+        if (UiPrimaryButton("Continuar", hasName) || (submitted && hasName))
+        {
+            actions.finishProfile = true;
+        }
+
+        UiMutedText("Clique na bolinha para escolher uma foto (opcional).");
+
+        UiEndPanel();
+
+        return;
+    }
+
+
+    // ---------------- Convite copiado ----------------
+
+    if (!model.clipboardRoom.empty() && !model.busy)
+    {
+        ImVec4 accent = UiColorAccent();
+
+        ImVec2 start = ImGui::GetCursorScreenPos();
+
+        float width = ImGui::GetContentRegionAvail().x;
+
+        float height = ImGui::GetFrameHeight() + style.FramePadding.y * 4.0f;
+
+        ImGui::GetWindowDrawList()->AddRectFilled(
+            start, ImVec2(start.x + width, start.y + height),
+            ImGui::ColorConvertFloat4ToU32(ImVec4(accent.x, accent.y, accent.z, 0.14f)),
+            8.0f * UiScale());
+
+        float pad = style.FramePadding.y * 2.0f;
+
+        ImGui::SetCursorScreenPos(ImVec2(start.x + pad * 1.5f, start.y + pad));
+
+        ImGui::AlignTextToFramePadding();
+
+        ImGui::TextUnformatted(
+            ("Convite copiado: sala " + model.clipboardRoom).c_str());
+
+        float close = ImGui::GetFrameHeight();
+
+        float enterWidth =
+            ImGui::CalcTextSize("Entrar").x + style.FramePadding.x * 4.0f;
+
+        ImGui::SameLine(
+            ImGui::GetContentRegionMax().x - enterWidth - close -
+            style.ItemSpacing.x - pad);
+
+        if (UiPrimaryButtonSized("Entrar##colado", ImVec2(enterWidth, 0.0f)))
+        {
+            actions.joinClipboard = true;
+        }
+
+        ImGui::SameLine();
+
+        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
+        ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 0.0f);
+
+        if (UiIconButton("##ignorarcolado", UiIcon::Close, "Ignorar"))
+        {
+            actions.dismissClipboard = true;
+        }
+
+        ImGui::PopStyleVar();
+        ImGui::PopStyleColor();
+
+        ImGui::SetCursorScreenPos(ImVec2(start.x, start.y + height));
+
+        ImGui::Dummy(ImVec2(width, style.ItemSpacing.y));
+    }
+
+
+    // ---------------- Perfil ----------------
+
+    {
+        float avatar = ImGui::GetFrameHeight() * 1.5f;
+
+        UiAvatar(model.name, avatar, false, 0.0f, model.avatar);
+
+        ImGui::SameLine();
+
+        ImGui::SetCursorPosY(
+            ImGui::GetCursorPosY() + (avatar - ImGui::GetFrameHeight()) * 0.5f);
+
+        ImGui::AlignTextToFramePadding();
+
+        ImGui::TextUnformatted(model.name);
+
+        ImGui::SameLine();
+
+        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
+        ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 0.0f);
+
+        static char editName[64] = "";
+
+        if (UiIconButton("##editarperfil", UiIcon::Edit, "Mudar nome ou foto"))
+        {
+            strncpy(editName, model.name, sizeof(editName) - 1);
+            editName[sizeof(editName) - 1] = '\0';
+
+            ImGui::OpenPopup("##perfil");
+        }
+
+        ImGui::PopStyleVar();
+        ImGui::PopStyleColor();
+
+        // Testar microfone (canto direito).
+        const char* testLabel = "      Testar microfone";
+
+        float testWidth =
+            ImGui::CalcTextSize(testLabel).x + style.FramePadding.x * 2.0f;
+
+        ImGui::SameLine(ImGui::GetContentRegionMax().x - testWidth);
+
+        if (ImGui::Button(testLabel, ImVec2(testWidth, 0.0f)))
+        {
+            actions.testMicrophone = true;
+        }
+
+        ImVec2 testMin = ImGui::GetItemRectMin();
+
+        UiMicIconAt(
+            ImVec2(testMin.x + style.FramePadding.x * 1.2f, testMin.y + style.FramePadding.y),
+            ImGui::GetTextLineHeight(),
+            ImGui::GetColorU32(ImGuiCol_Text),
+            false);
+
+        if (ImGui::BeginPopup("##perfil"))
+        {
+            UiMutedText("Seu nome");
+
+            ImGui::SetNextItemWidth(260.0f * UiScale());
+
+            if (ImGui::IsWindowAppearing())
+            {
+                ImGui::SetKeyboardFocusHere();
+            }
+
+            bool enter =
+                ImGui::InputText(
+                    "##nomeperfil", editName, sizeof(editName),
+                    ImGuiInputTextFlags_EnterReturnsTrue);
+
+            float half = (260.0f * UiScale() - style.ItemSpacing.x) * 0.5f;
+
+            if (ImGui::Button("Trocar foto", ImVec2(half, 0.0f)))
+            {
+                actions.chooseAvatar = true;
+            }
+
+            ImGui::SameLine();
+
+            ImGui::BeginDisabled(model.avatar == nullptr);
+
+            if (ImGui::Button("Remover foto", ImVec2(half, 0.0f)))
+            {
+                actions.removeAvatar = true;
+            }
+
+            ImGui::EndDisabled();
+
+            if (!model.avatarError.empty())
+            {
+                UiWrappedColored(UiColorError(), model.avatarError.c_str());
+            }
+
+            bool hasName = false;
+
+            for (const char* c = editName; *c; ++c)
+            {
+                hasName |= *c != ' ' && *c != '\t';
+            }
+
+            if ((UiPrimaryButton("Salvar", hasName) || enter) && hasName)
+            {
+                strncpy(model.name, editName, model.nameSize - 1);
+                model.name[model.nameSize - 1] = '\0';
+
+                actions.nameChanged = true;
+
+                ImGui::CloseCurrentPopup();
+            }
+
+            ImGui::EndPopup();
+        }
+    }
+
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::Spacing();
+
+
+    // ---------------- Criar | Entrar ----------------
 
     ImGui::BeginDisabled(model.busy);
 
-    UiFieldLabel("Seu nome");
+    bool twoColumns = ImGui::GetContentRegionAvail().x >= 480.0f * UiScale();
 
-    ImGui::SetNextItemWidth(
-        ImGui::GetContentRegionAvail().x);
+    float column =
+        twoColumns
+        ? (ImGui::GetContentRegionAvail().x - style.ItemSpacing.x * 3.0f) * 0.5f
+        : ImGui::GetContentRegionAvail().x;
 
-    ImGui::InputTextWithHint(
-        "##nome",
-        "Como os outros vão te ver na sala",
-        model.name,
-        model.nameSize
-    );
+    float columnsTop = ImGui::GetCursorPosY();
 
-    ImGui::Spacing();
+    ImGui::BeginGroup();
 
-    if (UiPrimaryButton(
-            model.busy ? "Aguarde..." : "Criar uma sala",
-            !model.busy))
+    UiFieldLabel("Criar uma sala");
+
+    if (model.roomTitle)
+    {
+        ImGui::SetNextItemWidth(column);
+
+        ImGui::InputTextWithHint(
+            "##nomesalainicio",
+            "Nome da sala (opcional)",
+            model.roomTitle,
+            model.roomTitleSize);
+    }
+
+    if (UiPrimaryButtonSized(
+            model.busy ? "Aguarde..." : "Criar sala",
+            ImVec2(column, 0.0f)))
     {
         actions.createRoom = true;
     }
 
-    ImGui::Spacing();
+    ImGui::EndGroup();
 
-    UiFieldLabel("Ou entre com um código");
+    if (twoColumns)
+    {
+        // (SetCursorPos em vez de SameLine: o rotulo fica na mesma
+        // altura do outro, sem o ajuste de linha dos botoes.)
+        ImGui::SetCursorPos(
+            ImVec2(
+                ImGui::GetCursorPosX() + column + style.ItemSpacing.x * 3.0f,
+                columnsTop));
+    }
+    else
+    {
+        ImGui::Spacing();
+    }
 
-    const char* enterLabel = "Entrar";
+    ImGui::BeginGroup();
 
-    float enterWidth =
-        ImGui::CalcTextSize(enterLabel).x +
-        ImGui::GetStyle().FramePadding.x * 4.0f;
+    UiFieldLabel("Entrar com um código");
 
-    ImGui::SetNextItemWidth(
-        ImGui::GetContentRegionAvail().x -
-        enterWidth -
-        ImGui::GetStyle().ItemSpacing.x
-    );
+    ImGui::SetNextItemWidth(column);
 
     bool submitted =
         ImGui::InputTextWithHint(
             "##codigo",
-            "Código da sala",
+            "Código ou convite",
             model.code,
             model.codeSize,
             ImGuiInputTextFlags_EnterReturnsTrue |
-            ImGuiInputTextFlags_AutoSelectAll
-        );
+            ImGuiInputTextFlags_AutoSelectAll);
 
-    ImGui::SameLine();
-
-    if (ImGui::Button(
-            enterLabel,
-            ImVec2(enterWidth, 0.0f)) ||
-        submitted)
+    if (ImGui::Button("Entrar", ImVec2(column, 0.0f)) || submitted)
     {
         actions.enter = true;
     }
+
+    ImGui::EndGroup();
 
     ImGui::EndDisabled();
 
@@ -334,44 +612,104 @@ void DrawHomeScreen(
 
         ImGui::SameLine();
 
-        UiMutedText(
-            (model.status + UiBusyDots()).c_str()
-        );
+        UiMutedText((model.status + UiBusyDots()).c_str());
 
         UiMutedText(
             "Na primeira vez depois de um tempo parado, o "
-            "servidor pode levar até 1 minuto para responder."
-        );
+            "servidor pode levar até 1 minuto para responder.");
     }
     else if (!model.error.empty())
     {
-        UiWrappedColored(
-            UiColorError(),
-            model.error.c_str()
-        );
+        UiWrappedColored(UiColorError(), model.error.c_str());
     }
-    else
+
+
+    // ---------------- Salas recentes ----------------
+
+    if (!model.recent.empty())
     {
-        UiMutedText(
-            "Funciona também com o código de quem transmite "
-            "sem sala."
-        );
+        ImGui::Spacing();
+
+        UiFieldLabel("Salas recentes");
+
+        float enterWidth =
+            ImGui::CalcTextSize("Entrar").x + style.FramePadding.x * 4.0f;
+
+        float forget = ImGui::GetFrameHeight();
+
+        for (size_t i = 0; i < model.recent.size(); ++i)
+        {
+            const RecentRoomEntry& room = model.recent[i];
+
+            ImGui::PushID(static_cast<int>(i));
+
+            // Uma linha: nome  codigo · quando  [Entrar] [x]
+            float textWidth =
+                ImGui::GetContentRegionAvail().x - enterWidth - forget -
+                style.ItemSpacing.x * 3.0f;
+
+            std::string detail = room.shortCode + "  ·  " + room.when;
+
+            float detailWidth = ImGui::CalcTextSize(detail.c_str()).x;
+
+            ImGui::AlignTextToFramePadding();
+
+            ImGui::TextUnformatted(
+                FitText(room.title.empty() ? "Sala sem nome" : room.title,
+                        (std::max)(60.0f, textWidth - detailWidth - style.ItemSpacing.x * 2.0f)).c_str());
+
+            ImGui::SameLine(0.0f, style.ItemSpacing.x * 2.0f);
+
+            ImGui::PushStyleColor(ImGuiCol_Text, UiColorMuted());
+            ImGui::TextUnformatted(detail.c_str());
+            ImGui::PopStyleColor();
+
+            ImGui::SameLine(
+                ImGui::GetContentRegionMax().x - enterWidth - forget -
+                style.ItemSpacing.x);
+
+            ImGui::BeginDisabled(model.busy);
+
+            if (ImGui::Button("Entrar", ImVec2(enterWidth, 0.0f)))
+            {
+                actions.joinRecent = static_cast<int>(i);
+            }
+
+            ImGui::EndDisabled();
+
+            ImGui::SameLine();
+
+            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
+            ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 0.0f);
+
+            if (UiIconButton("##esquecer", UiIcon::Close, "Tirar da lista"))
+            {
+                actions.forgetRecent = static_cast<int>(i);
+            }
+
+            ImGui::PopStyleVar();
+            ImGui::PopStyleColor();
+
+            ImGui::PopID();
+        }
     }
 
     ImGui::Spacing();
-
     ImGui::Separator();
 
     ImGui::BeginDisabled(model.busy);
 
-    if (ImGui::Button(
-            "Transmitir sem sala",
-            ImVec2(
-                ImGui::GetContentRegionAvail().x,
-                0.0f)))
+    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 0.0f);
+    ImGui::PushStyleColor(ImGuiCol_Text, UiColorMuted());
+
+    if (ImGui::Button("Transmitir sem sala (código direto)"))
     {
         actions.shareWithoutRoom = true;
     }
+
+    ImGui::PopStyleVar();
+    ImGui::PopStyleColor(2);
 
     ImGui::EndDisabled();
 
@@ -397,10 +735,14 @@ bool DrawChatBox(
 
     float inputHeight = ImGui::GetFrameHeight();
 
+    ImGui::PushStyleColor(ImGuiCol_Border, UiColorDivider());
+
     ImGui::BeginChild(
         "##mensagens",
         ImVec2(0.0f, height - inputHeight - style.ItemSpacing.y),
         ImGuiChildFlags_Borders);
+
+    ImGui::PopStyleColor();
 
     if (lines.empty())
     {
@@ -613,7 +955,38 @@ void PersonRow(
     // microfone desligado, 3 = silenciado por voce.
     float avatar = ImGui::GetFrameHeight() * 1.15f;
 
+    ImVec2 avatarPos = ImGui::GetCursorScreenPos();
+
     UiAvatar(name.c_str(), avatar, live, speaking, image);
+
+    // Na voz: bolinha verde no canto da foto (com um aro da cor
+    // do fundo, pra descolar da foto).
+    if (indicator != 0)
+    {
+        ImDrawList* draw = ImGui::GetWindowDrawList();
+
+        ImVec2 dot(avatarPos.x + avatar * 0.86f, avatarPos.y + avatar * 0.86f);
+
+        float r = avatar * 0.14f;
+
+        ImVec4 ring = ImGui::GetStyleColorVec4(ImGuiCol_WindowBg);
+
+        ring.w = ImGui::GetStyle().Alpha;
+
+        ImVec4 green = UiColorSuccess();
+
+        green.w *= ImGui::GetStyle().Alpha;
+
+        draw->AddCircleFilled(dot, r + 2.0f * UiScale(), ImGui::ColorConvertFloat4ToU32(ring), 14);
+        draw->AddCircleFilled(dot, r, ImGui::ColorConvertFloat4ToU32(green), 14);
+
+        if (ImGui::IsMouseHoveringRect(
+                ImVec2(dot.x - r * 1.5f, dot.y - r * 1.5f),
+                ImVec2(dot.x + r * 1.5f, dot.y + r * 1.5f)))
+        {
+            ImGui::SetTooltip("Na voz");
+        }
+    }
 
     ImGui::SameLine();
 
@@ -635,8 +1008,8 @@ void PersonRow(
 
     ImGui::TextUnformatted(name.c_str());
 
-    // Situacao na voz: um sinal so, ao lado do nome.
-    if (indicator != 0)
+    // Microfone desligado / silenciado por voce: ao lado do nome.
+    if (indicator >= 2)
     {
         ImVec2 nameMax = ImGui::GetItemRectMax();
         ImVec2 nameMin = ImGui::GetItemRectMin();
@@ -649,20 +1022,15 @@ void PersonRow(
 
         int alpha = static_cast<int>(255 * ImGui::GetStyle().Alpha);
 
-        ImU32 red = IM_COL32(239, 68, 68, alpha);
+        ImVec4 red4 = UiColorError();
+
+        red4.w = alpha / 255.0f;
+
+        ImU32 red = ImGui::ColorConvertFloat4ToU32(red4);
 
         const char* tip = "";
 
-        if (indicator == 1)
-        {
-            ImGui::GetWindowDrawList()->AddCircleFilled(
-                ImVec2(nameMax.x + 6.0f * UiScale() + line * 0.2f, center.y),
-                line * 0.2f,
-                IM_COL32(34, 197, 94, alpha), 12);
-
-            tip = "Na voz";
-        }
-        else if (indicator == 2)
+        if (indicator == 2)
         {
             UiMicIconAt(
                 ImVec2(center.x - line * 0.45f, center.y - line * 0.45f),
@@ -943,6 +1311,10 @@ void DrawRoomScreen(
         ImGuiStyleVar_WindowPadding,
         ImVec2(24.0f * UiScale(), 18.0f * UiScale()));
 
+    // Fundo da sala: o tom de base (os cartoes ficam por cima, na
+    // cor das superficies).
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, UiColorBase());
+
     ImGui::Begin(
         "##sala",
         nullptr,
@@ -991,6 +1363,7 @@ void DrawRoomScreen(
             (titleTop + titleBottom - ImGui::GetFrameHeight()) * 0.5f));
 
     ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 0.0f);
 
     static char titleBuffer[64] = "";
 
@@ -1006,6 +1379,7 @@ void DrawRoomScreen(
         ImGui::OpenPopup("##nomesala");
     }
 
+    ImGui::PopStyleVar();
     ImGui::PopStyleColor();
 
     if (ImGui::BeginPopup("##nomesala"))
@@ -1053,16 +1427,19 @@ void DrawRoomScreen(
     }
 
     // Botoes a direita (na mesma linha se couber; senao embaixo).
+    // (icone + espaco + texto + margens)
+    float iconExtra = ImGui::GetTextLineHeight() * 0.95f + 7.0f * UiScale();
+
     float codeWidth =
-        ImGui::CalcTextSize("Copiar código").x + style.FramePadding.x * 2.0f;
+        ImGui::CalcTextSize("Copiar código").x + iconExtra + style.FramePadding.x * 2.0f;
 
     float linkWidth =
         model.inviteLink.empty()
         ? 0.0f
-        : ImGui::CalcTextSize("Copiar convite").x + style.FramePadding.x * 2.0f;
+        : ImGui::CalcTextSize("Copiar convite").x + iconExtra + style.FramePadding.x * 2.0f;
 
     float leaveWidth =
-        ImGui::CalcTextSize("Sair").x + style.FramePadding.x * 2.0f;
+        ImGui::CalcTextSize("Sair").x + iconExtra + style.FramePadding.x * 2.0f;
 
     float panelWidth = model.narrow ? ImGui::GetFrameHeight() + style.ItemSpacing.x : 0.0f;
 
@@ -1091,10 +1468,11 @@ void DrawRoomScreen(
 
     if (linkWidth > 0.0f)
     {
-        if (ImGui::Button(
+        if (UiIconLabelButton(
                 recently(linkCopiedAt)
                 ? "Copiado!##copiarlink"
                 : "Copiar convite##copiarlink",
+                UiIcon::Link,
                 ImVec2(linkWidth, 0.0f)))
         {
             ImGui::SetClipboardText(model.inviteLink.c_str());
@@ -1114,10 +1492,11 @@ void DrawRoomScreen(
         ImGui::SetCursorPosY(buttonsY);
     }
 
-    if (ImGui::Button(
+    if (UiIconLabelButton(
             recently(codeCopiedAt)
             ? "Copiado!##copiarsala"
             : "Copiar código##copiarsala",
+            UiIcon::Copy,
             ImVec2(codeWidth, 0.0f)))
     {
         ImGui::SetClipboardText(model.code.c_str());
@@ -1134,14 +1513,22 @@ void DrawRoomScreen(
 
     ImGui::SetCursorPosY(buttonsY);
 
-    ImGui::PushStyleColor(ImGuiCol_Text, UiColorError());
-
-    if (ImGui::Button("Sair##sairsala", ImVec2(leaveWidth, 0.0f)))
     {
-        actions.leave = true;
-    }
+        ImVec4 red = UiColorError();
 
-    ImGui::PopStyleColor();
+        ImGui::PushStyleColor(ImGuiCol_Text, red);
+        ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(red.x, red.y, red.z, 0.45f));
+        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(red.x, red.y, red.z, 0.08f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(red.x, red.y, red.z, 0.16f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(red.x, red.y, red.z, 0.24f));
+
+        if (UiIconLabelButton("Sair##sairsala", UiIcon::Exit, ImVec2(leaveWidth, 0.0f)))
+        {
+            actions.leave = true;
+        }
+
+        ImGui::PopStyleColor(5);
+    }
 
     if (ImGui::IsItemHovered())
     {
@@ -1214,7 +1601,7 @@ void DrawRoomScreen(
 
     ImDrawList* draw = ImGui::GetWindowDrawList();
 
-    ImU32 border = ImGui::GetColorU32(ImGuiCol_Border);
+    ImU32 border = ImGui::GetColorU32(UiColorDivider());
 
     int slot = 0;
 
@@ -1307,7 +1694,7 @@ void DrawRoomScreen(
 
         draw->AddRectFilled(
             footerMin, cardMax,
-            ImGui::GetColorU32(ImGuiCol_FrameBg), rounding,
+            ImGui::GetColorU32(UiColorSurface()), rounding,
             ImDrawFlags_RoundCornersBottom);
 
         draw->AddRect(
@@ -1315,10 +1702,40 @@ void DrawRoomScreen(
             hovered && canWatch ? ImGui::GetColorU32(UiColorAccent()) : border,
             rounding, 0, 1.0f * UiScale());
 
+        // Sua transmissao: dois icones (opcoes, parar) no lugar
+        // do botao.
+        float iconButton = ImGui::GetFrameHeight();
+
         float buttonWidth =
-            ImGui::CalcTextSize("Assistindo").x + style.FramePadding.x * 2.0f;
+            entry.isMe
+            ? iconButton * 2.0f + style.ItemSpacing.x
+            : ImGui::CalcTextSize("Assistindo").x + style.FramePadding.x * 2.0f;
 
         float midY = footerMin.y + footer * 0.5f;
+
+        if (entry.isMe)
+        {
+            // "N assistindo" no canto da previa.
+            std::string viewers =
+                std::to_string(model.sharingViewers) +
+                " assistindo";
+
+            ImVec2 textSize = ImGui::CalcTextSize(viewers.c_str());
+
+            float padX = 8.0f * UiScale();
+            float padY = 3.0f * UiScale();
+
+            ImVec2 pillMin(pos.x + 8.0f * UiScale(), pos.y + 8.0f * UiScale());
+            ImVec2 pillMax(pillMin.x + textSize.x + padX * 2.0f,
+                           pillMin.y + textSize.y + padY * 2.0f);
+
+            draw->AddRectFilled(pillMin, pillMax, IM_COL32(0, 0, 0, 170), 20.0f * UiScale());
+
+            draw->AddText(
+                ImVec2(pillMin.x + padX, pillMin.y + padY),
+                IM_COL32(255, 255, 255, 235),
+                viewers.c_str());
+        }
 
         float pad = 10.0f * UiScale();
 
@@ -1327,7 +1744,7 @@ void DrawRoomScreen(
             4.0f * UiScale(), IM_COL32(239, 68, 68, 255), 12);
 
         std::string text =
-            (entry.isMe ? entry.name + " (você)" : entry.name) +
+            (entry.isMe ? std::string("Você") : entry.name) +
             (entry.label.empty() ? std::string() : "  ·  " + entry.label);
 
         float textX = footerMin.x + pad + 14.0f * UiScale();
@@ -1353,9 +1770,17 @@ void DrawRoomScreen(
 
         if (entry.isMe)
         {
-            ImGui::BeginDisabled();
-            ImGui::Button("Você", ImVec2(buttonWidth, 0.0f));
-            ImGui::EndDisabled();
+            if (UiIconButton("##opcoesminha", UiIcon::Sliders, "Opções da transmissão"))
+            {
+                actions.openShare = true;
+            }
+
+            ImGui::SameLine();
+
+            if (UiIconButton("##pararminha", UiIcon::Stop, "Parar de transmitir", false, true))
+            {
+                actions.stopShare = true;
+            }
         }
         else if (entry.watching)
         {
@@ -1390,9 +1815,39 @@ void DrawRoomScreen(
         ImGui::PopID();
     }
 
-    // Cartao de transmitir (ou da sua transmissao).
+    // Cartao de transmitir (ou da sua transmissao, enquanto ela
+    // ainda nao apareceu na lista).
+    bool myCard = false;
+
+    for (const RoomPresenterEntry& entry : model.presenters)
     {
-        nextCard();
+        myCard |= entry.isMe;
+    }
+
+    // Ninguem transmitindo: um cartao so, grande, no meio.
+    bool emptyState = model.presenters.empty() && !model.sharing;
+
+    if (emptyState)
+    {
+        cardWidth = (std::min)(380.0f * UiScale(), avail);
+        cardHeight = cardWidth * 0.52f;
+
+        float below = ImGui::GetTextLineHeightWithSpacing() * 2.0f;
+
+        float free = ImGui::GetContentRegionAvail().y - cardHeight - below;
+
+        ImGui::SetCursorPos(
+            ImVec2(
+                ImGui::GetCursorPosX() + (avail - cardWidth) * 0.5f,
+                ImGui::GetCursorPosY() + (std::max)(0.0f, free * 0.45f)));
+    }
+
+    if (!myCard)
+    {
+        if (!emptyState)
+        {
+            nextCard();
+        }
 
         ImGui::BeginGroup();
 
@@ -1457,7 +1912,7 @@ void DrawRoomScreen(
         {
             draw->AddRectFilled(
                 pos, cardMax,
-                ImGui::GetColorU32(ImGuiCol_FrameBg), rounding);
+                ImGui::GetColorU32(UiColorSurface()), rounding);
 
             draw->AddRect(pos, cardMax, border, rounding, 0, 1.0f * UiScale());
 
@@ -1511,11 +1966,19 @@ void DrawRoomScreen(
 
     ImGui::Spacing();
 
-    if (model.presenters.empty())
+    if (emptyState)
     {
-        UiMutedText(
-            "Ninguém está transmitindo ainda. Quando alguém "
-            "começar, aparece aqui.");
+        const char* hint =
+            "Ninguém está transmitindo ainda. Quando alguém começar, aparece aqui.";
+
+        float width = ImGui::CalcTextSize(hint).x;
+
+        if (width < avail)
+        {
+            ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (avail - width) * 0.5f);
+        }
+
+        UiMutedText(hint);
     }
 
     if (model.connecting)
@@ -1540,6 +2003,8 @@ void DrawRoomScreen(
     }
 
     ImGui::End();
+
+    ImGui::PopStyleColor();
 
     ImGui::PopStyleVar(3);
 }
@@ -1771,6 +2236,7 @@ bool ToggleButton(
         ImGui::PushStyleColor(ImGuiCol_Button, accent);
         ImGui::PushStyleColor(ImGuiCol_ButtonHovered, accent);
         ImGui::PushStyleColor(ImGuiCol_ButtonActive, accent);
+        ImGui::PushStyleColor(ImGuiCol_Text, UiColorOnAccent());
     }
 
     bool clicked =
@@ -1780,7 +2246,7 @@ bool ToggleButton(
 
     if (selected)
     {
-        ImGui::PopStyleColor(3);
+        ImGui::PopStyleColor(4);
     }
 
     return clicked;
@@ -1899,6 +2365,7 @@ bool DrawStreamOverlay(
     );
 
     ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 0.0f);
 
     if (ImGui::Button(
             "×##fechar",
@@ -1907,6 +2374,7 @@ bool DrawStreamOverlay(
         collapsed = true;
     }
 
+    ImGui::PopStyleVar();
     ImGui::PopStyleColor();
 
     if (ImGui::IsItemHovered())
@@ -2128,6 +2596,14 @@ void SidePeopleList(
 {
     ImGui::BeginChild("##listapessoas", ImVec2(0.0f, height), false);
 
+    // Folga pros aneis da foto (falando/transmitindo) nao
+    // ficarem cortados na borda.
+    float ring = 6.0f * UiScale();
+
+    ImGui::Dummy(ImVec2(0.0f, ring * 0.5f));
+
+    ImGui::Indent(ring);
+
     for (size_t i = 0; i < model.people.size(); ++i)
     {
         const PeopleEntry& person = model.people[i];
@@ -2135,6 +2611,24 @@ void SidePeopleList(
         ImGui::PushID(static_cast<int>(i));
 
         float newVolume = person.volume;
+
+        // A sua linha: fundo leve.
+        if (person.isMe)
+        {
+            ImVec2 rowPos = ImGui::GetCursorScreenPos();
+
+            float rowHeight = ImGui::GetFrameHeight() * 1.15f;
+
+            float pad = 5.0f * UiScale();
+
+            ImGui::GetWindowDrawList()->AddRectFilled(
+                ImVec2(rowPos.x - pad, rowPos.y - pad),
+                ImVec2(rowPos.x + ImGui::GetContentRegionAvail().x - 2.0f, rowPos.y + rowHeight + pad),
+                UiIsLightTheme()
+                ? ImGui::GetColorU32(ImGuiCol_Button)
+                : ImGui::GetColorU32(ImGuiCol_PopupBg),
+                8.0f * UiScale());
+        }
 
         if (MemberRow(
                 person.isMe ? person.name + " (você)" : person.name,
@@ -2153,6 +2647,8 @@ void SidePeopleList(
 
         ImGui::PopID();
     }
+
+    ImGui::Unindent(ring);
 
     ImGui::EndChild();
 }
@@ -2194,9 +2690,11 @@ void SideVoiceControls(
     }
     else if (!model.voiceJoined)
     {
-        if (ImGui::Button(
+        if (UiIconLabelButton(
                 "Entrar na voz",
-                ImVec2(ImGui::GetContentRegionAvail().x - gear, 0.0f)))
+                UiIcon::Mic,
+                ImVec2(ImGui::GetContentRegionAvail().x - gear, 0.0f),
+                UiColorSuccess()))
         {
             actions.voiceJoin = true;
         }
@@ -2292,6 +2790,7 @@ bool SideTab(
     int badge)
 {
     ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 0.0f);
     ImGui::PushStyleColor(
         ImGuiCol_Text,
         selected
@@ -2300,6 +2799,7 @@ bool SideTab(
 
     bool clicked = ImGui::Button(label);
 
+    ImGui::PopStyleVar();
     ImGui::PopStyleColor(2);
 
     ImVec2 min = ImGui::GetItemRectMin();
@@ -2362,9 +2862,37 @@ void BarDivider()
 } // namespace
 
 
+namespace
+{
+
+// Largura do painel sem escala (300 = padrao).
+float g_sidePanelWidth = 300.0f;
+
+}
+
+
+float RoomSidePanelSavedWidth()
+{
+    return g_sidePanelWidth;
+}
+
+
+void RoomSidePanelSetSavedWidth(
+    float width)
+{
+    g_sidePanelWidth = (std::max)(260.0f, (std::min)(900.0f, width));
+}
+
+
 float RoomSidePanelWidth()
 {
-    return 300.0f * UiScale();
+    float width = g_sidePanelWidth * UiScale();
+
+    // Nunca mais que 60% da janela (o resto e do video/lista).
+    float limit =
+        (std::max)(260.0f * UiScale(), ImGui::GetIO().DisplaySize.x * 0.6f);
+
+    return (std::max)(260.0f * UiScale(), (std::min)(width, limit));
 }
 
 
@@ -2403,6 +2931,8 @@ void DrawRoomSidePanel(
         ImGuiStyleVar_WindowPadding,
         ImVec2(14.0f * UiScale(), 10.0f * UiScale()));
 
+    ImGui::PushStyleColor(ImGuiCol_Border, UiColorDivider());
+
     ImGui::Begin(
         "##painellateral",
         nullptr,
@@ -2415,6 +2945,8 @@ void DrawRoomSidePanel(
         ImGuiWindowFlags_NoScrollWithMouse |
         ImGuiWindowFlags_NoFocusOnAppearing |
         (model.progress < 0.5f ? ImGuiWindowFlags_NoInputs : 0));
+
+    ImGui::PopStyleColor();
 
     // ---------------- Cabecalho: abas, fixar, fechar ----------
 
@@ -2448,6 +2980,7 @@ void DrawRoomSidePanel(
         (model.showPin ? button * 2.0f + style.ItemSpacing.x : button));
 
     ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 0.0f);
 
     if (model.showPin &&
         UiIconButton(
@@ -2471,6 +3004,7 @@ void DrawRoomSidePanel(
         actions.close = true;
     }
 
+    ImGui::PopStyleVar();
     ImGui::PopStyleColor();
     }
 
@@ -2525,6 +3059,52 @@ void DrawRoomSidePanel(
 
     storage->SetFloat(footerKey, ImGui::GetCursorPosY() - footerStart);
 
+    // Borda esquerda: arrastar muda a largura (o video/lista do
+    // lado se ajusta).
+    if (model.progress >= 1.0f)
+    {
+        ImVec2 back = ImGui::GetCursorScreenPos();
+
+        ImVec2 edge = ImGui::GetWindowPos();
+
+        float grip = 6.0f * UiScale();
+
+        ImGui::SetCursorScreenPos(edge);
+
+        ImGui::InvisibleButton("##largura", ImVec2(grip, ImGui::GetWindowHeight()));
+
+        bool active = ImGui::IsItemActive();
+
+        if (ImGui::IsItemHovered() || active)
+        {
+            ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
+
+            ImGui::GetWindowDrawList()->AddLine(
+                ImVec2(edge.x + 1.0f, edge.y),
+                ImVec2(edge.x + 1.0f, edge.y + ImGui::GetWindowHeight()),
+                ImGui::GetColorU32(UiColorAccent()),
+                2.0f * UiScale());
+        }
+
+        if (active && ImGui::GetIO().MouseDelta.x != 0.0f)
+        {
+            // Parte do que ja esta na tela (pode estar limitada).
+            float current = RoomSidePanelWidth() / UiScale();
+
+            RoomSidePanelSetSavedWidth(
+                current - ImGui::GetIO().MouseDelta.x / UiScale());
+        }
+
+        if (ImGui::IsItemDeactivated())
+        {
+            actions.widthChanged = true;
+        }
+
+        ImGui::SetCursorScreenPos(back);
+
+        ImGui::Dummy(ImVec2(0.0f, 0.0f));
+    }
+
     actions.hovered =
         ImGui::IsWindowHovered(
             ImGuiHoveredFlags_ChildWindows |
@@ -2567,6 +3147,8 @@ void DrawRoomBar(
         ImVec2(10.0f * UiScale(), 8.0f * UiScale()));
     ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 12.0f * UiScale());
 
+    ImGui::PushStyleColor(ImGuiCol_Border, UiColorDivider());
+
     ImGui::Begin(
         "##barraicones",
         nullptr,
@@ -2580,19 +3162,52 @@ void DrawRoomBar(
         ImGuiWindowFlags_NoFocusOnAppearing |
         (model.alpha < 0.5f ? ImGuiWindowFlags_NoInputs : 0));
 
-    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
+    ImGui::PopStyleColor();
 
-    // Popovers acima do botao que os abriu.
-    auto anchorPopup =
-        []()
+    {
+        ImVec2 pos = ImGui::GetWindowPos();
+        ImVec2 size = ImGui::GetWindowSize();
+
+        UiDrawShadow(pos, ImVec2(pos.x + size.x, pos.y + size.y), 12.0f * UiScale());
+    }
+
+    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 0.0f);
+
+
+    // Botao de popover: clicar de novo com ele aberto fecha (o
+    // clique ja fechou o popover ao apertar - nao reabre ao
+    // soltar).
+    ImGuiStorage* barStorage = ImGui::GetStateStorage();
+
+    auto popoverButton =
+        [&](bool clicked, const char* popupId)
         {
+            ImGuiID wasKey = ImGui::GetID((std::string(popupId) + "#aberto").c_str());
+            ImGuiID skipKey = ImGui::GetID((std::string(popupId) + "#pular").c_str());
+
+            if (ImGui::IsItemActivated() && barStorage->GetBool(wasKey))
+            {
+                barStorage->SetBool(skipKey, true);
+            }
+
+            if (!clicked)
+                return;
+
+            if (barStorage->GetBool(skipKey))
+            {
+                barStorage->SetBool(skipKey, false);
+
+                return;
+            }
+
             ImVec2 min = ImGui::GetItemRectMin();
             ImVec2 max = ImGui::GetItemRectMax();
 
-            ImGui::GetStateStorage()->SetFloat(
-                ImGui::GetID("##ancorax"), (min.x + max.x) * 0.5f);
-            ImGui::GetStateStorage()->SetFloat(
-                ImGui::GetID("##ancoray"), min.y);
+            barStorage->SetFloat(ImGui::GetID("##ancorax"), (min.x + max.x) * 0.5f);
+            barStorage->SetFloat(ImGui::GetID("##ancoray"), min.y);
+
+            ImGui::OpenPopup(popupId);
         };
 
     // ---------------- Voz e som ----------------
@@ -2691,12 +3306,9 @@ void DrawRoomBar(
     {
         ImGui::SameLine();
 
-        if (UiIconButton("##bartrocar", UiIcon::Switch, "Trocar de tela"))
-        {
-            anchorPopup();
-
-            ImGui::OpenPopup("##trocartela");
-        }
+        popoverButton(
+            UiIconButton("##bartrocar", UiIcon::Switch, "Trocar de tela"),
+            "##trocartela");
     }
 
     // ---------------- Video, config., sair ----------------
@@ -2705,12 +3317,9 @@ void DrawRoomBar(
 
     if (model.watching)
     {
-        if (UiIconButton("##baropcoes", UiIcon::Sliders, "Opções do vídeo"))
-        {
-            anchorPopup();
-
-            ImGui::OpenPopup("##opcoesvideo");
-        }
+        popoverButton(
+            UiIconButton("##baropcoes", UiIcon::Sliders, "Opções do vídeo"),
+            "##opcoesvideo");
 
         ImGui::SameLine();
     }
@@ -2793,6 +3402,7 @@ void DrawRoomBar(
         }
     }
 
+    ImGui::PopStyleVar();
     ImGui::PopStyleColor();
 
     // ---------------- Popovers ----------------
@@ -2956,6 +3566,11 @@ void DrawRoomBar(
     }
 
     actions.popupOpen = anyPopup;
+
+    barStorage->SetBool(
+        ImGui::GetID("##trocartela#aberto"), ImGui::IsPopupOpen("##trocartela"));
+    barStorage->SetBool(
+        ImGui::GetID("##opcoesvideo#aberto"), ImGui::IsPopupOpen("##opcoesvideo"));
 
     actions.centerX = ImGui::GetWindowPos().x + ImGui::GetWindowWidth() * 0.5f;
     actions.top = ImGui::GetWindowPos().y;
@@ -3144,7 +3759,7 @@ void DrawGeneralSettingsTab(
 
                     ImGui::PushStyleColor(ImGuiCol_Button, accent);
                     ImGui::PushStyleColor(ImGuiCol_ButtonHovered, accent);
-                    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1, 1, 1, 1));
+                    ImGui::PushStyleColor(ImGuiCol_Text, UiColorOnAccent());
                 }
 
                 bool clicked = ImGui::Button(label, ImVec2(half, 0.0f));
@@ -3412,6 +4027,8 @@ void DrawSettingsWindow(
         ImVec2(0.0f, 0.0f),
         ImVec2(width, viewport->WorkSize.y - 24.0f * UiScale()));
 
+    ImGui::PushStyleColor(ImGuiCol_Border, UiColorDivider());
+
     ImGui::Begin(
         "##configuracoes",
         nullptr,
@@ -3420,6 +4037,8 @@ void DrawSettingsWindow(
         ImGuiWindowFlags_NoMove |
         ImGuiWindowFlags_NoCollapse |
         ImGuiWindowFlags_NoSavedSettings);
+
+    ImGui::PopStyleColor();
 
     // Fica na frente das outras telas - mas sem roubar o foco de
     // uma lista aberta (antes, os dropdowns fechavam na hora).

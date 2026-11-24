@@ -151,7 +151,7 @@ RATE_LIMIT_MAX_REQUESTS = 600
 # Salas
 ROOM_MEMBER_TTL_SECONDS = 20    # some quem parar de mandar heartbeat
 MAX_ROOMS = 2000
-MAX_ROOM_MEMBERS = 9          # quem transmite + ate 8 assistindo (MAX_VIEWERS do programa)
+MAX_ROOM_MEMBERS = 10         # voz: 9 conexoes por pessoa; transmissao: ate 8 assistindo
 MAX_NAME_LENGTH = 32
 MAX_LABEL_LENGTH = 80
 MAX_CHAT_LENGTH = 300

@@ -30,12 +30,13 @@ struct OpusEncoder;
 //   - se conecta ao canal de cada outra pessoa da sala que
 //     esteja na voz (VoicePeer) e ouve.
 //
-// Com 9 pessoas na sala, cada uma recebe 8 conexoes - o mesmo
-// limite de uma transmissao. A voz vai direto de um computador
-// pro outro (cifrada), nunca pelo servidor.
+// Com 10 pessoas na sala, cada uma recebe 9 conexoes (uma
+// transmissao continua aceitando 8 - o video pesa muito mais). A
+// voz vai direto de um computador pro outro (cifrada), nunca
+// pelo servidor.
 //
 // Qualidade de chamada: Opus 16 kHz mono, ~24 kbps, pacotes de
-// 20 ms. Cerca de 0,2 Mbps de upload com a sala cheia.
+// 20 ms. Cerca de 0,3 Mbps de upload com a sala cheia.
 // ============================================================
 
 class VoicePeer;
@@ -191,6 +192,19 @@ private:
     std::atomic<bool> m_joined{ false };
     std::atomic<bool> m_muted{ false };
 
+    // Tecla de ligar/desligar vista por ultimo (trocou = espera
+    // soltar) e pausa enquanto a pessoa escolhe uma tecla.
+    int m_muteToggleLastKey = 0;
+    std::atomic<bool> m_shortcutsPaused{ false };
+
+public:
+    void SetShortcutsPaused(
+        bool paused)
+    {
+        m_shortcutsPaused = paused;
+    }
+
+private:
     // Ultimo estado avisado aos outros (thread do microfone).
     bool m_sentMuted = false;
     unsigned long long m_lastStatusSent = 0;

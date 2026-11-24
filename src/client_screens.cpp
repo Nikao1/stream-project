@@ -303,12 +303,14 @@ void DrawClientLiveScreen(
         ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 4.0f * UiScale());
 
         ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
+        ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 0.0f);
 
         if (ImGui::Button("×##fecharaovivo", ImVec2(closeSize, closeSize)))
         {
             *model.roomPanelOpen = false;
         }
 
+        ImGui::PopStyleVar();
         ImGui::PopStyleColor();
     }
     else if (minimized)
@@ -655,6 +657,50 @@ void DrawClientLiveScreen(
                 3))
         {
             actions.qualityChanged = true;
+        }
+
+        // Som: de qual saida vem o audio (ex.: um cabo de
+        // audio virtual). Janela com "som so desta janela" nao
+        // usa.
+        if (model.audioDevices && model.audioIndex &&
+            !model.audioDevices->empty() && !model.windowAudioOnly)
+        {
+            const std::vector<std::string>& devices = *model.audioDevices;
+
+            int& audioIndex = *model.audioIndex;
+
+            if (audioIndex < 0 || audioIndex >= static_cast<int>(devices.size()))
+            {
+                audioIndex = 0;
+            }
+
+            ImGui::PushStyleColor(ImGuiCol_Text, UiColorMuted());
+            ImGui::TextUnformatted("Som");
+            ImGui::PopStyleColor();
+
+            ImGui::SetCursorPosY(
+                ImGui::GetCursorPosY() -
+                ImGui::GetStyle().ItemSpacing.y * 0.6f);
+
+            ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x);
+
+            if (ImGui::BeginCombo("##somaovivo", devices[audioIndex].c_str()))
+            {
+                for (int i = 0; i < static_cast<int>(devices.size()); ++i)
+                {
+                    std::string itemLabel = devices[i] + "##" + std::to_string(i);
+
+                    if (ImGui::Selectable(itemLabel.c_str(), i == audioIndex) &&
+                        i != audioIndex)
+                    {
+                        audioIndex = i;
+
+                        actions.audioChanged = true;
+                    }
+                }
+
+                ImGui::EndCombo();
+            }
         }
 
         if (model.viewers > 0)
@@ -1046,7 +1092,10 @@ void DrawClientPickerScreen(
         ImGuiChildFlags_None
     );
 
-    UiFieldLabel("Telas inteiras");
+    UiSectionHeader(
+        "TELAS INTEIRAS",
+        (std::to_string(monitors.size()) +
+         (monitors.size() == 1 ? " disponível" : " disponíveis")).c_str());
 
     ImGui::Spacing();
 
@@ -1060,7 +1109,10 @@ void DrawClientPickerScreen(
 
     ImGui::Dummy(ImVec2(0.0f, 6.0f * UiScale()));
 
-    UiFieldLabel("Janelas");
+    UiSectionHeader(
+        "JANELAS",
+        (std::to_string(windows.size()) +
+         (windows.size() == 1 ? " aberta" : " abertas")).c_str());
 
     ImGui::Spacing();
 

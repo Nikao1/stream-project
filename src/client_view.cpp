@@ -169,6 +169,16 @@ void ClientViewClearPreview()
 }
 
 
+// Largura a direita ocupada pelo painel da sala (a previa fica
+// no resto).
+float g_previewRightInset = 0.0f;
+
+void ClientViewSetRightInset(
+    float inset)
+{
+    g_previewRightInset = inset;
+}
+
 void ClientViewDrawBackground()
 {
     // Escurecida pra interface por cima continuar legivel - e
@@ -181,7 +191,8 @@ void ClientViewDrawBackground()
                 g_previewView.Get()),
             static_cast<float>(g_previewWidth),
             static_cast<float>(g_previewHeight),
-            0.45f
+            0.45f,
+            g_previewRightInset
         );
     }
 }

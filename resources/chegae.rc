@@ -1,4 +1,4 @@
-// Recursos do StreamProject.exe: icone e informacoes de versao
+// Recursos do Chegae.exe: icone e informacoes de versao
 // (as que aparecem em botao direito > Propriedades > Detalhes).
 //
 // Executaveis com essas informacoes preenchidas parecem menos
@@ -7,7 +7,10 @@
 #include <winver.h>
 #include "version.h"
 
-1 ICON "stream-project.ico"
+1 ICON "chegae.ico"
+
+// Textos com acento (Chegaê) em UTF-8.
+#pragma code_page(65001)
 
 VS_VERSION_INFO VERSIONINFO
  FILEVERSION     STREAM_APP_VERSION_MAJOR, STREAM_APP_VERSION_MINOR, STREAM_APP_VERSION_PATCH, 0
@@ -22,12 +25,12 @@ BEGIN
     BEGIN
         BLOCK "041604B0"
         BEGIN
-            VALUE "CompanyName",      "Stream Project"
-            VALUE "FileDescription",  "Stream Project - Assistir e transmitir a tela"
+            VALUE "CompanyName",      "Chegaê"
+            VALUE "FileDescription",  "Chegaê - tela, som e voz direto entre amigos"
             VALUE "FileVersion",      STREAM_APP_VERSION
-            VALUE "InternalName",     "StreamProject"
-            VALUE "OriginalFilename", "StreamProject.exe"
-            VALUE "ProductName",      "Stream Project"
+            VALUE "InternalName",     "Chegae"
+            VALUE "OriginalFilename", "Chegae.exe"
+            VALUE "ProductName",      "Chegaê"
             VALUE "ProductVersion",   STREAM_APP_VERSION
             VALUE "Comments",         "https://github.com/Nikao1/stream-project"
         END

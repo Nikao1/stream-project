@@ -49,6 +49,26 @@ ImVec4 UiColorError();
 ImVec4 UiColorSuccess();
 ImVec4 UiColorAccent();
 
+// Texto sobre a cor de destaque (botao principal).
+ImVec4 UiColorOnAccent();
+
+// Fundo da janela (o que aparece sem video) e o das superficies
+// elevadas (cartoes, paineis).
+ImVec4 UiColorBase();
+
+// Divisorias e contornos de paineis/cartoes (laranja suave no
+// tema claro).
+ImVec4 UiColorDivider();
+ImVec4 UiColorSurface();
+
+// Sombra simulada em volta de um retangulo (desenhada atras de
+// tudo): alguns contornos translucidos, sem custo de verdade.
+void UiDrawShadow(
+    ImVec2 min,
+    ImVec2 max,
+    float rounding
+);
+
 
 // ------------------------------------------------------------
 // Componentes
@@ -151,7 +171,9 @@ enum class UiIcon
     Close,
     Screen,
     Stop,
-    Edit
+    Edit,
+    Link,
+    Copy
 };
 
 void UiIconAt(
@@ -171,6 +193,22 @@ bool UiIconButton(
     bool active = false,
     bool danger = false,
     int badge = 0
+);
+
+// Botao com icone + texto (ex.: "Copiar convite"). iconColor
+// w = 0 = cor do texto.
+bool UiIconLabelButton(
+    const char* label,
+    UiIcon icon,
+    ImVec2 size = ImVec2(0.0f, 0.0f),
+    ImVec4 iconColor = ImVec4(0, 0, 0, 0)
+);
+
+// Titulo de secao em maiusculas (cinza) com um texto a direita
+// (ex.: "TELAS INTEIRAS ......... 2 disponiveis").
+void UiSectionHeader(
+    const char* title,
+    const char* right
 );
 
 // Engrenagem (configuracoes), centrada em center. hole = cor do
@@ -197,6 +235,9 @@ void UiLogo(
     float size
 );
 
+// "Chegaê" (o "ê" na cor de destaque), na fonte de titulo.
+void UiWordmark();
+
 
 // Mesmo painel, mas encostado no canto superior esquerdo - pra
 // quando ha algo atras que precisa continuar visivel (a previa
@@ -214,11 +255,14 @@ void UiFieldLabel(
 // Imagem de fundo ocupando a janela (mantendo a proporcao),
 // escurecida por "dim" (0 = original, 1 = preto). Desenhada
 // atras de todos os paineis.
+// rightInset: largura ocupada a direita (ex.: painel lateral) -
+// a imagem fica no espaco que sobra.
 void UiDrawBackgroundImage(
     ImTextureID texture,
     float imageWidth,
     float imageHeight,
-    float dim
+    float dim,
+    float rightInset = 0.0f
 );
 
 

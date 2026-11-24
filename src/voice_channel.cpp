@@ -616,6 +616,9 @@ void VoiceChannel::JoinWorker()
     {
         m_server.SetHostKeys(&m_keys);
 
+        // Todo mundo da sala (10) menos esta pessoa.
+        m_server.SetViewerLimit(MAX_LIST_CAPACITY);
+
         ok = m_server.Start(0);
 
         if (!ok)
@@ -752,6 +755,15 @@ void VoiceChannel::OnMicFrame(
     if (toggleKey != 0)
     {
         bool down = (GetAsyncKeyState(toggleKey) & 0x8000) != 0;
+
+        // Tecla acabou de ser escolhida (ainda apertada) ou a
+        // pessoa esta escolhendo uma tecla: nao conta como
+        // apertar - so depois de soltar.
+        if (toggleKey != m_muteToggleLastKey || m_shortcutsPaused)
+        {
+            m_muteToggleLastKey = toggleKey;
+            m_muteToggleWasDown = down;
+        }
 
         if (down && !m_muteToggleWasDown)
         {

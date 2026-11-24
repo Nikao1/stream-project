@@ -206,7 +206,7 @@ bool UdpAudioServer::SendStatusPacket(
     header.timestampMs = htonl(flags);
     header.payloadSize = 0;
 
-    UdpViewer viewers[MAX_VIEWERS];
+    UdpViewer viewers[MAX_LIST_CAPACITY];
 
     size_t viewerCount = m_viewers.Snapshot(viewers);
 
@@ -301,7 +301,7 @@ bool UdpAudioServer::SendAudioPacket(
         );
 
 
-    UdpViewer viewers[MAX_VIEWERS];
+    UdpViewer viewers[MAX_LIST_CAPACITY];
 
     size_t viewerCount =
         m_viewers.Snapshot(viewers);

@@ -74,69 +74,88 @@ void UiApplyTheme(
 
     style.WindowBorderSize = 1.0f;
 
-    // Claro: contornos nos botoes, campos e abas (branco sobre
-    // branco nao separa nada). Escuro: sem (o contraste ja separa).
-    style.FrameBorderSize = g_lightTheme ? 1.0f : 0.0f;
-    style.TabBorderSize = g_lightTheme ? 1.0f : 0.0f;
 
     ImVec4* colors = style.Colors;
 
     const ImVec4 accent = UiColorAccent();
 
-    // Escuro: camadas de branco transparente sobre o fundo.
-    // Claro: camadas de preto transparente sobre o fundo.
-    const float ink = g_lightTheme ? 0.0f : 1.0f;
+    // Paleta "Brasa". Escuro: grafite azulado em camadas. Claro:
+    // minimalista - fundo #F8F9FA, cartoes brancos, bordas
+    // #E5E7EB, texto quase preto.
+    auto hex =
+        [](unsigned rgb, float a = 1.0f)
+        {
+            return ImVec4(
+                ((rgb >> 16) & 0xFF) / 255.0f,
+                ((rgb >> 8) & 0xFF) / 255.0f,
+                (rgb & 0xFF) / 255.0f,
+                a);
+        };
 
-    colors[ImGuiCol_WindowBg] =
-        g_lightTheme
-        ? ImVec4(0.97f, 0.97f, 0.98f, 0.98f)
-        : ImVec4(0.09f, 0.10f, 0.12f, 0.97f);
+    const bool light = g_lightTheme;
 
-    colors[ImGuiCol_PopupBg] =
-        g_lightTheme
-        ? ImVec4(1.0f, 1.0f, 1.0f, 0.99f)
-        : ImVec4(0.11f, 0.12f, 0.14f, 0.99f);
+    colors[ImGuiCol_WindowBg] = light ? hex(0xF4F3F0, 1.0f) : hex(0x14171C, 0.98f);
+    colors[ImGuiCol_ChildBg] = ImVec4(0, 0, 0, 0);
+    colors[ImGuiCol_PopupBg] = light ? hex(0xF7F6F3, 0.99f) : hex(0x181B20, 0.99f);
 
-    colors[ImGuiCol_Border] =
-        ImVec4(ink, ink, ink, g_lightTheme ? 0.16f : 0.08f);
+    colors[ImGuiCol_Border] = light ? hex(0xD9D6D0) : hex(0x262A32);
+    colors[ImGuiCol_BorderShadow] = ImVec4(0, 0, 0, 0);
 
-    colors[ImGuiCol_FrameBg] =
-        ImVec4(ink, ink, ink, g_lightTheme ? 0.05f : 0.06f);
+    colors[ImGuiCol_FrameBg] = light ? hex(0xECEAE6) : hex(0x0E1116);
+    colors[ImGuiCol_FrameBgHovered] = light ? hex(0xE7E5E0) : hex(0x11141A);
+    colors[ImGuiCol_FrameBgActive] = light ? hex(0xE1DED8) : hex(0x13171E);
 
-    colors[ImGuiCol_FrameBgHovered] =
-        ImVec4(ink, ink, ink, g_lightTheme ? 0.08f : 0.09f);
+    colors[ImGuiCol_Button] = light ? hex(0xE8E6E1) : hex(0x1E2229);
+    colors[ImGuiCol_ButtonHovered] = light ? hex(0xDFDCD6) : hex(0x262A32);
+    colors[ImGuiCol_ButtonActive] = light ? hex(0xD4D0C9) : hex(0x2D323B);
 
-    colors[ImGuiCol_FrameBgActive] =
-        ImVec4(ink, ink, ink, g_lightTheme ? 0.11f : 0.12f);
+    colors[ImGuiCol_Header] = ImVec4(accent.x, accent.y, accent.z, 0.16f);
+    colors[ImGuiCol_HeaderHovered] = ImVec4(accent.x, accent.y, accent.z, 0.24f);
+    colors[ImGuiCol_HeaderActive] = ImVec4(accent.x, accent.y, accent.z, 0.32f);
 
-    colors[ImGuiCol_Button] =
-        ImVec4(ink, ink, ink, g_lightTheme ? 0.06f : 0.08f);
+    colors[ImGuiCol_Tab] = ImVec4(0, 0, 0, 0);
+    colors[ImGuiCol_TabHovered] = ImVec4(accent.x, accent.y, accent.z, 0.16f);
+    colors[ImGuiCol_TabSelected] = ImVec4(accent.x, accent.y, accent.z, 0.20f);
+    colors[ImGuiCol_TabSelectedOverline] = accent;
 
-    colors[ImGuiCol_ButtonHovered] =
-        ImVec4(ink, ink, ink, g_lightTheme ? 0.10f : 0.14f);
+    // Claro: divisorias (e contornos de paineis/cartoes) em
+    // laranja suave, delimitando os espacos.
+    colors[ImGuiCol_Separator] = UiColorDivider();
+    colors[ImGuiCol_SeparatorHovered] = accent;
+    colors[ImGuiCol_SeparatorActive] = accent;
 
-    colors[ImGuiCol_ButtonActive] =
-        ImVec4(ink, ink, ink, g_lightTheme ? 0.15f : 0.20f);
+    colors[ImGuiCol_SliderGrab] = accent;
+    colors[ImGuiCol_SliderGrabActive] = accent;
+    colors[ImGuiCol_CheckMark] = accent;
+    colors[ImGuiCol_PlotHistogram] = accent;
 
-    colors[ImGuiCol_Header] =
-        ImVec4(accent.x, accent.y, accent.z, 0.20f);
+    colors[ImGuiCol_ScrollbarBg] = ImVec4(0, 0, 0, 0);
+    colors[ImGuiCol_ScrollbarGrab] = light ? hex(0xD1D5DB) : hex(0x2D323B);
+    colors[ImGuiCol_ScrollbarGrabHovered] = light ? hex(0x9CA3AF) : hex(0x363C48);
+    colors[ImGuiCol_ScrollbarGrabActive] = light ? hex(0x6B7280) : hex(0x414856);
 
-    colors[ImGuiCol_HeaderHovered] =
-        ImVec4(accent.x, accent.y, accent.z, 0.30f);
+    colors[ImGuiCol_Text] = light ? hex(0x111827) : hex(0xE8EAED);
+    colors[ImGuiCol_TextDisabled] = light ? hex(0x9CA3AF) : hex(0x5C6370);
 
-    colors[ImGuiCol_HeaderActive] =
-        ImVec4(accent.x, accent.y, accent.z, 0.40f);
+    colors[ImGuiCol_TextSelectedBg] = ImVec4(accent.x, accent.y, accent.z, 0.35f);
 
-    colors[ImGuiCol_Text] =
-        g_lightTheme
-        ? ImVec4(0.10f, 0.11f, 0.13f, 1.0f)
-        : ImVec4(0.94f, 0.95f, 0.96f, 1.0f);
+    colors[ImGuiCol_NavHighlight] = accent;
 
-    colors[ImGuiCol_TextSelectedBg] =
-        ImVec4(accent.x, accent.y, accent.z, 0.45f);
+    colors[ImGuiCol_ModalWindowDimBg] = ImVec4(0, 0, 0, light ? 0.25f : 0.55f);
 
-    colors[ImGuiCol_NavHighlight] =
-        accent;
+    style.WindowRounding = 14.0f;
+    style.ChildRounding = 10.0f;
+    style.FrameRounding = 8.0f;
+    style.PopupRounding = 10.0f;
+    style.GrabRounding = 8.0f;
+    style.TabRounding = 6.0f;
+    style.ScrollbarRounding = 8.0f;
+
+    // Contornos finos nos dois temas (camadas parecidas precisam
+    // da borda pra se separar).
+    style.FrameBorderSize = 1.0f;
+    style.TabBorderSize = 0.0f;
+    style.PopupBorderSize = 1.0f;
 
     style.ScaleAllSizes(g_uiScale);
 }
@@ -178,31 +197,102 @@ const ImWchar* UiGlyphRanges()
 
 ImVec4 UiColorMuted()
 {
+    // #4B5563 (alto contraste no claro) / #9DA7B8
     return g_lightTheme
-        ? ImVec4(0.38f, 0.40f, 0.45f, 1.0f)
-        : ImVec4(0.62f, 0.65f, 0.70f, 1.0f);
+        ? ImVec4(0.294f, 0.333f, 0.388f, 1.0f)
+        : ImVec4(0.62f, 0.65f, 0.72f, 1.0f);
 }
 
 
 ImVec4 UiColorError()
 {
+    // #D93D42 / #E5484D (vermelho levemente rosado: nao se
+    // confunde com o laranja)
     return g_lightTheme
-        ? ImVec4(0.82f, 0.18f, 0.16f, 1.0f)
-        : ImVec4(1.00f, 0.45f, 0.42f, 1.0f);
+        ? ImVec4(0.85f, 0.24f, 0.26f, 1.0f)
+        : ImVec4(0.90f, 0.28f, 0.30f, 1.0f);
 }
 
 
 ImVec4 UiColorSuccess()
 {
+    // #16A34A / #22C55E
     return g_lightTheme
-        ? ImVec4(0.09f, 0.55f, 0.27f, 1.0f)
-        : ImVec4(0.42f, 0.86f, 0.58f, 1.0f);
+        ? ImVec4(0.09f, 0.64f, 0.29f, 1.0f)
+        : ImVec4(0.13f, 0.77f, 0.37f, 1.0f);
 }
 
 
 ImVec4 UiColorAccent()
 {
-    return ImVec4(0.25f, 0.52f, 0.96f, 1.0f);
+    // Brasa: #E8622C (claro; o #FF7A45 fica lavado no branco) /
+    // #FF7A45 (escuro)
+    return g_lightTheme
+        ? ImVec4(0.91f, 0.38f, 0.17f, 1.0f)
+        : ImVec4(1.00f, 0.48f, 0.27f, 1.0f);
+}
+
+
+ImVec4 UiColorOnAccent()
+{
+    // Escuro: texto quase preto sobre o laranja claro (mais
+    // contraste que branco). Claro: branco.
+    return g_lightTheme
+        ? ImVec4(1.0f, 1.0f, 1.0f, 1.0f)
+        : ImVec4(0.10f, 0.055f, 0.03f, 1.0f);
+}
+
+
+ImVec4 UiColorDivider()
+{
+    // Laranja suave nos dois temas: #E8622C a ~45% (claro),
+    // #FF7A45 a ~48% (escuro).
+    return g_lightTheme
+        ? ImVec4(0.91f, 0.38f, 0.17f, 0.45f)
+        : ImVec4(1.00f, 0.48f, 0.27f, 0.48f);
+}
+
+
+ImVec4 UiColorBase()
+{
+    // #E9E8E4 (off-white mais baixo: sem clarao) / #0E1116
+    return g_lightTheme
+        ? ImVec4(0.914f, 0.910f, 0.894f, 1.0f)
+        : ImVec4(0.055f, 0.067f, 0.086f, 1.0f);
+}
+
+
+ImVec4 UiColorSurface()
+{
+    // #F4F3F0 / #14171C
+    return g_lightTheme
+        ? ImVec4(0.957f, 0.953f, 0.941f, 1.0f)
+        : ImVec4(0.078f, 0.090f, 0.110f, 1.0f);
+}
+
+
+void UiDrawShadow(
+    ImVec2 min,
+    ImVec2 max,
+    float rounding)
+{
+    ImDrawList* draw = ImGui::GetBackgroundDrawList();
+
+    float alpha = ImGui::GetStyle().Alpha * (g_lightTheme ? 0.018f : 0.10f);
+
+    // De dentro pra fora, cada vez mais largo e mais fraco; um
+    // pouco pra baixo (luz de cima).
+    for (int i = 1; i <= 4; ++i)
+    {
+        float grow = 3.0f * g_uiScale * i;
+        float down = 2.0f * g_uiScale * i;
+
+        draw->AddRectFilled(
+            ImVec2(min.x - grow, min.y - grow + down),
+            ImVec2(max.x + grow, max.y + grow + down),
+            IM_COL32(0, 0, 0, static_cast<int>(255 * alpha)),
+            rounding + grow);
+    }
 }
 
 
@@ -240,6 +330,10 @@ void UiBeginCenteredPanel(
         ImGuiCond_Always
     );
 
+    // Contorno do painel na cor das divisorias (desenhado no
+    // Begin).
+    ImGui::PushStyleColor(ImGuiCol_Border, UiColorDivider());
+
     ImGui::Begin(
         id,
         nullptr,
@@ -249,6 +343,16 @@ void UiBeginCenteredPanel(
         ImGuiWindowFlags_NoCollapse |
         ImGuiWindowFlags_NoSavedSettings
     );
+
+    ImGui::PopStyleColor();
+
+    ImVec2 pos = ImGui::GetWindowPos();
+    ImVec2 size = ImGui::GetWindowSize();
+
+    UiDrawShadow(
+        pos,
+        ImVec2(pos.x + size.x, pos.y + size.y),
+        ImGui::GetStyle().WindowRounding);
 }
 
 
@@ -354,15 +458,15 @@ bool UiPrimaryButton(
 
     ImGui::PushStyleColor(
         ImGuiCol_ButtonHovered,
-        ImVec4(accent.x + 0.08f, accent.y + 0.08f, accent.z, 1.0f));
+        ImVec4((std::min)(1.0f, accent.x + 0.04f), (std::min)(1.0f, accent.y + 0.06f), (std::min)(1.0f, accent.z + 0.06f), 1.0f));
 
     ImGui::PushStyleColor(
         ImGuiCol_ButtonActive,
-        ImVec4(accent.x - 0.05f, accent.y - 0.05f, accent.z - 0.05f, 1.0f));
+        ImVec4(accent.x - 0.06f, accent.y - 0.06f, accent.z - 0.04f, 1.0f));
 
-    // Texto branco sobre o azul (no tema claro o texto padrao e
-    // escuro).
-    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 1.0f, 1.0f, 1.0f));
+    ImGui::PushStyleColor(ImGuiCol_Text, UiColorOnAccent());
+
+    ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0, 0, 0, 0));
 
     ImGui::BeginDisabled(!enabled);
 
@@ -375,7 +479,7 @@ bool UiPrimaryButton(
 
     ImGui::EndDisabled();
 
-    ImGui::PopStyleColor(4);
+    ImGui::PopStyleColor(5);
 
     return clicked;
 }
@@ -391,19 +495,19 @@ bool UiPrimaryButtonSized(
 
     ImGui::PushStyleColor(
         ImGuiCol_ButtonHovered,
-        ImVec4(accent.x + 0.08f, accent.y + 0.08f, accent.z, 1.0f));
+        ImVec4((std::min)(1.0f, accent.x + 0.04f), (std::min)(1.0f, accent.y + 0.06f), (std::min)(1.0f, accent.z + 0.06f), 1.0f));
 
     ImGui::PushStyleColor(
         ImGuiCol_ButtonActive,
-        ImVec4(accent.x - 0.05f, accent.y - 0.05f, accent.z - 0.05f, 1.0f));
+        ImVec4(accent.x - 0.06f, accent.y - 0.06f, accent.z - 0.04f, 1.0f));
 
-    // Texto branco sobre o azul (no tema claro o texto padrao e
-    // escuro).
-    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 1.0f, 1.0f, 1.0f));
+    ImGui::PushStyleColor(ImGuiCol_Text, UiColorOnAccent());
+
+    ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0, 0, 0, 0));
 
     bool clicked = ImGui::Button(label, size);
 
-    ImGui::PopStyleColor(4);
+    ImGui::PopStyleColor(5);
 
     return clicked;
 }
@@ -443,7 +547,8 @@ void UiDrawBackgroundImage(
     ImTextureID texture,
     float imageWidth,
     float imageHeight,
-    float dim)
+    float dim,
+    float rightInset)
 {
     if (imageWidth <= 0.0f || imageHeight <= 0.0f)
         return;
@@ -452,6 +557,8 @@ void UiDrawBackgroundImage(
         ImGui::GetMainViewport();
 
     ImVec2 area = viewport->WorkSize;
+
+    area.x -= rightInset;
 
     if (area.x <= 0.0f || area.y <= 0.0f)
         return;
@@ -840,55 +947,83 @@ void UiLogo(
 
     ImDrawList* draw = ImGui::GetWindowDrawList();
 
-    // Fundo: quadrado arredondado (anil), com um brilho leve na
-    // metade de cima.
+    // Quadrado arredondado na cor Brasa; dentro, um "e" com o
+    // circunflexo virando telhado ("chega aqui em casa").
     draw->AddRectFilled(
         pos,
         ImVec2(pos.x + size, pos.y + size),
-        IM_COL32(99, 102, 241, 255),
-        size * 0.24f);
+        ImGui::GetColorU32(UiColorAccent()),
+        size * 0.26f);
 
-    draw->AddRectFilled(
-        pos,
-        ImVec2(pos.x + size, pos.y + size * 0.5f),
-        IM_COL32(255, 255, 255, 22),
-        size * 0.24f,
-        ImDrawFlags_RoundCornersTop);
-
-    // Monitor (contorno branco) + pe.
-    ImU32 white = IM_COL32(255, 255, 255, 255);
+    ImU32 ink = ImGui::GetColorU32(UiColorOnAccent());
 
     float s = size;
 
-    ImVec2 screenMin(pos.x + s * 0.20f, pos.y + s * 0.24f);
-    ImVec2 screenMax(pos.x + s * 0.80f, pos.y + s * 0.64f);
+    float thick = (std::max)(1.5f, s * 0.08f);
 
-    draw->AddRect(
-        screenMin,
-        screenMax,
-        white,
-        s * 0.05f,
-        0,
-        (std::max)(1.5f, s * 0.06f));
+    ImVec2 roof[3] =
+    {
+        ImVec2(pos.x + s * 0.30f, pos.y + s * 0.35f),
+        ImVec2(pos.x + s * 0.50f, pos.y + s * 0.18f),
+        ImVec2(pos.x + s * 0.70f, pos.y + s * 0.35f)
+    };
+
+    draw->AddPolyline(roof, 3, ink, 0, thick);
+
+    // "e" desenhado (nao depende da fonte): a barra do meio e o
+    // arco que sobe pela direita, contorna e para embaixo.
+    ImVec2 center(pos.x + s * 0.50f, pos.y + s * 0.63f);
+
+    float r = s * 0.20f;
+
+    draw->PathArcTo(center, r, 0.0f, -(2.0f * 3.14159265f - 0.80f), 28);
+    draw->PathStroke(ink, 0, thick);
 
     draw->AddLine(
-        ImVec2(pos.x + s * 0.50f, pos.y + s * 0.64f),
-        ImVec2(pos.x + s * 0.50f, pos.y + s * 0.74f),
-        white,
-        (std::max)(1.5f, s * 0.06f));
+        ImVec2(center.x - r, center.y),
+        ImVec2(center.x + r, center.y),
+        ink,
+        thick);
+}
 
-    draw->AddLine(
-        ImVec2(pos.x + s * 0.36f, pos.y + s * 0.76f),
-        ImVec2(pos.x + s * 0.64f, pos.y + s * 0.76f),
-        white,
-        (std::max)(1.5f, s * 0.06f));
 
-    // "Play" no meio da tela.
-    draw->AddTriangleFilled(
-        ImVec2(pos.x + s * 0.44f, pos.y + s * 0.34f),
-        ImVec2(pos.x + s * 0.44f, pos.y + s * 0.54f),
-        ImVec2(pos.x + s * 0.60f, pos.y + s * 0.44f),
-        white);
+void UiWordmark()
+{
+    if (g_titleFont)
+    {
+        ImGui::PushFont(g_titleFont);
+    }
+
+    // Um texto so (alinhado como os outros); o "ê" e redesenhado
+    // por cima na cor de destaque.
+    ImVec2 pos = ImGui::GetCursorScreenPos();
+
+    ImGui::TextUnformatted("Chegaê");
+
+    float offset = ImGui::CalcTextSize("Chega").x;
+
+    ImVec4 accent = UiColorAccent();
+
+    ImVec4 background = UiColorSurface();
+
+    ImVec2 glyph = ImGui::CalcTextSize("ê");
+
+    ImDrawList* draw = ImGui::GetWindowDrawList();
+
+    draw->AddRectFilled(
+        ImVec2(pos.x + offset, pos.y),
+        ImVec2(pos.x + offset + glyph.x, pos.y + glyph.y),
+        ImGui::GetColorU32(background));
+
+    draw->AddText(
+        ImVec2(pos.x + offset, pos.y),
+        ImGui::GetColorU32(accent),
+        "ê");
+
+    if (g_titleFont)
+    {
+        ImGui::PopFont();
+    }
 }
 
 
@@ -952,7 +1087,7 @@ bool UiToggle(
 
     ImVec4 off =
         g_lightTheme
-        ? ImVec4(0.78f, 0.79f, 0.82f, alpha)
+        ? ImVec4(0.82f, 0.84f, 0.86f, alpha)
         : ImVec4(0.24f, 0.25f, 0.29f, alpha);
     ImVec4 on = UiColorAccent();
 
@@ -1272,6 +1407,30 @@ void UiIconAt(
         break;
     }
 
+    case UiIcon::Link:
+    {
+        // Dois elos inclinados.
+        draw->AddLine(P(-0.25f, 0.25f), P(0.25f, -0.25f), color, t);
+
+        ImVec2 a[4] = { P(-0.05f, 0.45f), P(-0.35f, 0.75f), P(-0.75f, 0.35f), P(-0.45f, 0.05f) };
+        ImVec2 b[4] = { P(0.05f, -0.45f), P(0.35f, -0.75f), P(0.75f, -0.35f), P(0.45f, -0.05f) };
+
+        draw->AddPolyline(a, 4, color, 0, t);
+        draw->AddPolyline(b, 4, color, 0, t);
+        break;
+    }
+
+    case UiIcon::Copy:
+    {
+        draw->AddRect(P(-0.35f, -0.35f), P(0.75f, 0.8f), color, h * 0.15f, 0, t);
+
+        ImVec2 back[4] = { P(-0.55f, 0.55f), P(-0.75f, 0.55f), P(-0.75f, -0.8f), P(0.45f, -0.8f) };
+
+        draw->AddPolyline(back, 4, color, 0, t);
+        draw->AddLine(P(0.45f, -0.8f), P(0.45f, -0.55f), color, t);
+        break;
+    }
+
     case UiIcon::Stop:
     {
         draw->AddRectFilled(P(-0.55f, -0.55f), P(0.55f, 0.55f), color, h * 0.12f);
@@ -1285,6 +1444,91 @@ void UiIconAt(
         break;
     }
     }
+}
+
+
+bool UiIconLabelButton(
+    const char* label,
+    UiIcon icon,
+    ImVec2 size,
+    ImVec4 iconColor)
+{
+    const ImGuiStyle& style = ImGui::GetStyle();
+
+    // Texto ate o "##" (o resto e so id).
+    const char* end = strstr(label, "##");
+
+    std::string text = end ? std::string(label, end) : std::string(label);
+
+    float line = ImGui::GetTextLineHeight();
+
+    float iconSize = line * 0.95f;
+
+    float gap = 7.0f * g_uiScale;
+
+    ImVec2 textSize = ImGui::CalcTextSize(text.c_str());
+
+    float contentWidth = iconSize + gap + textSize.x;
+
+    if (size.x <= 0.0f)
+    {
+        size.x = contentWidth + style.FramePadding.x * 2.0f;
+    }
+
+    if (size.y <= 0.0f)
+    {
+        size.y = ImGui::GetFrameHeight();
+    }
+
+    std::string id = std::string("##") + label;
+
+    bool clicked = ImGui::Button(id.c_str(), size);
+
+    ImVec2 min = ImGui::GetItemRectMin();
+
+    float startX = min.x + (size.x - contentWidth) * 0.5f;
+    float midY = min.y + size.y * 0.5f;
+
+    ImVec4 textColor = ImGui::GetStyleColorVec4(ImGuiCol_Text);
+
+    ImVec4 icon4 = iconColor.w > 0.0f ? iconColor : textColor;
+
+    icon4.w *= style.Alpha;
+    textColor.w *= style.Alpha;
+
+    UiIconAt(
+        icon,
+        ImVec2(startX + iconSize * 0.5f, midY),
+        iconSize,
+        ImGui::ColorConvertFloat4ToU32(icon4));
+
+    ImGui::GetWindowDrawList()->AddText(
+        ImVec2(startX + iconSize + gap, midY - textSize.y * 0.5f),
+        ImGui::ColorConvertFloat4ToU32(textColor),
+        text.c_str());
+
+    return clicked;
+}
+
+
+void UiSectionHeader(
+    const char* title,
+    const char* right)
+{
+    ImGui::PushStyleColor(ImGuiCol_Text, UiColorMuted());
+
+    ImGui::TextUnformatted(title);
+
+    if (right && *right)
+    {
+        float width = ImGui::CalcTextSize(right).x;
+
+        ImGui::SameLine(ImGui::GetContentRegionMax().x - width);
+
+        ImGui::TextUnformatted(right);
+    }
+
+    ImGui::PopStyleColor();
 }
 
 

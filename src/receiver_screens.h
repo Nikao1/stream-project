@@ -40,6 +40,18 @@ struct ReceiverScreenActions
 // de uma transmissao de versoes sem sala), e "Transmitir sem
 // sala" pro fluxo direto.
 
+// Sala recente (salva so neste PC).
+struct RecentRoomEntry
+{
+    std::string title;
+
+    // Primeiras letras do codigo (sem o segredo).
+    std::string shortCode;
+
+    // Ex.: "há 2 h", "ontem".
+    std::string when;
+};
+
 struct HomeScreenModel
 {
     char* name = nullptr;
@@ -47,6 +59,24 @@ struct HomeScreenModel
 
     char* code = nullptr;
     size_t codeSize = 0;
+
+    // Nome da sala a criar (opcional).
+    char* roomTitle = nullptr;
+    size_t roomTitleSize = 0;
+
+    // Foto de perfil (ImTextureID; nullptr = inicial) e erro ao
+    // escolher.
+    void* avatar = nullptr;
+    std::string avatarError;
+
+    // Primeira vez (sem nome salvo): so nome e foto.
+    bool firstRun = false;
+
+    // Convite de sala na area de transferencia (codigo curto pra
+    // mostrar; vazio = nenhum).
+    std::string clipboardRoom;
+
+    std::vector<RecentRoomEntry> recent;
 
     // true = criando/entrando (o servidor pode levar ate ~1
     // minuto pra acordar).
@@ -68,6 +98,22 @@ struct HomeScreenActions
 
     // Engrenagem: configuracoes.
     bool openSettings = false;
+
+    // Perfil
+    bool finishProfile = false;
+    bool nameChanged = false;
+    bool chooseAvatar = false;
+    bool removeAvatar = false;
+
+    bool testMicrophone = false;
+
+    // Convite copiado: entrar / ignorar.
+    bool joinClipboard = false;
+    bool dismissClipboard = false;
+
+    // Indice em recent (-1 = nada).
+    int joinRecent = -1;
+    int forgetRecent = -1;
 };
 
 void DrawHomeScreen(
@@ -180,7 +226,7 @@ struct RoomScreenModel
     // Nomes de quem esta na sala (o desta pessoa marcado).
     std::vector<std::string> members;
 
-    int maxMembers = 9;
+    int maxMembers = 10;
 
     // Esta pessoa esta transmitindo.
     bool sharing = false;
@@ -443,11 +489,22 @@ struct RoomSidePanelActions
     // Mouse em cima do painel.
     bool hovered = false;
 
+    // Soltou a borda depois de arrastar (salvar a largura).
+    bool widthChanged = false;
+
     PeoplePanelActions people;
 };
 
-// Largura do painel (o video encolhe isso quando aberto).
+// Largura do painel (o video encolhe isso quando aberto). A
+// pessoa ajusta arrastando a borda esquerda; o valor salvo
+// (sem escala) e lido/gravado pelo programa.
 float RoomSidePanelWidth();
+
+float RoomSidePanelSavedWidth();
+
+void RoomSidePanelSetSavedWidth(
+    float width
+);
 
 void DrawRoomSidePanel(
     const RoomSidePanelModel& model,

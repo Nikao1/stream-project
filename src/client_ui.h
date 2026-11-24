@@ -54,6 +54,9 @@ extern CryptoKeyPair g_hostKeys;
 
 extern AudioCapture g_audioCapture;
 
+// Pede pra reiniciar a captura de som (outro dispositivo).
+extern std::atomic<bool> g_audioRestartRequested;
+
 extern std::atomic<bool> g_inviteMode;
 
 extern std::atomic<bool> g_udpServerStarted;

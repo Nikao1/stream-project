@@ -21,6 +21,7 @@
 #include <mutex>
 #include <atomic>
 #include <cstring>
+#include <ctime>
 
 #include "h264_decoder.h"
 #include "audio_protocol.h"
@@ -3345,7 +3346,7 @@ std::atomic<UiState> g_uiState{ UiState::Connect };
 // Modo do programa
 // ============================================================
 //
-// Um programa so (StreamProject.exe) com dois modos:
+// Um programa so (Chegae.exe) com dois modos:
 //
 //   Home   tela inicial: "Assistir" ou "Transmitir"
 //   Watch  assistir - o fluxo do antigo stream-receiver (este
@@ -3603,6 +3604,9 @@ void LoadReceiverSettings()
     g_lightThemeSetting = settings.GetInt(L"TemaClaro", 0) != 0;
 
     g_sidePinned = settings.GetInt(L"PainelFixo", 0) != 0;
+
+    RoomSidePanelSetSavedWidth(
+        static_cast<float>(settings.GetInt(L"LarguraPainel", 300)));
 
     // Foto de perfil salva.
     {
@@ -4731,13 +4735,21 @@ char g_nameInput[64]{};
 
 char g_homeCodeInput[256]{};
 
+// Nome da sala a criar (tela inicial; 32 letras no maximo).
+char g_roomTitleInput[33]{};
+
+// Convite de sala na area de transferencia (codigo inteiro) e o
+// ultimo que a pessoa ignorou/usou (nao aparece de novo).
+std::string g_clipboardInvite;
+std::string g_clipboardDismissed;
+
 // Convite recebido (link clicado: linha de comando ou repassado
 // por outra copia do programa). A thread da janela trata no
 // proximo frame.
 std::string g_pendingInvite;
 
 
-// Protocolo "streamproject://" no Windows (so pra este usuario,
+// Protocolo "chegae://" no Windows (so pra este usuario,
 // sem administrador): clicar no link de convite abre o programa
 // nesta pasta. Refeito a cada abertura (a pasta pode mudar).
 void RegisterInviteProtocol()
@@ -4749,6 +4761,9 @@ void RegisterInviteProtocol()
 
     std::wstring exe = exePath;
 
+    // Protocolo antigo (versoes "Stream Project"): sai.
+    RegDeleteTreeW(HKEY_CURRENT_USER, L"Software\\Classes\\streamproject");
+
     struct Value
     {
         const wchar_t* key;
@@ -4758,13 +4773,13 @@ void RegisterInviteProtocol()
 
     const Value values[] =
     {
-        { L"Software\\Classes\\streamproject", nullptr,
-          L"URL:Stream Project" },
-        { L"Software\\Classes\\streamproject", L"URL Protocol",
+        { L"Software\\Classes\\chegae", nullptr,
+          L"URL:Chega\u00ea" },
+        { L"Software\\Classes\\chegae", L"URL Protocol",
           L"" },
-        { L"Software\\Classes\\streamproject\\DefaultIcon", nullptr,
+        { L"Software\\Classes\\chegae\\DefaultIcon", nullptr,
           L"\"" + exe + L"\",0" },
-        { L"Software\\Classes\\streamproject\\shell\\open\\command",
+        { L"Software\\Classes\\chegae\\shell\\open\\command",
           nullptr,
           L"\"" + exe + L"\" --convite \"%1\"" },
     };
@@ -4793,7 +4808,7 @@ void RegisterInviteProtocol()
 }
 
 
-// Convite na linha de comando ("--convite streamproject://...").
+// Convite na linha de comando ("--convite chegae://...").
 // Vazio = nenhum.
 std::string InviteFromCommandLine(
     const wchar_t* commandLine)
@@ -4801,7 +4816,7 @@ std::string InviteFromCommandLine(
     if (!commandLine)
         return std::string();
 
-    const wchar_t* link = wcsstr(commandLine, L"streamproject://");
+    const wchar_t* link = wcsstr(commandLine, L"chegae://");
 
     if (!link)
         return std::string();
@@ -4903,11 +4918,175 @@ std::wstring Utf8ToWide(
 }
 
 
+// Primeira vez (sem nome salvo): a tela inicial pede so o
+// nome e a foto.
+bool g_needProfile = false;
+
+// Convite chegou antes do nome: entra depois de "Continuar".
+bool g_inviteWaiting = false;
+
+
+// ------------------------------------------------------------
+// Salas recentes (so neste PC; o codigo inteiro, com o segredo,
+// fica no arquivo de configuracoes do programa)
+// ------------------------------------------------------------
+
+struct RecentRoom
+{
+    std::string code;
+    std::string title;
+    long long when = 0;
+};
+
+std::vector<RecentRoom> g_recentRooms;
+
+constexpr size_t MAX_RECENT_ROOMS = 5;
+
+
+void SaveRecentRooms()
+{
+    AppSettings& settings = ReceiverSettings();
+
+    for (size_t i = 0; i < MAX_RECENT_ROOMS; ++i)
+    {
+        std::wstring key = L"SalaRecente" + std::to_wstring(i);
+
+        if (i < g_recentRooms.size())
+        {
+            const RecentRoom& room = g_recentRooms[i];
+
+            // quando|codigo|nome (o nome sem "|").
+            std::string title = room.title;
+
+            for (char& c : title)
+            {
+                if (c == '|') c = '/';
+            }
+
+            settings.SetString(
+                key.c_str(),
+                Utf8ToWide(
+                    std::to_string(room.when) + "|" + room.code + "|" + title));
+        }
+        else
+        {
+            settings.SetString(key.c_str(), L"");
+        }
+    }
+}
+
+
+void LoadRecentRooms()
+{
+    g_recentRooms.clear();
+
+    AppSettings& settings = ReceiverSettings();
+
+    for (size_t i = 0; i < MAX_RECENT_ROOMS; ++i)
+    {
+        std::wstring key = L"SalaRecente" + std::to_wstring(i);
+
+        std::string line = WideToUtf8(settings.GetString(key.c_str(), L""));
+
+        size_t a = line.find('|');
+        size_t b = a == std::string::npos ? a : line.find('|', a + 1);
+
+        if (b == std::string::npos)
+            continue;
+
+        RecentRoom room;
+
+        room.when = std::atoll(line.substr(0, a).c_str());
+        room.code = line.substr(a + 1, b - a - 1);
+        room.title = line.substr(b + 1);
+
+        if (!room.code.empty())
+        {
+            g_recentRooms.push_back(room);
+        }
+    }
+}
+
+
+// Entrou (ou o nome mudou): vai pro topo da lista.
+void RememberRoom(
+    const std::string& code,
+    const std::string& title)
+{
+    if (code.empty())
+        return;
+
+    for (auto it = g_recentRooms.begin(); it != g_recentRooms.end(); ++it)
+    {
+        if (it->code == code)
+        {
+            g_recentRooms.erase(it);
+            break;
+        }
+    }
+
+    RecentRoom room;
+
+    room.code = code;
+    room.title = title;
+    room.when = static_cast<long long>(time(nullptr));
+
+    g_recentRooms.insert(g_recentRooms.begin(), room);
+
+    if (g_recentRooms.size() > MAX_RECENT_ROOMS)
+    {
+        g_recentRooms.resize(MAX_RECENT_ROOMS);
+    }
+
+    SaveRecentRooms();
+}
+
+
+void ForgetRoom(
+    const std::string& code)
+{
+    for (auto it = g_recentRooms.begin(); it != g_recentRooms.end(); ++it)
+    {
+        if (it->code == code)
+        {
+            g_recentRooms.erase(it);
+
+            SaveRecentRooms();
+
+            return;
+        }
+    }
+}
+
+
+// "agora há pouco", "há 3 h", "ontem", "há 5 dias".
+std::string TimeAgo(
+    long long when)
+{
+    long long seconds = static_cast<long long>(time(nullptr)) - when;
+
+    if (seconds < 3600)
+        return "agora há pouco";
+
+    if (seconds < 86400)
+        return "há " + std::to_string(seconds / 3600) + " h";
+
+    if (seconds < 2 * 86400)
+        return "ontem";
+
+    return "há " + std::to_string(seconds / 86400) + " dias";
+}
+
+
 // Nome salvo; na primeira vez, o usuario do Windows.
 void LoadName()
 {
     std::wstring name =
         ReceiverSettings().GetString(L"Nome", L"");
+
+    g_needProfile = name.empty();
+
+    LoadRecentRooms();
 
     if (name.empty())
     {
@@ -4956,10 +5135,17 @@ void SaveName()
 }
 
 
+// A sala tentada nao existe mais (tira das recentes) e o
+// codigo tentado.
+std::atomic<bool> g_homeRoomGone{ false };
+std::string g_homeAttemptCode;
+
+
 void HomeWorker(
     bool create,
     std::string code,
-    std::string name)
+    std::string name,
+    std::string title)
 {
     std::string error;
 
@@ -4971,7 +5157,7 @@ void HomeWorker(
             g_homeStatus = "Criando a sala";
         }
 
-        if (g_room.Create(name, std::string(), error))
+        if (g_room.Create(name, title, error))
         {
             g_homeResult = HomeResult::Room;
         }
@@ -5032,6 +5218,8 @@ void HomeWorker(
                 "Sala não encontrada. Ela fecha quando todo mundo "
                 "sai - peça um código novo.";
 
+            g_homeRoomGone = true;
+
             g_homeResult = HomeResult::Error;
             break;
         }
@@ -5073,7 +5261,7 @@ void HomeWorker(
         std::lock_guard<std::mutex> lock(g_uiMutex);
 
         g_homeWorkerError =
-            "Essa sala está cheia (9 pessoas).";
+            "Essa sala está cheia (10 pessoas).";
 
         g_homeResult = HomeResult::Error;
         break;
@@ -5117,6 +5305,9 @@ void StartHomeWorker(
 
     g_homeResult = HomeResult::None;
 
+    g_homeRoomGone = false;
+    g_homeAttemptCode = code;
+
     SaveName();
 
     g_homeThread =
@@ -5124,7 +5315,8 @@ void StartHomeWorker(
             HomeWorker,
             create,
             code,
-            CurrentName());
+            CurrentName(),
+            std::string(g_roomTitleInput));
 }
 
 
@@ -5509,6 +5701,29 @@ void OpenSettings(
 
     // Listas de microfone/saida atualizadas (em segundo plano).
     RequestDeviceLists();
+}
+
+
+void CloseSettings()
+{
+    g_keyCapture.Cancel();
+
+    g_captureRow = -1;
+
+    g_settingsOpen = false;
+
+    g_micTestOn = false;
+}
+
+
+// Engrenagem: abre; clicar de novo com a janela aberta fecha.
+void ToggleSettings(
+    int tab)
+{
+    if (g_settingsOpen)
+        CloseSettings();
+    else
+        OpenSettings(tab);
 }
 
 
@@ -6246,7 +6461,7 @@ void UpdateWindowTitle()
         return;
 
     std::wstring title =
-        L"Stream Project " STREAM_APP_VERSION_W;
+        L"Chega\u00ea " STREAM_APP_VERSION_W;
 
     if (g_appMode == AppMode::Room)
     {
@@ -6521,9 +6736,16 @@ bool DrawLobbySidePanel(
         g_lobbyPanelOpen = false;
     }
 
+    if (actions.widthChanged)
+    {
+        ReceiverSettings().SetInt(
+            L"LarguraPainel",
+            static_cast<int>(RoomSidePanelSavedWidth() + 0.5f));
+    }
+
     if (actions.openVoiceSettings)
     {
-        OpenSettings(SETTINGS_TAB_VOICE);
+        ToggleSettings(SETTINGS_TAB_VOICE);
     }
 
     ApplySidePeople(state, actions.people);
@@ -6775,6 +6997,13 @@ void DrawRoomControls(
         CloseSidePanel();
     }
 
+    if (panelActions.widthChanged)
+    {
+        ReceiverSettings().SetInt(
+            L"LarguraPainel",
+            static_cast<int>(RoomSidePanelSavedWidth() + 0.5f));
+    }
+
     if (panelActions.togglePin)
     {
         g_sidePinned = !g_sidePinned;
@@ -6817,7 +7046,7 @@ void DrawRoomControls(
 
     if (barActions.openSettings)
     {
-        OpenSettings(SETTINGS_TAB_VOICE);
+        ToggleSettings(SETTINGS_TAB_VOICE);
     }
 
     if (barActions.toggleFullscreen)
@@ -7142,7 +7371,11 @@ void DrawReceiverUi()
 
         if (result == HomeResult::Room)
         {
+            g_roomTitleInput[0] = '\0';
+
             EnterRoom();
+
+            RememberRoom(g_room.GetCode(), g_room.GetState().title);
 
             roomState = g_room.GetState();
         }
@@ -7166,6 +7399,11 @@ void DrawReceiverUi()
         }
         else if (result == HomeResult::Error)
         {
+            if (g_homeRoomGone)
+            {
+                ForgetRoom(g_homeAttemptCode);
+            }
+
             std::lock_guard<std::mutex> lock(g_uiMutex);
 
             g_homeError = g_homeWorkerError;
@@ -7204,6 +7442,57 @@ void DrawReceiverUi()
         home.nameSize = sizeof(g_nameInput);
         home.code = g_homeCodeInput;
         home.codeSize = sizeof(g_homeCodeInput);
+        home.roomTitle = g_roomTitleInput;
+        home.roomTitleSize = sizeof(g_roomTitleInput);
+        home.avatar = MyAvatarTexture();
+        home.avatarError = g_avatarError;
+        home.firstRun = g_needProfile;
+
+        // Convite de sala copiado (le a area de transferencia so
+        // quando ela muda).
+        {
+            static DWORD lastSequence = 0;
+
+            DWORD sequence = GetClipboardSequenceNumber();
+
+            if (sequence != lastSequence)
+            {
+                lastSequence = sequence;
+
+                g_clipboardInvite.clear();
+
+                const char* text = ImGui::GetClipboardText();
+
+                std::string roomCode;
+                std::string secret;
+
+                if (text &&
+                    strlen(text) < 300 &&
+                    ParseRoomInvite(text, roomCode, secret) &&
+                    !secret.empty())
+                {
+                    g_clipboardInvite = roomCode + "-" + secret;
+                }
+            }
+
+            if (!g_clipboardInvite.empty() &&
+                g_clipboardInvite != g_clipboardDismissed)
+            {
+                home.clipboardRoom = g_clipboardInvite.substr(
+                    0, g_clipboardInvite.find('-'));
+            }
+        }
+
+        for (const RecentRoom& room : g_recentRooms)
+        {
+            RecentRoomEntry entry;
+
+            entry.title = room.title;
+            entry.shortCode = room.code.substr(0, room.code.find('-'));
+            entry.when = TimeAgo(room.when);
+
+            home.recent.push_back(entry);
+        }
         home.busy = g_homeBusy;
         home.error = g_homeError;
 
@@ -7220,6 +7509,8 @@ void DrawReceiverUi()
     }
     else if (mode == AppMode::Share)
     {
+        sender::SetPreviewRightInset(0.0f);
+
         sender::Draw(
             shareGoHome
         );
@@ -7228,6 +7519,12 @@ void DrawReceiverUi()
     {
         if (g_roomView == RoomView::Share)
         {
+            // O painel Pessoas/Chat empurra a previa (valor do
+            // frame anterior - a animacao e suave do mesmo jeito).
+            sender::SetPreviewRightInset(
+                RoomSidePanelWidth() *
+                (1.0f - (1.0f - g_sideProgress) * (1.0f - g_sideProgress)));
+
             sender::Draw(
                 shareGoHome
             );
@@ -7516,6 +7813,25 @@ void DrawReceiverUi()
             room.voiceError = g_voice.ErrorText();
 
             room.title = roomState.title;
+
+            // Nome da sala mudou: atualiza as salas recentes.
+            {
+                static std::string rememberedTitle;
+                static std::string rememberedCode;
+
+                std::string code = g_room.GetCode();
+
+                if (code != rememberedCode || roomState.title != rememberedTitle)
+                {
+                    if (code == rememberedCode)
+                    {
+                        RememberRoom(code, roomState.title);
+                    }
+
+                    rememberedCode = code;
+                    rememberedTitle = roomState.title;
+                }
+            }
             room.memberCount = static_cast<int>(roomState.members.size());
 
             bool wide = LobbyIsWide();
@@ -7638,6 +7954,9 @@ void DrawReceiverUi()
     // --------------------------------------------------------
     // Tela de atalhos (por cima de qualquer tela)
     // --------------------------------------------------------
+
+    // Escolhendo uma tecla: os atalhos da voz nao disparam.
+    g_voice.SetShortcutsPaused(g_settingsOpen && g_keyCapture.IsActive());
 
     if (g_settingsOpen)
     {
@@ -7811,13 +8130,7 @@ void DrawReceiverUi()
 
         if (shortcutActions.close)
         {
-            g_keyCapture.Cancel();
-
-            g_captureRow = -1;
-
-            g_settingsOpen = false;
-
-            g_micTestOn = false;
+            CloseSettings();
         }
     }
 
@@ -7865,6 +8178,76 @@ void DrawReceiverUi()
         StartHomeWorker(true, std::string());
     }
 
+    if (homeActions.testMicrophone)
+    {
+        ToggleSettings(SETTINGS_TAB_VOICE);
+    }
+
+    if (homeActions.finishProfile)
+    {
+        SaveName();
+
+        g_needProfile = false;
+
+        if (g_inviteWaiting)
+        {
+            g_inviteWaiting = false;
+
+            homeActions.enter = true;
+        }
+    }
+
+    if (homeActions.nameChanged)
+    {
+        SaveName();
+    }
+
+    if (homeActions.chooseAvatar)
+    {
+        ChooseAvatar();
+    }
+
+    if (homeActions.removeAvatar)
+    {
+        g_myAvatarJpeg.clear();
+        g_myAvatarSerial++;
+
+        g_avatarError.clear();
+
+        DeleteFileW(ReceiverSettings().SiblingPath(L"foto.jpg").c_str());
+    }
+
+    if (homeActions.joinClipboard && !g_clipboardInvite.empty())
+    {
+        strncpy_s(g_homeCodeInput, g_clipboardInvite.c_str(), _TRUNCATE);
+
+        g_clipboardDismissed = g_clipboardInvite;
+
+        homeActions.enter = true;
+    }
+
+    if (homeActions.dismissClipboard)
+    {
+        g_clipboardDismissed = g_clipboardInvite;
+    }
+
+    if (homeActions.joinRecent >= 0 &&
+        homeActions.joinRecent < static_cast<int>(g_recentRooms.size()))
+    {
+        strncpy_s(
+            g_homeCodeInput,
+            g_recentRooms[homeActions.joinRecent].code.c_str(),
+            _TRUNCATE);
+
+        homeActions.enter = true;
+    }
+
+    if (homeActions.forgetRecent >= 0 &&
+        homeActions.forgetRecent < static_cast<int>(g_recentRooms.size()))
+    {
+        ForgetRoom(g_recentRooms[homeActions.forgetRecent].code);
+    }
+
     // Link de convite clicado: preenche o codigo e entra (se ja
     // tiver nome e estiver na tela inicial).
     if (!g_pendingInvite.empty())
@@ -7891,10 +8274,12 @@ void DrawReceiverUi()
             AddToast(
                 "Convite recebido: o código está na tela inicial.");
         }
-        else if (!hasName)
+        else if (!hasName || g_needProfile)
         {
-            g_homeError =
-                "Convite pronto: escreva seu nome e clique em Entrar.";
+            // Entra depois de "Continuar" (nome e foto).
+            g_inviteWaiting = true;
+
+            g_needProfile = true;
         }
         else
         {
@@ -7947,8 +8332,9 @@ void DrawReceiverUi()
 
     if (homeActions.openSettings)
     {
-        OpenSettings(SETTINGS_TAB_GENERAL);
+        ToggleSettings(SETTINGS_TAB_GENERAL);
     }
+
 
     if (homeActions.shareWithoutRoom)
     {
@@ -7986,7 +8372,7 @@ void DrawReceiverUi()
 
     if (roomActions.openVoiceSettings)
     {
-        OpenSettings(SETTINGS_TAB_VOICE);
+        ToggleSettings(SETTINGS_TAB_VOICE);
     }
 
     if (roomActions.voiceSettingsChanged)
@@ -8408,13 +8794,14 @@ void RenderFrame()
 
     // Sem video na tela: fundo do tema (claro ou escuro). Com
     // video: preto (as bordas do letterbox).
-    bool lightBackground =
-        UiIsLightTheme() && !(haveFrame && g_videoSRV);
+    bool videoShown = haveFrame && g_videoSRV;
+
+    ImVec4 base = UiColorBase();
 
     float clearColor[4] =
-        { lightBackground ? 0.90f : 0.0f,
-          lightBackground ? 0.91f : 0.0f,
-          lightBackground ? 0.93f : 0.0f,
+        { videoShown ? 0.0f : base.x,
+          videoShown ? 0.0f : base.y,
+          videoShown ? 0.0f : base.z,
           1.0f };
 
 
@@ -8815,7 +9202,7 @@ void ShowFatalError(
     MessageBoxW(
         nullptr,
         message,
-        L"Stream Project",
+        L"Chega\u00ea",
         MB_OK | MB_ICONERROR
     );
 }
@@ -8836,7 +9223,7 @@ int AppMain(
     if (!invite.empty())
     {
         HWND running =
-            FindWindowW(L"StreamProjectWindow", nullptr);
+            FindWindowW(L"ChegaeWindow", nullptr);
 
         if (running)
         {
@@ -8936,12 +9323,12 @@ int AppMain(
     // LOG EM ARQUIVO
     //
     // O programa nao tem mais console: tudo que antes aparecia
-    // nele (std::cout / std::cerr) vai pra stream-project.log,
+    // nele (std::cout / std::cerr) vai pra chegae.log,
     // na pasta do programa. E o arquivo a enviar quando algo
     // der errado.
     //
     // Cada receiver aberto ao mesmo tempo escreve no SEU
-    // arquivo (stream-project.log, stream-project-2.log...).
+    // arquivo (chegae.log, chegae-2.log...).
     // Dois programas nao podem gravar no mesmo arquivo: sem
     // isso, o segundo receiver falhava ao abrir o log e
     // encerrava logo na abertura.
@@ -8956,7 +9343,7 @@ int AppMain(
         for (; instance <= 8; ++instance)
         {
             std::wstring name =
-                L"StreamProjectInstance" +
+                L"ChegaeInstance" +
                 std::to_wstring(instance);
 
             HANDLE marker =
@@ -8981,8 +9368,8 @@ int AppMain(
 
         std::string logName =
             instance == 1
-            ? "stream-project.log"
-            : "stream-project-" +
+            ? "chegae.log"
+            : "chegae-" +
               std::to_string(instance) +
               ".log";
 
@@ -9023,8 +9410,8 @@ int AppMain(
         // e um .dmp pra diagnostico (ver crash_report.h).
         std::wstring dumpName =
             instance == 1
-            ? L"stream-project-crash.dmp"
-            : L"stream-project-" +
+            ? L"chegae-crash.dmp"
+            : L"chegae-" +
               std::to_wstring(instance) +
               L"-crash.dmp";
 
@@ -9084,7 +9471,7 @@ int AppMain(
     // ========================================================
 
     const wchar_t CLASS_NAME[] =
-        L"StreamProjectWindow";
+        L"ChegaeWindow";
 
     HINSTANCE hInstance =
         GetModuleHandleW(nullptr);
@@ -9129,7 +9516,7 @@ int AppMain(
         CreateWindowExW(
             0,
             CLASS_NAME,
-            L"Stream Project " STREAM_APP_VERSION_W,
+            L"Chega\u00ea " STREAM_APP_VERSION_W,
             WS_OVERLAPPEDWINDOW,
             CW_USEDEFAULT,
             CW_USEDEFAULT,

@@ -28,6 +28,9 @@ struct ClientScreenActions
     // Qualidade ou FPS trocados durante a transmissao
     bool qualityChanged = false;
 
+    // Dispositivo de som trocado durante a transmissao
+    bool audioChanged = false;
+
     // "Parar de transmitir" (volta pra tela de opcoes)
     bool roomPreviewChanged = false;
 
@@ -164,6 +167,11 @@ struct ClientLiveModel
     std::string replyStatus;
 
     bool replyOk = false;
+
+    // Som (de onde vem o audio), trocavel durante a transmissao
+    // (a tela altera direto e avisa em actions.audioChanged).
+    const std::vector<std::string>* audioDevices = nullptr;
+    int* audioIndex = nullptr;
 
     // Numa sala: o painel abre pela barra de icones (acima
     // dela, em anchorX/anchorY) e fecha pelo X ou pela barra.

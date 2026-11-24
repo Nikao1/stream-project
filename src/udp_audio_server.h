@@ -69,6 +69,14 @@ public:
         return ntohs(bound.sin_port);
     }
 
+    // Quantos podem se conectar (canal de voz: mais que uma
+    // transmissao - ver MAX_LIST_CAPACITY).
+    void SetViewerLimit(
+        size_t limit)
+    {
+        m_viewers.SetLimit(limit);
+    }
+
     // Esquece todos os espectadores (ver UdpServer).
     void ClearViewers()
     {
