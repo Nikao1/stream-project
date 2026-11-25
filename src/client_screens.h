@@ -53,6 +53,11 @@ struct ClientScreenActions
 
     bool openDownloadPage = false;
 
+    // Aviso de janela preta: trocar pra tela onde ela esta /
+    // dispensar o aviso.
+    bool captureWholeScreen = false;
+    bool dismissBlackCapture = false;
+
     bool recheckFfmpeg = false;
 };
 
@@ -182,6 +187,10 @@ struct ClientLiveModel
 
     // Controles escondidos (Tab): o painel some junto.
     bool hidden = false;
+
+    // A janela compartilhada esta chegando preta (alguns jogos,
+    // como a partida do LoL): sugerir a tela inteira.
+    bool blackCapture = false;
 };
 
 void DrawClientLiveScreen(

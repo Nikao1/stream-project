@@ -471,7 +471,7 @@ bool UiPrimaryButton(
     ImGui::BeginDisabled(!enabled);
 
     bool clicked =
-        ImGui::Button(
+        UiButton(
             label,
             ImVec2(
                 ImGui::GetContentRegionAvail().x,
@@ -505,7 +505,7 @@ bool UiPrimaryButtonSized(
 
     ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0, 0, 0, 0));
 
-    bool clicked = ImGui::Button(label, size);
+    bool clicked = UiButton(label, size);
 
     ImGui::PopStyleColor(5);
 
@@ -649,7 +649,7 @@ void UiFfmpegProblemPanel(
         outOpenDownloadPage = true;
     }
 
-    if (ImGui::Button(
+    if (UiButton(
             "Verificar de novo",
             ImVec2(
                 ImGui::GetContentRegionAvail().x,
@@ -883,7 +883,7 @@ void UiMicIconAt(
     ImVec2 pos,
     float size,
     ImU32 color,
-    bool slashed)
+    float slashed)
 {
     ImDrawList* draw = ImGui::GetWindowDrawList();
 
@@ -923,14 +923,116 @@ void UiMicIconAt(
         color,
         thick);
 
-    if (slashed)
+    if (slashed > 0.01f)
     {
+        float k = slashed > 1.0f ? 1.0f : slashed;
+
+        // O risco "desenha" de cima pra baixo e aparece junto.
+        float grow = 1.0f - (1.0f - k) * (1.0f - k);
+
+        ImVec2 a(pos.x + size * 0.12f, pos.y + size * 0.10f);
+        ImVec2 b(pos.x + size * 0.88f, pos.y + size * 0.90f);
+
         draw->AddLine(
-            ImVec2(pos.x + size * 0.12f, pos.y + size * 0.10f),
-            ImVec2(pos.x + size * 0.88f, pos.y + size * 0.90f),
-            IM_COL32(239, 68, 68, static_cast<int>(255 * ImGui::GetStyle().Alpha)),
+            a,
+            ImVec2(a.x + (b.x - a.x) * grow, a.y + (b.y - a.y) * grow),
+            IM_COL32(239, 68, 68, static_cast<int>(255 * ImGui::GetStyle().Alpha * k)),
             thick * 1.3f);
     }
+}
+
+
+float UiAnimate(
+    ImGuiID key,
+    bool on,
+    float seconds)
+{
+    ImGuiStorage* storage = ImGui::GetStateStorage();
+
+    // Marca "ja visto" separada: na primeira vez nao anima.
+    int* seen = storage->GetIntRef(key ^ 0x51A7E5u, 0);
+
+    float* value = storage->GetFloatRef(key, on ? 1.0f : 0.0f);
+
+    if (!*seen)
+    {
+        *seen = 1;
+        *value = on ? 1.0f : 0.0f;
+
+        return *value;
+    }
+
+    float step = seconds > 0.0f ? ImGui::GetIO().DeltaTime / seconds : 1.0f;
+
+    if (on)
+        *value = (std::min)(1.0f, *value + step);
+    else
+        *value = (std::max)(0.0f, *value - step);
+
+    return *value;
+}
+
+
+namespace
+{
+    ImVec4 LerpColor(const ImVec4& a, const ImVec4& b, float t)
+    {
+        return ImVec4(
+            a.x + (b.x - a.x) * t,
+            a.y + (b.y - a.y) * t,
+            a.z + (b.z - a.z) * t,
+            a.w + (b.w - a.w) * t);
+    }
+
+    // Fundo do botao entre o normal e o "mouse em cima" pelo
+    // valor animado da ultima vez (o hover deste frame so se sabe
+    // depois de desenhar - 1 frame de atraso, imperceptivel).
+    template <typename Draw>
+    bool FadedButton(const char* label, Draw draw)
+    {
+        ImGuiID key = ImGui::GetID(label) ^ 0x0B7F4D1Eu;
+
+        ImGuiStorage* storage = ImGui::GetStateStorage();
+
+        float t = storage->GetFloat(key, 0.0f);
+
+        ImVec4 normal = ImGui::GetStyleColorVec4(ImGuiCol_Button);
+        ImVec4 hovered = ImGui::GetStyleColorVec4(ImGuiCol_ButtonHovered);
+
+        ImVec4 now = LerpColor(normal, hovered, t);
+
+        ImGui::PushStyleColor(ImGuiCol_Button, now);
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, now);
+
+        bool clicked = draw();
+
+        ImGui::PopStyleColor(2);
+
+        bool over = ImGui::IsItemHovered();
+
+        float step = ImGui::GetIO().DeltaTime / 0.12f;
+
+        t = over ? (std::min)(1.0f, t + step) : (std::max)(0.0f, t - step);
+
+        storage->SetFloat(key, t);
+
+        return clicked;
+    }
+}
+
+
+bool UiButton(
+    const char* label,
+    const ImVec2& size)
+{
+    return FadedButton(label, [&] { return ImGui::Button(label, size); });
+}
+
+
+bool UiSmallButton(
+    const char* label)
+{
+    return FadedButton(label, [&] { return ImGui::SmallButton(label); });
 }
 
 
@@ -1235,7 +1337,22 @@ void UiIconAt(
     float size,
     ImU32 color)
 {
+    UiIconAtEx(
+        icon, c, size, color,
+        icon == UiIcon::MicOff || icon == UiIcon::VolumeOff ? 1.0f : 0.0f);
+}
+
+
+void UiIconAtEx(
+    UiIcon icon,
+    ImVec2 c,
+    float size,
+    ImU32 color,
+    float off)
+{
     ImDrawList* draw = ImGui::GetWindowDrawList();
+
+    off = off < 0.0f ? 0.0f : (off > 1.0f ? 1.0f : off);
 
     float h = size * 0.5f;
     float t = (std::max)(1.0f, size * 0.09f);
@@ -1257,9 +1374,18 @@ void UiIconAt(
         draw->AddLine(P(0.0f, 0.57f), P(0.0f, 0.88f), color, t);
         draw->AddLine(P(-0.38f, 0.92f), P(0.38f, 0.92f), color, t);
 
-        if (icon == UiIcon::MicOff)
+        if (off > 0.01f)
         {
-            draw->AddLine(P(-0.85f, -0.85f), P(0.85f, 0.85f), redOff, t * 1.3f);
+            // O risco "desenha" e aparece junto (transicao).
+            float grow = 1.0f - (1.0f - off) * (1.0f - off);
+
+            ImU32 red = (redOff & ~IM_COL32_A_MASK) |
+                (static_cast<ImU32>(((redOff >> IM_COL32_A_SHIFT) & 0xFF) * off) << IM_COL32_A_SHIFT);
+
+            draw->AddLine(
+                P(-0.85f, -0.85f),
+                P(-0.85f + 1.7f * grow, -0.85f + 1.7f * grow),
+                red, t * 1.3f);
         }
 
         break;
@@ -1276,17 +1402,29 @@ void UiIconAt(
 
         draw->AddPolyline(body, 6, color, ImDrawFlags_Closed, t);
 
-        if (icon == UiIcon::Volume)
+        auto withAlpha =
+            [](ImU32 col, float k)
+            {
+                return (col & ~IM_COL32_A_MASK) |
+                    (static_cast<ImU32>(((col >> IM_COL32_A_SHIFT) & 0xFF) * k) << IM_COL32_A_SHIFT);
+            };
+
+        if (off < 0.99f)
         {
+            ImU32 waves = withAlpha(color, 1.0f - off);
+
             draw->PathArcTo(P(0.05f, 0.0f), h * 0.42f, -0.9f, 0.9f, 10);
-            draw->PathStroke(color, 0, t);
+            draw->PathStroke(waves, 0, t);
             draw->PathArcTo(P(0.05f, 0.0f), h * 0.78f, -0.9f, 0.9f, 12);
-            draw->PathStroke(color, 0, t);
+            draw->PathStroke(waves, 0, t);
         }
-        else
+
+        if (off > 0.01f)
         {
-            draw->AddLine(P(0.3f, -0.35f), P(0.9f, 0.35f), redOff, t);
-            draw->AddLine(P(0.3f, 0.35f), P(0.9f, -0.35f), redOff, t);
+            ImU32 cross = withAlpha(redOff, off);
+
+            draw->AddLine(P(0.3f, -0.35f), P(0.9f, 0.35f), cross, t);
+            draw->AddLine(P(0.3f, 0.35f), P(0.9f, -0.35f), cross, t);
         }
 
         break;
@@ -1482,7 +1620,7 @@ bool UiIconLabelButton(
 
     std::string id = std::string("##") + label;
 
-    bool clicked = ImGui::Button(id.c_str(), size);
+    bool clicked = UiButton(id.c_str(), size);
 
     ImVec2 min = ImGui::GetItemRectMin();
 
@@ -1550,7 +1688,7 @@ bool UiIconButton(
         ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(accent.x, accent.y, accent.z, 0.30f));
     }
 
-    bool clicked = ImGui::Button(id, ImVec2(size, size));
+    bool clicked = UiButton(id, ImVec2(size, size));
 
     if (active)
     {
@@ -1559,18 +1697,76 @@ bool UiIconButton(
 
     ImVec2 min = ImGui::GetItemRectMin();
 
+    ImVec2 center(min.x + size * 0.5f, min.y + size * 0.5f);
+
+    // Cor (normal / destacado / vermelho) em fade.
+    ImGuiID itemId = ImGui::GetItemID();
+
+    float dangerT = UiAnimate(itemId ^ 0x2D1Au, danger);
+    float activeT = UiAnimate(itemId ^ 0x2D1Bu, active);
+
     ImVec4 color =
-        danger ? UiColorError()
-        : active ? UiColorAccent()
-        : ImGui::GetStyleColorVec4(ImGuiCol_Text);
+        LerpColor(
+            LerpColor(ImGui::GetStyleColorVec4(ImGuiCol_Text), UiColorAccent(), activeT),
+            UiColorError(),
+            dangerT);
 
     color.w *= ImGui::GetStyle().Alpha;
 
-    UiIconAt(
-        icon,
-        ImVec2(min.x + size * 0.5f, min.y + size * 0.5f),
-        size * 0.5f,
-        ImGui::ColorConvertFloat4ToU32(color));
+    ImU32 colorU32 = ImGui::ColorConvertFloat4ToU32(color);
+
+    bool micFamily = icon == UiIcon::Mic || icon == UiIcon::MicOff;
+    bool volumeFamily = icon == UiIcon::Volume || icon == UiIcon::VolumeOff;
+
+    if (micFamily || volumeFamily)
+    {
+        // Ligar/desligar: o risco (ou o X) entra e sai em fade.
+        float off = UiAnimate(
+            itemId ^ 0x2D1Cu,
+            icon == UiIcon::MicOff || icon == UiIcon::VolumeOff,
+            0.18f);
+
+        UiIconAtEx(icon, center, size * 0.5f, colorU32, off);
+    }
+    else
+    {
+        // Outros icones que trocam (tela cheia, fixar...): o
+        // antigo some enquanto o novo aparece.
+        ImGuiStorage* storage = ImGui::GetStateStorage();
+
+        int* last = storage->GetIntRef(itemId ^ 0x2D1Du, static_cast<int>(icon));
+        int* previous = storage->GetIntRef(itemId ^ 0x2D1Eu, static_cast<int>(icon));
+        float* mix = storage->GetFloatRef(itemId ^ 0x2D1Fu, 1.0f);
+
+        if (*last != static_cast<int>(icon))
+        {
+            *previous = *last;
+            *last = static_cast<int>(icon);
+            *mix = 0.0f;
+        }
+
+        *mix = (std::min)(1.0f, *mix + ImGui::GetIO().DeltaTime / 0.15f);
+
+        if (*mix < 1.0f)
+        {
+            ImVec4 faded = color;
+
+            faded.w *= 1.0f - *mix;
+
+            UiIconAt(
+                static_cast<UiIcon>(*previous), center, size * 0.5f,
+                ImGui::ColorConvertFloat4ToU32(faded));
+
+            faded = color;
+            faded.w *= *mix;
+
+            UiIconAt(icon, center, size * 0.5f, ImGui::ColorConvertFloat4ToU32(faded));
+        }
+        else
+        {
+            UiIconAt(icon, center, size * 0.5f, colorU32);
+        }
+    }
 
     if (badge > 0)
     {

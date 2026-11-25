@@ -51,6 +51,11 @@ void UiBeginFrame();
 // Desenha a interface no render target atual.
 void UiEndFrame();
 
+// Janela minimizada/escondida: a interface ainda roda (a logica
+// da sala e da voz mora nela), mas sem desenhar nada.
+void UiSetBackground(
+    bool background);
+
 
 // true = um campo de texto da interface esta com o foco;
 // atalhos de teclado do programa devem ser ignorados.

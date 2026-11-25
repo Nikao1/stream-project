@@ -159,6 +159,19 @@ float NoiseSuppressor::Process(
 
     float high[FRAME_48K];
 
+    // Ganho automatico antes da rede: voz baixa (microfone
+    // sensivel de menos) chega mais "forte" pro RNNoise
+    // reconhecer como voz.
+    if (!m_bypass && m_inputGain != 1.0f)
+    {
+        for (size_t i = 0; i < FRAME_SAMPLES; ++i)
+        {
+            float value = samples[i] * m_inputGain;
+
+            samples[i] = value > 1.0f ? 1.0f : (value < -1.0f ? -1.0f : value);
+        }
+    }
+
     Upsample(samples, high);
 
     float vad = 0.0f;
@@ -194,11 +207,42 @@ float NoiseSuppressor::Process(
 
     if (!m_bypass)
     {
-        // Ganho alvo pela deteccao de voz: fala (e 200 ms depois
-        // dela) = 1; sem voz = 0,1 (-20 dB); no meio, gradual.
-        if (vad > 0.5f)
+        // Ganho automatico: mede a voz (so quando ha voz) e ajusta
+        // devagar pra ela ficar perto de -22 dBFS, entre 1x e 4x.
+        if (vad > 0.6f)
         {
-            m_gateHold = 10; // 10 x 20 ms
+            double energy = 0.0;
+
+            for (size_t i = 0; i < FRAME_SAMPLES; ++i)
+            {
+                energy += static_cast<double>(samples[i]) * samples[i];
+            }
+
+            float rms = static_cast<float>(std::sqrt(energy / FRAME_SAMPLES)) / m_inputGain;
+
+            if (rms > 0.0005f)
+            {
+                float wanted = 0.08f / rms;
+
+                wanted = wanted < 1.0f ? 1.0f : (wanted > 4.0f ? 4.0f : wanted);
+
+                m_inputGain += (wanted - m_inputGain) * 0.03f;
+            }
+        }
+
+        // Porta pela deteccao de voz (por intensidade): abre com
+        // voz e segura depois dela; sem voz, abaixa ate "floor";
+        // no meio, gradual.
+        static const float OPEN[3] = { 0.30f, 0.40f, 0.50f };
+        static const float CLOSE[3] = { 0.10f, 0.15f, 0.25f };
+        static const int HOLD[3] = { 20, 15, 10 };          // x 20 ms
+        static const float FLOOR[3] = { 0.40f, 0.20f, 0.10f }; // -8 / -14 / -20 dB
+
+        int level = m_strength;
+
+        if (vad > OPEN[level])
+        {
+            m_gateHold = HOLD[level];
         }
 
         float target;
@@ -209,13 +253,16 @@ float NoiseSuppressor::Process(
 
             m_gateHold--;
         }
-        else if (vad <= 0.25f)
+        else if (vad <= CLOSE[level])
         {
-            target = 0.1f;
+            target = FLOOR[level];
         }
         else
         {
-            target = 0.1f + (vad - 0.25f) / 0.25f * 0.9f;
+            target =
+                FLOOR[level] +
+                (vad - CLOSE[level]) / (OPEN[level] - CLOSE[level]) *
+                (1.0f - FLOOR[level]);
         }
 
         // Abre rapido (~5 ms), fecha devagar (~120 ms): sem

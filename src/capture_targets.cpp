@@ -387,6 +387,13 @@ BOOL CALLBACK CollectWindow(
 
     target.needsAdmin = needsAdmin;
 
+    // A partida do LoL costuma chegar preta capturando so a
+    // janela (a tela inteira funciona).
+    if (_wcsicmp(processName.c_str(), L"League of Legends.exe") == 0)
+    {
+        target.detail += " · melhor pela tela inteira";
+    }
+
     if (needsAdmin)
     {
         target.detail +=

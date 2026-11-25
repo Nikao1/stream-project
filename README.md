@@ -37,12 +37,12 @@ A ideia é ser o contrário de pesado e de "passa tudo pelo servidor de alguém"
   disponível.
 - Várias pessoas podem transmitir ao mesmo tempo; cada um escolhe quem assistir,
   com prévia de cada transmissão na sala.
-- **Canal de voz** com redução de ruído (RNNoise), segurar para falar ou
+- **Canal de voz** com redução de ruído (RNNoise, intensidade leve/normal/forte), segurar para falar ou
   microfone aberto, atalhos globais (funcionam com o jogo aberto), volume por
   pessoa e indicador de quem está falando.
 - **Chat** da sala, foto de perfil e nome da sala — tudo criptografado.
 - Tema escuro e claro, barra de controles que some sozinha sobre o vídeo,
-  painel lateral de pessoas e chat.
+  painel lateral de pessoas e chat, opção de continuar em segundo plano (bandeja).
 
 ## Como usar
 

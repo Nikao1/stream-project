@@ -142,7 +142,7 @@ void DrawConnectScreen(
 
     ImGui::SameLine();
 
-    if (ImGui::Button(pasteLabel))
+    if (UiButton(pasteLabel))
     {
         // Cola tirando espacos e quebras de linha (um
         // convite longo as vezes vem quebrado em duas).
@@ -210,7 +210,7 @@ void DrawConnectScreen(
     {
         ImGui::Spacing();
 
-        if (ImGui::Button(
+        if (UiButton(
                 "Voltar",
                 ImVec2(
                     ImGui::GetContentRegionAvail().x,
@@ -453,7 +453,7 @@ void DrawHomeScreen(
 
         ImGui::SameLine(ImGui::GetContentRegionMax().x - testWidth);
 
-        if (ImGui::Button(testLabel, ImVec2(testWidth, 0.0f)))
+        if (UiButton(testLabel, ImVec2(testWidth, 0.0f)))
         {
             actions.testMicrophone = true;
         }
@@ -484,7 +484,7 @@ void DrawHomeScreen(
 
             float half = (260.0f * UiScale() - style.ItemSpacing.x) * 0.5f;
 
-            if (ImGui::Button("Trocar foto", ImVec2(half, 0.0f)))
+            if (UiButton("Trocar foto", ImVec2(half, 0.0f)))
             {
                 actions.chooseAvatar = true;
             }
@@ -493,7 +493,7 @@ void DrawHomeScreen(
 
             ImGui::BeginDisabled(model.avatar == nullptr);
 
-            if (ImGui::Button("Remover foto", ImVec2(half, 0.0f)))
+            if (UiButton("Remover foto", ImVec2(half, 0.0f)))
             {
                 actions.removeAvatar = true;
             }
@@ -597,7 +597,7 @@ void DrawHomeScreen(
             ImGuiInputTextFlags_EnterReturnsTrue |
             ImGuiInputTextFlags_AutoSelectAll);
 
-    if (ImGui::Button("Entrar", ImVec2(column, 0.0f)) || submitted)
+    if (UiButton("Entrar", ImVec2(column, 0.0f)) || submitted)
     {
         actions.enter = true;
     }
@@ -670,7 +670,7 @@ void DrawHomeScreen(
 
             ImGui::BeginDisabled(model.busy);
 
-            if (ImGui::Button("Entrar", ImVec2(enterWidth, 0.0f)))
+            if (UiButton("Entrar", ImVec2(enterWidth, 0.0f)))
             {
                 actions.joinRecent = static_cast<int>(i);
             }
@@ -703,7 +703,7 @@ void DrawHomeScreen(
     ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 0.0f);
     ImGui::PushStyleColor(ImGuiCol_Text, UiColorMuted());
 
-    if (ImGui::Button("Transmitir sem sala (código direto)"))
+    if (UiButton("Transmitir sem sala (código direto)"))
     {
         actions.shareWithoutRoom = true;
     }
@@ -815,7 +815,7 @@ bool DrawChatBox(
 
     ImGui::SameLine();
 
-    bool clicked = ImGui::Button(sendLabel);
+    bool clicked = UiButton(sendLabel);
 
     bool send =
         (submitted || clicked) &&
@@ -1008,8 +1008,12 @@ void PersonRow(
 
     ImGui::TextUnformatted(name.c_str());
 
-    // Microfone desligado / silenciado por voce: ao lado do nome.
-    if (indicator >= 2)
+    // Microfone desligado / silenciado por voce: ao lado do nome
+    // (o de microfone entra e sai em fade).
+    float micOffT = UiAnimate(
+        ImGui::GetID((name + "##micoff").c_str()), indicator == 2, 0.18f);
+
+    if (indicator >= 2 || micOffT > 0.01f)
     {
         ImVec2 nameMax = ImGui::GetItemRectMax();
         ImVec2 nameMin = ImGui::GetItemRectMin();
@@ -1030,11 +1034,15 @@ void PersonRow(
 
         const char* tip = "";
 
-        if (indicator == 2)
+        if (indicator != 3)
         {
+            ImVec4 faded = red4;
+
+            faded.w *= micOffT;
+
             UiMicIconAt(
                 ImVec2(center.x - line * 0.45f, center.y - line * 0.45f),
-                line * 0.9f, red, true);
+                line * 0.9f, ImGui::ColorConvertFloat4ToU32(faded), micOffT);
 
             tip = "Microfone desligado";
         }
@@ -1157,7 +1165,7 @@ bool MemberRow(
             (220.0f * UiScale() -
              ImGui::GetStyle().ItemSpacing.x) * 0.5f;
 
-        if (ImGui::Button(
+        if (UiButton(
                 silenced ? "Ativar som" : "Silenciar",
                 ImVec2(half, 0.0f)))
         {
@@ -1167,7 +1175,7 @@ bool MemberRow(
 
         ImGui::SameLine();
 
-        if (ImGui::Button("Volume normal", ImVec2(half, 0.0f)))
+        if (UiButton("Volume normal", ImVec2(half, 0.0f)))
         {
             outVolume = 1.0f;
             changed = true;
@@ -1187,7 +1195,7 @@ bool GearButton(
 {
     float size = ImGui::GetFrameHeight();
 
-    bool clicked = ImGui::Button(id, ImVec2(size, size));
+    bool clicked = UiButton(id, ImVec2(size, size));
 
     bool hovered = ImGui::IsItemHovered();
 
@@ -1401,7 +1409,7 @@ void DrawRoomScreen(
 
         float half = (260.0f * UiScale() - style.ItemSpacing.x) * 0.5f;
 
-        if (ImGui::Button("Salvar", ImVec2(half, 0.0f)) || enter)
+        if (UiButton("Salvar", ImVec2(half, 0.0f)) || enter)
         {
             actions.setTitle = true;
             actions.titleText = titleBuffer;
@@ -1413,7 +1421,7 @@ void DrawRoomScreen(
 
         ImGui::BeginDisabled(!hasTitle);
 
-        if (ImGui::Button("Tirar o nome", ImVec2(half, 0.0f)))
+        if (UiButton("Tirar o nome", ImVec2(half, 0.0f)))
         {
             actions.setTitle = true;
             actions.titleText.clear();
@@ -1785,7 +1793,7 @@ void DrawRoomScreen(
         else if (entry.watching)
         {
             ImGui::BeginDisabled();
-            ImGui::Button(
+            UiButton(
                 model.connecting ? "Conectando" : "Assistindo",
                 ImVec2(buttonWidth, 0.0f));
             ImGui::EndDisabled();
@@ -1796,7 +1804,7 @@ void DrawRoomScreen(
 
             ImGui::PushStyleColor(ImGuiCol_Text, UiColorAccent());
 
-            if (ImGui::Button("Assistir", ImVec2(buttonWidth, 0.0f)))
+            if (UiButton("Assistir", ImVec2(buttonWidth, 0.0f)))
             {
                 actions.watch = static_cast<int>(i);
             }
@@ -1940,7 +1948,7 @@ void DrawRoomScreen(
 
             float half = (inner - style.ItemSpacing.x) * 0.5f;
 
-            if (ImGui::Button("Opções##opcoestransm", ImVec2(half, 0.0f)))
+            if (UiButton("Opções##opcoestransm", ImVec2(half, 0.0f)))
             {
                 actions.toggleShareOptions = true;
             }
@@ -1949,7 +1957,7 @@ void DrawRoomScreen(
 
             ImGui::PushStyleColor(ImGuiCol_Text, UiColorError());
 
-            if (ImGui::Button("Parar##parartransm", ImVec2(half, 0.0f)))
+            if (UiButton("Parar##parartransm", ImVec2(half, 0.0f)))
             {
                 actions.stopShare = true;
             }
@@ -2056,7 +2064,7 @@ void DrawRoomWaitingScreen(
 
     ImGui::Spacing();
 
-    if (ImGui::Button(
+    if (UiButton(
             "Voltar para a sala",
             ImVec2(ImGui::GetContentRegionAvail().x, 0.0f)))
     {
@@ -2138,7 +2146,7 @@ void DrawWaitingScreen(
             reply.c_str()
         );
 
-        if (ImGui::Button(
+        if (UiButton(
                 "Copiar resposta",
                 ImVec2(
                     ImGui::GetContentRegionAvail().x,
@@ -2240,7 +2248,7 @@ bool ToggleButton(
     }
 
     bool clicked =
-        ImGui::Button(
+        UiButton(
             label,
             ImVec2(width, 0.0f));
 
@@ -2324,7 +2332,7 @@ bool DrawStreamOverlay(
         BeginTopRightWindow(
             "##opcoesfechado", model.alpha, topOffset, sideOffset);
 
-        if (ImGui::Button("Opções"))
+        if (UiButton("Opções"))
         {
             collapsed = false;
         }
@@ -2367,7 +2375,7 @@ bool DrawStreamOverlay(
     ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
     ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 0.0f);
 
-    if (ImGui::Button(
+    if (UiButton(
             "×##fechar",
             ImVec2(closeSize, closeSize)))
     {
@@ -2402,7 +2410,7 @@ bool DrawStreamOverlay(
             UiColorError());
     }
 
-    if (ImGui::Button(
+    if (UiButton(
             muted ? "Som desligado" : "Som ligado",
             ImVec2(muteWidth, 0.0f)))
     {
@@ -2468,7 +2476,7 @@ bool DrawStreamOverlay(
         ImGui::SetTooltip("Sem bordas; corta um pouco das beiradas.");
     }
 
-    if (ImGui::Button(
+    if (UiButton(
             model.fullscreen
                 ? "Sair da tela cheia"
                 : "Tela cheia",
@@ -2483,7 +2491,7 @@ bool DrawStreamOverlay(
         // (Pessoas, chat e microfone ficam na barra da sala,
         // acima deste painel.)
         // (configuracoes: engrenagem na barra da sala)
-        if (ImGui::Button(
+        if (UiButton(
                 "Voltar à sala",
                 ImVec2(rowWidth, 0.0f)))
         {
@@ -2514,7 +2522,7 @@ bool DrawStreamOverlay(
                         full,
                         rowWidth - style.FramePadding.x * 2.0f);
 
-                if (ImGui::Button(
+                if (UiButton(
                         (label + "##troca").c_str(),
                         ImVec2(rowWidth, 0.0f)))
                 {
@@ -2686,12 +2694,12 @@ void SideVoiceControls(
 
         ImGui::SameLine();
 
-        UiMutedText((std::string("Entrando na voz") + UiBusyDots()).c_str());
+        UiMutedText((std::string("Entrando no canal de voz") + UiBusyDots()).c_str());
     }
     else if (!model.voiceJoined)
     {
         if (UiIconLabelButton(
-                "Entrar na voz",
+                "Entrar no canal de voz",
                 UiIcon::Mic,
                 ImVec2(ImGui::GetContentRegionAvail().x - gear, 0.0f),
                 UiColorSuccess()))
@@ -2707,14 +2715,21 @@ void SideVoiceControls(
             (ImGui::GetContentRegionAvail().x - gear -
              style.ItemSpacing.x) * 0.5f;
 
-        ImVec4 micColor =
-            model.voiceMuted
-            ? UiColorError()
-            : ImGui::GetStyleColorVec4(ImGuiCol_Text);
+        // Mudo/ligado em fade (cor e risco do microfone).
+        float mutedT = UiAnimate(ImGui::GetID("##micpanim"), model.voiceMuted, 0.18f);
+
+        ImVec4 textColor = ImGui::GetStyleColorVec4(ImGuiCol_Text);
+        ImVec4 redColor = UiColorError();
+
+        ImVec4 micColor(
+            textColor.x + (redColor.x - textColor.x) * mutedT,
+            textColor.y + (redColor.y - textColor.y) * mutedT,
+            textColor.z + (redColor.z - textColor.z) * mutedT,
+            textColor.w + (redColor.w - textColor.w) * mutedT);
 
         ImGui::PushStyleColor(ImGuiCol_Text, micColor);
 
-        if (ImGui::Button(
+        if (UiButton(
                 model.voiceMuted
                 ? "      Ligar mic.##micp"
                 : "      Silenciar##micp",
@@ -2733,11 +2748,11 @@ void SideVoiceControls(
                 buttonMin.y + style.FramePadding.y),
             ImGui::GetTextLineHeight(),
             ImGui::GetColorU32(micColor),
-            model.voiceMuted);
+            mutedT);
 
         ImGui::SameLine();
 
-        if (ImGui::Button("Sair da voz", ImVec2(half, 0.0f)))
+        if (UiButton("Sair da voz", ImVec2(half, 0.0f)))
         {
             actions.voiceLeave = true;
         }
@@ -2797,7 +2812,7 @@ bool SideTab(
         ? ImGui::GetStyleColorVec4(ImGuiCol_Text)
         : UiColorMuted());
 
-    bool clicked = ImGui::Button(label);
+    bool clicked = UiButton(label);
 
     ImGui::PopStyleVar();
     ImGui::PopStyleColor(2);
@@ -3052,7 +3067,7 @@ void DrawRoomSidePanel(
 
     SideVoiceControls(model.people, actions.people, model.showGear, actions.openVoiceSettings);
 
-    if (ImGui::SmallButton("Atalhos"))
+    if (UiSmallButton("Atalhos"))
     {
         actions.people.openShortcuts = true;
     }
@@ -3216,11 +3231,11 @@ void DrawRoomBar(
 
     if (model.voiceJoining)
     {
-        micTip = "Entrando na voz...";
+        micTip = "Entrando no canal de voz...";
     }
     else if (!model.voiceJoined)
     {
-        micTip = "Entrar na voz";
+        micTip = "Entrar no canal de voz";
     }
     else
     {
@@ -3446,7 +3461,7 @@ void DrawRoomBar(
             std::string label =
                 FitText(full, popupWidth - style.FramePadding.x * 2.0f);
 
-            if (ImGui::Button((label + "##troca").c_str(), ImVec2(popupWidth, 0.0f)))
+            if (UiButton((label + "##troca").c_str(), ImVec2(popupWidth, 0.0f)))
             {
                 actions.switchTo = static_cast<int>(i);
 
@@ -3667,7 +3682,7 @@ void DrawShortcutsTab(
         {
             ImGui::PushStyleColor(ImGuiCol_Text, UiColorAccent());
 
-            if (ImGui::Button(
+            if (UiButton(
                     "Aperte uma tecla...##tecla",
                     ImVec2(keyWidth, 0.0f)))
             {
@@ -3683,7 +3698,7 @@ void DrawShortcutsTab(
                 ImGui::PushStyleColor(ImGuiCol_Text, UiColorMuted());
             }
 
-            if (ImGui::Button(
+            if (UiButton(
                     (row.keyName + "##tecla").c_str(),
                     ImVec2(keyWidth, 0.0f)))
             {
@@ -3702,7 +3717,7 @@ void DrawShortcutsTab(
 
         ImGui::BeginDisabled(!row.hasKey || capturing);
 
-        if (ImGui::Button("×##limpar", ImVec2(clearWidth, 0.0f)))
+        if (UiButton("×##limpar", ImVec2(clearWidth, 0.0f)))
         {
             actions.clear = static_cast<int>(i);
         }
@@ -3726,7 +3741,7 @@ void DrawShortcutsTab(
         "Fixos: setas para cima/baixo mudam o volume da "
         "transmissão; duplo clique no vídeo é tela cheia.");
 
-    if (ImGui::Button("Restaurar padrões"))
+    if (UiButton("Restaurar padrões"))
     {
         actions.restoreDefaults = true;
     }
@@ -3762,7 +3777,7 @@ void DrawGeneralSettingsTab(
                     ImGui::PushStyleColor(ImGuiCol_Text, UiColorOnAccent());
                 }
 
-                bool clicked = ImGui::Button(label, ImVec2(half, 0.0f));
+                bool clicked = UiButton(label, ImVec2(half, 0.0f));
 
                 if (selected)
                 {
@@ -3789,6 +3804,22 @@ void DrawGeneralSettingsTab(
         ImGui::Spacing();
     }
 
+    // Segundo plano
+    if (model.closeToTray)
+    {
+        if (UiToggle("Ao fechar, continuar em segundo plano", model.closeToTray))
+        {
+            actions.trayChanged = true;
+        }
+
+        UiMutedText(
+            "O X da janela esconde o Colaê na bandeja (perto do "
+            "relógio) e a voz continua. Para sair de vez: botão "
+            "direito no ícone da bandeja > Sair.");
+
+        ImGui::Spacing();
+    }
+
     // Foto de perfil
     UiFieldLabel("Sua foto");
 
@@ -3811,7 +3842,7 @@ void DrawGeneralSettingsTab(
 
     ImGui::SetCursorPosY(buttonsY);
 
-    if (ImGui::Button("Escolher imagem..."))
+    if (UiButton("Escolher imagem..."))
     {
         actions.chooseAvatar = true;
     }
@@ -3822,7 +3853,7 @@ void DrawGeneralSettingsTab(
 
         ImGui::SetCursorPosY(buttonsY);
 
-        if (ImGui::Button("Remover"))
+        if (UiButton("Remover"))
         {
             actions.removeAvatar = true;
         }
@@ -3878,7 +3909,7 @@ void DrawGeneralSettingsTab(
 
         ImGui::BeginDisabled(model.serverTesting);
 
-        if (ImGui::Button("Testar", ImVec2(testWidth, 0.0f)))
+        if (UiButton("Testar", ImVec2(testWidth, 0.0f)))
         {
             actions.serverTest = true;
         }
@@ -3916,7 +3947,7 @@ void DrawGeneralSettingsTab(
 
         if (!model.serverIsDefault)
         {
-            if (ImGui::SmallButton("Voltar ao padrão"))
+            if (UiSmallButton("Voltar ao padrão"))
             {
                 actions.serverDefault = true;
             }
@@ -3998,7 +4029,7 @@ void DrawVoiceSettingsTab(
     {
         ImGui::SetCursorPosX(fieldX);
 
-        if (ImGui::Button(
+        if (UiButton(
                 model.micTestRunning
                 ? "Parar teste##teste"
                 : "Testar microfone##teste"))
@@ -4048,6 +4079,57 @@ void DrawVoiceSettingsTab(
         UiMutedText(
             "Tira do seu microfone teclado, mouse, ventoinha e o eco "
             "que vaza das caixas de som.");
+
+        if (*model.noiseSuppression && model.noiseStrength)
+        {
+            ImGui::Spacing();
+
+            UiFieldLabel("Intensidade");
+
+            const char* names[3] = { "Leve", "Normal", "Forte" };
+
+            float third =
+                (ImGui::GetContentRegionAvail().x -
+                 ImGui::GetStyle().ItemSpacing.x * 2.0f) / 3.0f;
+
+            for (int i = 0; i < 3; ++i)
+            {
+                if (i > 0)
+                    ImGui::SameLine();
+
+                bool selected = *model.noiseStrength == i;
+
+                if (selected)
+                {
+                    ImVec4 accent = UiColorAccent();
+
+                    ImGui::PushStyleColor(ImGuiCol_Button, accent);
+                    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, accent);
+                    ImGui::PushStyleColor(ImGuiCol_Text, UiColorOnAccent());
+                }
+
+                std::string id = std::string(names[i]) + "##intensidade";
+
+                if (UiButton(id.c_str(), ImVec2(third, 0.0f)) && !selected)
+                {
+                    *model.noiseStrength = i;
+                    actions.voiceSettingsChanged = true;
+                }
+
+                if (selected)
+                    ImGui::PopStyleColor(3);
+            }
+
+            UiMutedText(
+                *model.noiseStrength == 0
+                ? "Corta menos: melhor pra microfone baixo ou voz "
+                  "suave (deixa passar um pouco mais de ruído)."
+                : *model.noiseStrength == 1
+                ? "Equilíbrio entre voz natural e silêncio entre as "
+                  "falas."
+                : "Corta o máximo de ruído; em microfone baixo pode "
+                  "engolir o começo e o fim das palavras.");
+        }
 
         ImGui::Spacing();
     }

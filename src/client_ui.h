@@ -105,6 +105,14 @@ bool StartCaptureForTarget(
 // so sem imagem nova).
 void StopCapture();
 
+// Janela compartilhada que, desde o inicio, so chegou preta (ou
+// nem chegou) por ~2,5 s - acontece com alguns jogos, como a
+// partida do LoL. A tela inteira costuma funcionar.
+bool CaptureLooksBlack();
+
+// Janela sendo capturada (nullptr = uma tela inteira).
+HWND CaptureWindowHandle();
+
 // Liga/desliga o motor (portas UDP, threads). Ver main.cpp.
 bool EngineStart();
 

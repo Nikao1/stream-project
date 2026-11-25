@@ -181,6 +181,21 @@ bool UiHandleWindowMessage(
 }
 
 
+namespace
+{
+    bool g_uiBackground = false;
+
+    ImVec2 g_lastDisplaySize(1000.0f, 700.0f);
+}
+
+
+void UiSetBackground(
+    bool background)
+{
+    g_uiBackground = background;
+}
+
+
 void UiBeginFrame()
 {
     if (!g_uiReady)
@@ -188,6 +203,17 @@ void UiBeginFrame()
 
     ImGui_ImplDX11_NewFrame();
     ImGui_ImplWin32_NewFrame();
+
+    // Minimizada a area da janela vira 0x0: mantem o ultimo
+    // tamanho (os layouts nao sabem lidar com tela "vazia").
+    {
+        ImGuiIO& io = ImGui::GetIO();
+
+        if (io.DisplaySize.x < 1.0f || io.DisplaySize.y < 1.0f)
+            io.DisplaySize = g_lastDisplaySize;
+        else
+            g_lastDisplaySize = io.DisplaySize;
+    }
 
     ImGui::NewFrame();
 }
@@ -199,6 +225,9 @@ void UiEndFrame()
         return;
 
     ImGui::Render();
+
+    if (g_uiBackground)
+        return;
 
     ImGui_ImplDX11_RenderDrawData(
         ImGui::GetDrawData()

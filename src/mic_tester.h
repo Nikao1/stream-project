@@ -102,6 +102,16 @@ private:
     std::atomic<bool> m_capturing{ false };
     std::atomic<bool> m_loopback{ false };
     std::atomic<bool> m_noiseSuppression{ true };
+
+public:
+    void SetNoiseStrength(
+        int strength)
+    {
+        m_noiseStrength = strength;
+    }
+
+private:
+    std::atomic<int> m_noiseStrength{ 1 };
     std::atomic<float> m_level{ 0.0f };
     std::atomic<float> m_voiceActivity{ -1.0f };
 

@@ -47,7 +47,7 @@ bool CopyButton(
         id;
 
     bool clicked =
-        ImGui::Button(
+        UiButton(
             text.c_str(),
             ImVec2(
                 ImGui::GetContentRegionAvail().x,
@@ -204,7 +204,7 @@ void DrawClientSetupScreen(
     {
         ImGui::Spacing();
 
-        if (ImGui::Button(
+        if (UiButton(
                 "Voltar",
                 ImVec2(
                     ImGui::GetContentRegionAvail().x,
@@ -221,6 +221,41 @@ void DrawClientSetupScreen(
 // ============================================================
 // Tela de transmissao
 // ============================================================
+
+// Aviso de "janela chegando preta" com a saida (tela inteira).
+static void DrawBlackCaptureNotice(
+    ClientScreenActions& actions)
+{
+    UiWrappedColored(
+        UiColorError(),
+        "Essa janela está chegando preta para quem assiste.");
+
+    UiMutedText(
+        "Acontece com alguns jogos (como a partida do LoL). "
+        "Transmitir a tela inteira onde ela está costuma "
+        "resolver.");
+
+    float avail = ImGui::GetContentRegionAvail().x;
+
+    float ignoreWidth =
+        ImGui::CalcTextSize("Ignorar").x +
+        ImGui::GetStyle().FramePadding.x * 2.0f;
+
+    if (UiPrimaryButtonSized(
+            "Transmitir a tela inteira",
+            ImVec2(avail - ignoreWidth - ImGui::GetStyle().ItemSpacing.x, 0.0f)))
+    {
+        actions.captureWholeScreen = true;
+    }
+
+    ImGui::SameLine();
+
+    if (UiButton("Ignorar##telapreta"))
+    {
+        actions.dismissBlackCapture = true;
+    }
+}
+
 
 void DrawClientLiveScreen(
     ClientLiveModel& model,
@@ -240,6 +275,47 @@ void DrawClientLiveScreen(
     bool roomPanel = model.roomPanelOpen != nullptr;
 
     static float roomAlpha = 0.0f;
+
+    if (roomPanel &&
+        model.blackCapture &&
+        !model.hidden &&
+        !*model.roomPanelOpen)
+    {
+        // Painel fechado: o aviso aparece sozinho, no lugar dele.
+        float width = 380.0f * UiScale();
+
+        const ImGuiViewport* viewport = ImGui::GetMainViewport();
+
+        float margin = 16.0f * UiScale();
+
+        float x =
+            (std::max)(
+                viewport->WorkPos.x + margin + width * 0.5f,
+                (std::min)(
+                    model.anchorX,
+                    viewport->WorkPos.x + viewport->WorkSize.x - margin - width * 0.5f));
+
+        ImGui::SetNextWindowPos(
+            ImVec2(x, model.anchorY - 10.0f * UiScale()),
+            ImGuiCond_Always,
+            ImVec2(0.5f, 1.0f));
+
+        ImGui::SetNextWindowSize(ImVec2(width, 0.0f), ImGuiCond_Always);
+
+        ImGui::Begin(
+            "##telapreta",
+            nullptr,
+            ImGuiWindowFlags_NoTitleBar |
+            ImGuiWindowFlags_NoResize |
+            ImGuiWindowFlags_NoMove |
+            ImGuiWindowFlags_NoCollapse |
+            ImGuiWindowFlags_NoSavedSettings |
+            ImGuiWindowFlags_NoFocusOnAppearing);
+
+        DrawBlackCaptureNotice(actions);
+
+        ImGui::End();
+    }
 
     if (roomPanel)
     {
@@ -305,7 +381,7 @@ void DrawClientLiveScreen(
         ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
         ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 0.0f);
 
-        if (ImGui::Button("×##fecharaovivo", ImVec2(closeSize, closeSize)))
+        if (UiButton("×##fecharaovivo", ImVec2(closeSize, closeSize)))
         {
             *model.roomPanelOpen = false;
         }
@@ -324,11 +400,16 @@ void DrawClientLiveScreen(
 
         UiWrappedColored(UiColorSuccess(), line.c_str());
 
+        if (model.blackCapture)
+        {
+            DrawBlackCaptureNotice(actions);
+        }
+
         float half =
             (ImGui::GetContentRegionAvail().x -
              ImGui::GetStyle().ItemSpacing.x) * 0.5f;
 
-        if (ImGui::Button("Mostrar painel", ImVec2(half, 0.0f)))
+        if (UiButton("Mostrar painel", ImVec2(half, 0.0f)))
         {
             minimized = false;
         }
@@ -337,7 +418,7 @@ void DrawClientLiveScreen(
 
         ImGui::BeginDisabled(!model.canStop);
 
-        if (ImGui::Button("Parar", ImVec2(half, 0.0f)))
+        if (UiButton("Parar", ImVec2(half, 0.0f)))
         {
             actions.stopSharing = true;
         }
@@ -369,7 +450,7 @@ void DrawClientLiveScreen(
         ImGui::SetCursorPosY(
             ImGui::GetCursorPosY() + 4.0f * UiScale());
 
-        if (ImGui::Button(label))
+        if (UiButton(label))
         {
             minimized = true;
         }
@@ -387,7 +468,16 @@ void DrawClientLiveScreen(
         UiMutedText(sharing.c_str());
     }
 
-    if (ImGui::Button(
+    if (model.blackCapture)
+    {
+        ImGui::Spacing();
+
+        DrawBlackCaptureNotice(actions);
+
+        ImGui::Spacing();
+    }
+
+    if (UiButton(
             "Trocar o que está sendo compartilhado",
             ImVec2(
                 ImGui::GetContentRegionAvail().x,
@@ -524,7 +614,7 @@ void DrawClientLiveScreen(
 
         ImGui::SameLine();
 
-        if (ImGui::Button(applyLabel) || submitted)
+        if (UiButton(applyLabel) || submitted)
         {
             actions.applyReply = true;
         }
@@ -743,7 +833,7 @@ void DrawClientLiveScreen(
 
     ImGui::BeginDisabled(!model.canStop);
 
-    if (ImGui::Button(
+    if (UiButton(
             "Parar de transmitir",
             ImVec2(
                 ImGui::GetContentRegionAvail().x,
@@ -1173,7 +1263,7 @@ void DrawClientPickerScreen(
         (ImGui::GetContentRegionAvail().x -
          style.ItemSpacing.x) * 0.5f;
 
-    if (ImGui::Button(
+    if (UiButton(
             "Atualizar lista",
             ImVec2(half, 0.0f)))
     {
@@ -1182,7 +1272,7 @@ void DrawClientPickerScreen(
 
     ImGui::SameLine();
 
-    if (ImGui::Button(
+    if (UiButton(
             model.switching ? "Cancelar" : "Voltar",
             ImVec2(half, 0.0f)))
     {

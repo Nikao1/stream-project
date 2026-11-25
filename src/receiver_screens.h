@@ -634,6 +634,10 @@ struct SettingsModel
     // A tela altera direto e avisa em themeChanged.
     bool* lightTheme = nullptr;
 
+    // Fechar a janela deixa o programa na bandeja (perto do
+    // relogio). A tela altera direto e avisa em trayChanged.
+    bool* closeToTray = nullptr;
+
     // Foto de perfil (ImTextureID; nullptr = sem foto) e nome
     // (pra inicial quando nao ha foto).
     void* myAvatar = nullptr;
@@ -666,6 +670,7 @@ struct SettingsModel
 
     // A tela altera direto e avisa em voiceSettingsChanged.
     bool* noiseSuppression = nullptr;
+    int* noiseStrength = nullptr; // 0 leve, 1 normal, 2 forte
     bool* soundsEnabled = nullptr;
     float* soundsVolume = nullptr;
 
@@ -706,6 +711,7 @@ struct SettingsActions
 
     // Geral
     bool themeChanged = false;
+    bool trayChanged = false;
     bool chooseAvatar = false;
     bool removeAvatar = false;
 

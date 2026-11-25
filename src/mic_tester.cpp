@@ -165,6 +165,8 @@ void MicTester::OnFrame(
 
     if (m_noiseSuppression && m_denoiser && m_denoiser->IsValid())
     {
+        m_denoiser->SetStrength(m_noiseStrength);
+
         m_voiceActivity = m_denoiser->Process(clean);
     }
     else

@@ -164,6 +164,30 @@ winrt::event_token g_frameArrivedToken{};
 
 bool g_captureRunning = false;
 
+// Deteccao de "janela preta" (ver CaptureLooksBlack): quando a
+// captura atual comecou, se e de janela e se ja chegou alguma
+// imagem com conteudo.
+std::atomic<ULONGLONG> g_captureStartMs{ 0 };
+std::atomic<HWND> g_captureWindow{ nullptr };
+std::atomic<bool> g_captureSawContent{ false };
+
+bool CaptureLooksBlack()
+{
+    return
+        g_captureRunning &&
+        g_captureWindow.load() != nullptr &&
+        !g_captureSawContent &&
+        GetTickCount64() - g_captureStartMs.load() > 2500;
+}
+
+
+HWND CaptureWindowHandle()
+{
+    return g_captureRunning ? g_captureWindow.load() : nullptr;
+}
+
+
+
 // A ultima tentativa de captura foi recusada pelo Windows (acesso
 // negado). A tela de escolha oferece reabrir como administrador.
 bool g_captureAccessDenied = false;
@@ -1787,6 +1811,42 @@ void OnFrameArrived(
             width,
             height))
     {
+        // Janela: confere (so ate a primeira imagem com
+        // conteudo) se nao esta chegando toda preta. Uma grade de
+        // ~2300 pontos - o cursor sozinho nao conta.
+        if (!g_captureSawContent &&
+            g_captureWindow.load() != nullptr &&
+            width >= 64 &&
+            height >= 36)
+        {
+            int lit = 0;
+
+            for (uint32_t gy = 0; gy < 36 && lit < 4; ++gy)
+            {
+                uint32_t y = (gy * 2 + 1) * height / 72;
+
+                for (uint32_t gx = 0; gx < 64; ++gx)
+                {
+                    uint32_t x = (gx * 2 + 1) * width / 128;
+
+                    const unsigned char* p =
+                        pixels.data() +
+                        (static_cast<size_t>(y) * width + x) * 4;
+
+                    if (p[0] > 12 || p[1] > 12 || p[2] > 12)
+                    {
+                        if (++lit >= 4)
+                            break;
+                    }
+                }
+            }
+
+            if (lit >= 4)
+            {
+                g_captureSawContent = true;
+            }
+        }
+
         // ------------------------------------------------------
         // Atualizar preview
         // ------------------------------------------------------
@@ -2047,6 +2107,15 @@ bool StartCaptureForTarget(
 
         g_fpsFrameCounter =
             0;
+
+        g_captureWindow =
+            target.kind == CaptureTargetKind::Window
+            ? target.window
+            : nullptr;
+
+        g_captureSawContent = false;
+
+        g_captureStartMs = GetTickCount64();
 
         g_captureSession.StartCapture();
 

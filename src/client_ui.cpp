@@ -128,6 +128,10 @@ bool g_windowAudioSupported = false;
 
 bool g_windowAudioOnly = false;
 
+// O aviso de "janela preta" foi dispensado (vale ate a proxima
+// escolha do que compartilhar).
+bool g_blackCaptureDismissed = false;
+
 std::string g_pickerError;
 
 // O que esta sendo compartilhado agora (vazio = nada ainda).
@@ -311,6 +315,9 @@ void RelaunchAsAdmin()
 void PickTarget(
     const CaptureTarget& target)
 {
+    // Captura nova: o aviso de janela preta vale de novo.
+    g_blackCaptureDismissed = false;
+
     std::string error;
 
     bool windowAudio =
@@ -848,6 +855,9 @@ void DrawUi(
         model.uploadWarning =
             total > 40;
     }
+    model.blackCapture =
+        !g_blackCaptureDismissed && CaptureLooksBlack();
+
     model.symmetricNat = g_symmetricNat;
     model.replyInput = g_replyInput;
     model.replyInputSize = sizeof(g_replyInput);
@@ -1367,6 +1377,44 @@ void ClientUiDrawFrame(
             g_windows[actions.pickWindow];
 
         PickTarget(target);
+    }
+
+    if (actions.dismissBlackCapture)
+    {
+        g_blackCaptureDismissed = true;
+    }
+
+    // Janela preta: troca pra tela (monitor) onde ela esta.
+    if (actions.captureWholeScreen)
+    {
+        HWND window = CaptureWindowHandle();
+
+        HMONITOR monitor =
+            window
+            ? MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST)
+            : nullptr;
+
+        bool picked = false;
+
+        for (const CaptureTarget& target : ListCaptureMonitors())
+        {
+            if (target.monitor == monitor)
+            {
+                CaptureTarget copy = target;
+
+                PickTarget(copy);
+
+                picked = true;
+
+                break;
+            }
+        }
+
+        // (Nao achou a tela: deixa escolher.)
+        if (!picked)
+        {
+            OpenPicker();
+        }
     }
 
     if (actions.applyReply)

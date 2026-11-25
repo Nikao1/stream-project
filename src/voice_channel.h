@@ -108,6 +108,13 @@ public:
 
     // Reducao de ruido (RNNoise) no microfone. Pode mudar a
     // qualquer momento.
+    // 0 = leve, 1 = normal, 2 = forte.
+    void SetNoiseStrength(
+        int strength)
+    {
+        m_noiseStrength = strength;
+    }
+
     void SetNoiseSuppression(
         bool enabled)
     {
@@ -218,6 +225,7 @@ private:
     std::atomic<float> m_voiceActivity{ -1.0f };
 
     std::atomic<bool> m_noiseSuppression{ true };
+    std::atomic<int> m_noiseStrength{ 1 };
 
     // So a thread do microfone usa (criado antes dela comecar).
     std::unique_ptr<NoiseSuppressor> m_denoiser;

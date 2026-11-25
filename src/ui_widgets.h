@@ -183,6 +183,16 @@ void UiIconAt(
     ImU32 color
 );
 
+// Igual, com o "desligado" (risco do microfone, X do som) em
+// transicao: off 0..1. So pra Mic/MicOff e Volume/VolumeOff.
+void UiIconAtEx(
+    UiIcon icon,
+    ImVec2 center,
+    float size,
+    ImU32 color,
+    float off
+);
+
 // Botao quadrado so com icone (dica ao passar o mouse). active =
 // destacado (ex.: painel aberto); danger = vermelho; badge > 0
 // = bolinha com numero (ex.: mensagens nao lidas).
@@ -221,12 +231,33 @@ void UiGearIconAt(
 );
 
 // Mesmo icone numa posicao da tela, sem ocupar espaco (ex.: por
-// cima de um botao).
+// cima de um botao). slashed: 0 = normal, 1 = riscado; no meio,
+// o risco aparecendo (transicao).
 void UiMicIconAt(
     ImVec2 screenPos,
     float size,
     ImU32 color,
-    bool slashed
+    float slashed
+);
+
+// Transicao suave de um liga/desliga: devolve 0..1 andando em
+// direcao a "on" em "seconds" (guardado pela chave, na janela
+// atual). A primeira vez ja comeca no valor certo.
+float UiAnimate(
+    ImGuiID key,
+    bool on,
+    float seconds = 0.15f
+);
+
+// ImGui::Button / SmallButton com a cor do "mouse em cima"
+// entrando e saindo em fade (~0,12 s).
+bool UiButton(
+    const char* label,
+    const ImVec2& size = ImVec2(0.0f, 0.0f)
+);
+
+bool UiSmallButton(
+    const char* label
 );
 
 // Logo do programa (monitor com o simbolo de transmitir), num

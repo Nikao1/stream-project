@@ -104,12 +104,12 @@ convite leva o servidor junto - quem entra não precisa configurar.
 
 CANAL DE VOZ
 ------------
-Na sala, clique em "Entrar na voz" para conversar com quem
+Na sala, clique em "Entrar no canal de voz" para conversar com quem
 também entrou. A voz vai direto entre vocês, criptografada.
-- A engrenagem (na tela inicial e ao lado de "Entrar na voz")
+- A engrenagem (na tela inicial e ao lado de "Entrar no canal de voz")
   abre as Configurações:
-  - Geral: tema escuro ou claro e sua foto (aparece para a
-    sala, criptografada como o chat);
+  - Geral: tema escuro ou claro, "continuar em segundo plano"
+    e sua foto (aparece para a sala, criptografada como o chat);
   - Voz: microfone, onde ouvir, "Testar microfone" (dá para
     ouvir a própria voz, de preferência com fone), redução de
     ruído e eco, sons de aviso;
@@ -126,7 +126,12 @@ também entrou. A voz vai direto entre vocês, criptografada.
 - Durante o vídeo, quem está falando aparece no canto superior
   esquerdo, e o painel de opções tem o botão do microfone.
 - "Reduzir ruído" (ligado) tira do seu microfone teclado,
-  mouse, ventoinha e barulho de fundo.
+  mouse, ventoinha e barulho de fundo. Em "Intensidade": Leve
+  (microfone baixo ou voz suave - corta menos), Normal ou Forte.
+  Se a sua voz estiver sumindo/cortando, use Leve.
+- "Ao fechar, continuar em segundo plano" (Geral, desligado): o
+  X esconde o Colaê perto do relógio e a voz continua. Clique
+  no ícone para voltar; botão direito > Sair para fechar.
 - "Sons de aviso" (ligado) toca um som curto quando o microfone
   liga ou fica mudo (útil com o atalho dentro do jogo), quando
   alguém entra ou sai da voz, começa a transmitir ou manda
@@ -180,6 +185,11 @@ e o som vão direto de um computador para o outro.
 
 Se aparecer "O Windows bloqueou a captura de tela", use o botão
 "Abrir como administrador" que aparece logo abaixo.
+
+Se uma janela chegar preta para quem assiste (acontece com
+alguns jogos, como a partida do League of Legends), o Colaê
+avisa e oferece "Transmitir a tela inteira" - a tela onde a
+janela está. No LoL, deixe o vídeo do jogo em "Sem bordas".
 
 
 SE ALGO DER ERRADO

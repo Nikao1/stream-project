@@ -46,6 +46,16 @@ public:
         float* samples
     );
 
+    // Intensidade: 0 = leve, 1 = normal, 2 = forte. Muda quando
+    // a porta abre/fecha e quanto ela abaixa entre as palavras
+    // (microfones mais baixos falam "fraco" pra rede - no leve,
+    // a voz passa mais facil).
+    void SetStrength(
+        int strength)
+    {
+        m_strength = strength < 0 ? 0 : (strength > 2 ? 2 : strength);
+    }
+
     // Sem a rede (so as conversoes 16k->48k->16k). Pra teste.
     void SetBypassNetwork(
         bool bypass)
@@ -71,6 +81,12 @@ private:
     // Porta pos-rede: entre as palavras abaixa o que sobrou.
     float m_gateGain = 1.0f;
     int m_gateHold = 0;
+
+    int m_strength = 1;
+
+    // Ganho automatico (microfone baixo): sobe devagar ate ~+12 dB
+    // enquanto a pessoa fala baixo; nunca abaixa a voz normal.
+    float m_inputGain = 1.0f;
 
     // Historicos dos filtros (fim do bloco anterior).
     static constexpr size_t TAPS = 63;

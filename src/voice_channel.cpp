@@ -789,7 +789,11 @@ void VoiceChannel::OnMicFrame(
     {
         std::memcpy(cleaned, samples, sizeof(cleaned));
 
-        m_voiceActivity = m_denoiser->Process(cleaned);
+        m_denoiser->SetStrength(m_noiseStrength);
+
+        float activity = m_denoiser->Process(cleaned);
+
+        m_voiceActivity = activity;
 
         // Eco que o cancelamento do Windows deixou passar (ex.:
         // notebook com caixa de som): enquanto os outros falam,
@@ -809,8 +813,15 @@ void VoiceChannel::OnMicFrame(
 
         float farLevel = m_mixer.OutputLevel();
 
+        // (So quando claramente e eco: mic bem mais baixo que os
+        // outros e sem voz detectada - um microfone baixo de
+        // verdade nao e mais confundido com eco.)
         float target =
-            farLevel > 0.01f && micRms < farLevel * 0.3f ? 0.2f : 1.0f;
+            farLevel > 0.01f &&
+            micRms < farLevel * 0.15f &&
+            activity < 0.5f
+            ? 0.3f
+            : 1.0f;
 
         // Rampa pelo bloco (abre na hora, fecha em ~3 blocos).
         float start = m_echoGain;

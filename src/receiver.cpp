@@ -3412,6 +3412,12 @@ float g_soundsVolume = 0.6f;
 // Reducao de ruido do microfone (RNNoise), salva.
 bool g_noiseSuppression = true;
 
+// Intensidade dela: 0 = leve, 1 = normal, 2 = forte.
+int g_noiseStrength = 1;
+
+// Fechar a janela deixa o programa na bandeja (salvo).
+bool g_closeToTray = false;
+
 // Teste do microfone nas configuracoes (fora da voz).
 MicTester g_micTester;
 
@@ -3611,6 +3617,13 @@ void LoadReceiverSettings()
 
     g_noiseSuppression = settings.GetInt(L"VozReduzirRuido", 1) != 0;
 
+    g_noiseStrength = settings.GetInt(L"VozReduzirRuidoNivel", 1);
+
+    if (g_noiseStrength < 0 || g_noiseStrength > 2)
+        g_noiseStrength = 1;
+
+    g_closeToTray = settings.GetInt(L"FecharParaBandeja", 0) != 0;
+
     g_lightThemeSetting = settings.GetInt(L"TemaClaro", 0) != 0;
 
     g_sidePinned = settings.GetInt(L"PainelFixo", 0) != 0;
@@ -3803,6 +3816,154 @@ void SaveReceiverWindowPlacement()
 // Pedido de tela cheia vindo da interface (botao do painel). Ver
 // o comentario em DrawReceiverUi.
 constexpr UINT WM_APP_TOGGLE_FULLSCREEN = WM_APP + 10;
+
+// Icone da bandeja (clique) e "aparecer" (outra copia do
+// programa aberta com a janela escondida na bandeja).
+constexpr UINT WM_APP_TRAY = WM_APP + 11;
+constexpr UINT WM_APP_SHOW = WM_APP + 12;
+
+constexpr UINT TRAY_MENU_OPEN = 1;
+constexpr UINT TRAY_MENU_QUIT = 2;
+
+
+// ============================================================
+// Bandeja (segundo plano)
+//
+// Com a opcao ligada, o X da janela so a esconde: o icone fica
+// perto do relogio e a voz/sala continuam. Clique no icone
+// volta; botao direito > Sair fecha de vez.
+// ============================================================
+
+bool g_trayIconShown = false;
+bool g_trayBalloonShown = false;
+bool g_quitRequested = false;
+
+UINT g_taskbarCreatedMessage = 0;
+
+void TrayFill(
+    NOTIFYICONDATAW& data)
+{
+    data.cbSize = sizeof(data);
+    data.hWnd = g_hwnd;
+    data.uID = 1;
+}
+
+void TrayAdd()
+{
+    if (g_trayIconShown)
+        return;
+
+    NOTIFYICONDATAW data{};
+
+    TrayFill(data);
+
+    data.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
+    data.uCallbackMessage = WM_APP_TRAY;
+
+    data.hIcon = static_cast<HICON>(LoadImageW(
+        GetModuleHandleW(nullptr),
+        MAKEINTRESOURCEW(1),
+        IMAGE_ICON,
+        GetSystemMetrics(SM_CXSMICON),
+        GetSystemMetrics(SM_CYSMICON),
+        LR_DEFAULTCOLOR | LR_SHARED));
+
+    wcscpy_s(data.szTip, L"Cola\u00ea (em segundo plano)");
+
+    // So na primeira vez: um aviso de que ele continua aqui.
+    if (!g_trayBalloonShown)
+    {
+        data.uFlags |= NIF_INFO;
+        data.dwInfoFlags = NIIF_USER | NIIF_NOSOUND;
+
+        wcscpy_s(data.szInfoTitle, L"O Cola\u00ea continua aberto");
+        wcscpy_s(
+            data.szInfo,
+            L"Clique no \u00edcone para voltar. Para sair de vez: "
+            L"bot\u00e3o direito > Sair.");
+
+        g_trayBalloonShown = true;
+    }
+
+    g_trayIconShown = Shell_NotifyIconW(NIM_ADD, &data) != FALSE;
+}
+
+void TrayRemove()
+{
+    if (!g_trayIconShown)
+        return;
+
+    NOTIFYICONDATAW data{};
+
+    TrayFill(data);
+
+    Shell_NotifyIconW(NIM_DELETE, &data);
+
+    g_trayIconShown = false;
+}
+
+void HideToTray()
+{
+    TrayAdd();
+
+    ShowWindow(g_hwnd, SW_HIDE);
+}
+
+void RestoreFromTray()
+{
+    if (!IsWindowVisible(g_hwnd))
+        ShowWindow(g_hwnd, SW_SHOW);
+
+    if (IsIconic(g_hwnd))
+        ShowWindow(g_hwnd, SW_RESTORE);
+
+    TrayRemove();
+
+    SetForegroundWindow(g_hwnd);
+}
+
+void ShowTrayMenu()
+{
+    HMENU menu = CreatePopupMenu();
+
+    if (!menu)
+        return;
+
+    AppendMenuW(menu, MF_STRING, TRAY_MENU_OPEN, L"Abrir o Cola\u00ea");
+    AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(menu, MF_STRING, TRAY_MENU_QUIT, L"Sair");
+
+    SetMenuDefaultItem(menu, TRAY_MENU_OPEN, FALSE);
+
+    POINT cursor{};
+
+    GetCursorPos(&cursor);
+
+    // (Sem isso o menu nao fecha ao clicar fora.)
+    SetForegroundWindow(g_hwnd);
+
+    UINT chosen = TrackPopupMenu(
+        menu,
+        TPM_RETURNCMD | TPM_NONOTIFY | TPM_RIGHTBUTTON,
+        cursor.x,
+        cursor.y,
+        0,
+        g_hwnd,
+        nullptr);
+
+    DestroyMenu(menu);
+
+    if (chosen == TRAY_MENU_OPEN)
+    {
+        RestoreFromTray();
+    }
+    else if (chosen == TRAY_MENU_QUIT)
+    {
+        g_quitRequested = true;
+
+        DestroyWindow(g_hwnd);
+    }
+}
 
 
 // ============================================================
@@ -5794,6 +5955,8 @@ void StartVoice()
     g_voice.SetSpeaker(g_voiceSpeaker);
 
     g_voice.SetNoiseSuppression(g_noiseSuppression);
+
+    g_voice.SetNoiseStrength(g_noiseStrength);
 
     RequestDeviceLists();
 
@@ -8123,11 +8286,13 @@ void DrawReceiverUi()
         shortcuts.echoCancel =
             !shortcuts.voiceJoined || g_voice.EchoCancellation();
         shortcuts.noiseSuppression = &g_noiseSuppression;
+        shortcuts.noiseStrength = &g_noiseStrength;
         shortcuts.soundsEnabled = &g_soundsEnabled;
         shortcuts.soundsVolume = &g_soundsVolume;
 
         // Geral
         shortcuts.lightTheme = &g_lightThemeSetting;
+        shortcuts.closeToTray = &g_closeToTray;
 
         // Servidor de sinalizacao
         {
@@ -8199,6 +8364,12 @@ void DrawReceiverUi()
         if (shortcutActions.micTestToggle)
         {
             g_micTestOn = !g_micTestOn;
+        }
+
+        if (shortcutActions.trayChanged)
+        {
+            ReceiverSettings().SetInt(
+                L"FecharParaBandeja", g_closeToTray ? 1 : 0);
         }
 
         if (shortcutActions.themeChanged)
@@ -8339,6 +8510,8 @@ void DrawReceiverUi()
 
     // Teste do microfone: so com as configuracoes abertas e fora
     // da voz (na voz, o nivel vem dela).
+    g_micTester.SetNoiseStrength(g_noiseStrength);
+
     g_micTester.Set(
         g_settingsOpen && g_micTestOn && !g_voice.IsJoined(),
         g_voiceMicrophone,
@@ -8604,6 +8777,8 @@ void DrawReceiverUi()
 
         g_voice.SetNoiseSuppression(g_noiseSuppression);
 
+        g_voice.SetNoiseStrength(g_noiseStrength);
+
         AppSettings& settings = ReceiverSettings();
 
         settings.SetInt(L"SonsAviso", g_soundsEnabled ? 1 : 0);
@@ -8611,6 +8786,7 @@ void DrawReceiverUi()
             L"SonsVolume",
             static_cast<int>(g_soundsVolume * 100.0f + 0.5f));
         settings.SetInt(L"VozReduzirRuido", g_noiseSuppression ? 1 : 0);
+        settings.SetInt(L"VozReduzirRuidoNivel", g_noiseStrength);
     }
 
     if (roomActions.previewSound)
@@ -9197,6 +9373,23 @@ void RenderFrame()
 }
 
 
+// Um passo da interface sem desenhar (janela minimizada ou na
+// bandeja).
+void BackgroundFrame()
+{
+    if (!g_rendererDevice)
+        return;
+
+    std::lock_guard<std::mutex> lock(g_rendererMutex);
+
+    UiSetBackground(true);
+
+    DrawReceiverUi();
+
+    UiSetBackground(false);
+}
+
+
 // ============================================================
 // Window Procedure
 // ============================================================
@@ -9276,6 +9469,48 @@ LRESULT CALLBACK WindowProc(
     case WM_APP_TOGGLE_FULLSCREEN:
     {
         ToggleFullscreen();
+
+        return 0;
+    }
+
+
+    case WM_CLOSE:
+    {
+        // Segundo plano: o X so esconde (ver HideToTray).
+        if (g_closeToTray && !g_quitRequested)
+        {
+            if (g_fullscreen)
+                ToggleFullscreen();
+
+            HideToTray();
+
+            return 0;
+        }
+
+        break;
+    }
+
+
+    case WM_APP_TRAY:
+    {
+        UINT event = LOWORD(lParam);
+
+        if (event == WM_LBUTTONUP || event == WM_LBUTTONDBLCLK)
+        {
+            RestoreFromTray();
+        }
+        else if (event == WM_RBUTTONUP || event == WM_CONTEXTMENU)
+        {
+            ShowTrayMenu();
+        }
+
+        return 0;
+    }
+
+
+    case WM_APP_SHOW:
+    {
+        RestoreFromTray();
 
         return 0;
     }
@@ -9367,6 +9602,8 @@ LRESULT CALLBACK WindowProc(
 
     case WM_DESTROY:
     {
+        TrayRemove();
+
         SaveReceiverWindowPlacement();
 
         PowerSetActive(false);
@@ -9410,6 +9647,16 @@ LRESULT CALLBACK WindowProc(
     }
     }
 
+
+    // Explorer reiniciou: a bandeja voltou vazia.
+    if (g_taskbarCreatedMessage != 0 &&
+        uMsg == g_taskbarCreatedMessage &&
+        g_trayIconShown)
+    {
+        g_trayIconShown = false;
+
+        TrayAdd();
+    }
 
     return DefWindowProcW(
         hwnd,
@@ -9465,10 +9712,8 @@ int AppMain(
                 running, WM_COPYDATA, 0,
                 reinterpret_cast<LPARAM>(&data));
 
-            if (IsIconic(running))
-            {
-                ShowWindow(running, SW_RESTORE);
-            }
+            // (Volta da bandeja ou de minimizada.)
+            SendMessageW(running, WM_APP_SHOW, 0, 0);
 
             SetForegroundWindow(running);
 
@@ -9476,6 +9721,23 @@ int AppMain(
         }
 
         g_pendingInvite = invite;
+    }
+    else
+    {
+        // Aberto de novo com o programa escondido na bandeja: so
+        // mostra o que ja esta rodando (senao seria uma segunda
+        // copia, e a primeira continuaria escondida).
+        HWND running =
+            FindWindowW(L"ColaeWindow", nullptr);
+
+        if (running && !IsWindowVisible(running))
+        {
+            SendMessageW(running, WM_APP_SHOW, 0, 0);
+
+            SetForegroundWindow(running);
+
+            return 0;
+        }
     }
 
     // Clicar no link de convite abre este programa.
@@ -9773,6 +10035,14 @@ int AppMain(
     ChangeWindowMessageFilterEx(
         g_hwnd, WM_COPYDATA, MSGFLT_ALLOW, nullptr);
 
+    ChangeWindowMessageFilterEx(
+        g_hwnd, WM_APP_SHOW, MSGFLT_ALLOW, nullptr);
+
+    g_taskbarCreatedMessage = RegisterWindowMessageW(L"TaskbarCreated");
+
+    ChangeWindowMessageFilterEx(
+        g_hwnd, g_taskbarCreatedMessage, MSGFLT_ALLOW, nullptr);
+
     if (!InitializeD3D11Renderer(g_hwnd))
     {
         ShowFatalError(
@@ -9893,10 +10163,14 @@ int AppMain(
             break;
 
 
-        // Minimizada: nada pra desenhar.
-        if (IsIconic(g_hwnd))
+        // Minimizada ou na bandeja: nada pra desenhar, mas a
+        // logica da sala e da voz (quem entrou, sons, conectar
+        // com quem chegou) continua - umas 10 vezes por segundo.
+        if (IsIconic(g_hwnd) || !IsWindowVisible(g_hwnd))
         {
-            Sleep(50);
+            BackgroundFrame();
+
+            Sleep(100);
 
             continue;
         }
