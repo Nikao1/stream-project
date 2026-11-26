@@ -143,7 +143,7 @@ ULONGLONG g_windowGoneAt = 0;
 ULONGLONG g_pausedFrameSentAt = 0;
 bool g_autoStopped = false;
 
-constexpr ULONGLONG WINDOW_GONE_STOP_MS = 10000;
+constexpr ULONGLONG WINDOW_GONE_STOP_MS = 60000;
 
 std::string g_pickerError;
 

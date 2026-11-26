@@ -193,7 +193,7 @@ janela está. No LoL, deixe o vídeo do jogo em "Sem bordas".
 
 Se a janela transmitida for fechada, a transmissão pausa (quem
 assiste vê "Transmissão pausada") e aparece "Escolher outra" ou
-"Parar agora". Sem resposta em 10 segundos, ela encerra sozinha.
+"Parar agora". Sem resposta em 1 minuto, ela encerra sozinha.
 
 
 SE ALGO DER ERRADO
