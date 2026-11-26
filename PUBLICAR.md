@@ -60,17 +60,49 @@ usa o `.zip` recebe o aviso e o botão abre a página de downloads.
 A primeira versão com a chave embutida precisa ser instalada **manualmente**.
 A partir dela, as próximas chegam pelo botão.
 
-## A cada versão
+## A cada versão (automático)
 
-1. Suba o número em `CMakeLists.txt` (`project(... VERSION x.y.z)`).
+Uma vez só: instale e faça login no GitHub CLI.
+
+```
+winget install GitHub.cli
+gh auth login
+```
+
+Depois, para cada versão nova, **faça o commit das suas mudanças** e rode:
+
+```
+powershell -ExecutionPolicy Bypass -File tools\publicar.ps1 -Lancar -Chave C:\Users\Nikolas\chaves\colae.chave -Notas "O que mudou, em uma linha"
+```
+
+Ele só pede a **senha da chave**. O resto é automático:
+
+1. confere se o git está limpo e atualizado (`git pull`);
+2. sobe o último número da versão (0.8.12 → 0.8.13). Para outro número, use
+   `-Versao 0.9.0`;
+3. compila e monta o `.zip` e o instalador;
+4. assina o instalador;
+5. faz commit e push da versão nova;
+6. cria o release `vx.y.z` no GitHub com o instalador e o `.zip`;
+7. **só então** sobe o `signaling/versao.txt`;
+8. espera o servidor (Render) anunciar a versão nova.
+
+Se algo falhar antes do passo 5 (compilação, senha errada), nada é publicado e
+o número da versão volta ao que era.
+
+## A cada versão (manual)
+
+Sem o `-Lancar`, o script só compila, assina e escreve o `versao.txt`; o resto
+fica com você:
+
+1. Suba o número em `CMakeLists.txt` (`project(... VERSION x.y.z)`) ou use
+   `-Versao x.y.z`.
 2. Rode:
 
    ```
    powershell -ExecutionPolicy Bypass -File tools\publicar.ps1 -Chave D:\chaves\colae.chave -Notas "O que mudou, em uma linha"
    ```
 
-   Ele compila, gera o `.zip` e o instalador, pede a **senha da chave**,
-   assina o instalador e escreve `signaling/versao.txt`.
 3. Crie o **release** `vx.y.z` no GitHub
    (https://github.com/Nikao1/stream-project/releases/new) e anexe:
    - `dist\Instalar-Colae-x.y.z.exe` (é o que a atualização baixa, então
@@ -83,9 +115,6 @@ A partir dela, as próximas chegam pelo botão.
    git commit -m "Release x.y.z"
    git push
    ```
-
-   O Render publica o servidor de novo sozinho. Os Colaê abertos veem a versão
-   nova em até 6 horas, ou na hora pelo botão **Procurar atualização**.
 
 A ordem importa: se o `versao.txt` subir antes do release, o botão aparece mas
 o download dá erro.
