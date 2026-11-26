@@ -1,7 +1,7 @@
 # Ultima versao do Colae (gerado pelo tools\publicar.ps1)
-versao=0.8.12
-url=https://github.com/Nikao1/stream-project/releases/download/v0.8.12/Instalar-Colae-0.8.12.exe
-pagina=https://github.com/Nikao1/stream-project/releases/tag/v0.8.12
-hash=e686f239aef710556f512946acd50c0dad8f5bf3523b09a850411b2d26f0c0e1ab277fbf605778de928761a0bc65dd317ce56a518151fc2353c3f63ae2489edc
-assinatura=178673f9f55dec97689a75a320bf065a83d660d5b32a30bb9dad6a2a27709ff40395dd38cab71f59b7542d3b3ed22be3e7ee22e3e8e3a999651c46584c0f4300
-notas=Atualização com um clique e tela Sobre
+versao=0.8.13
+url=https://github.com/Nikao1/stream-project/releases/download/v0.8.13/Instalar-Colae-0.8.13.exe
+pagina=https://github.com/Nikao1/stream-project/releases/tag/v0.8.13
+hash=f9e7603908d822fb43ea491067adbeebb1c7aaa57580d3a83f624fd18c6ccc547403744260165c57fe96178438a00b2d4f5716d4bfac602fa88e2fb2b46eeead
+assinatura=8c5146fa3befcb7b62c7050bb07dfef2d14baba897713e54c8fcf74a89f21522f04d185b970e163cc3a0a5a5755025d694aa5a8bfebf45ad937f9aeb8836360e
+notas=Transmissão encerra 1 minuto depois de a janela fechar
