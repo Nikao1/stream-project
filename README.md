@@ -25,8 +25,8 @@ A ideia é ser o contrário de pesado e de "passa tudo pelo servidor de alguém"
 - **Servidor seu, se quiser.** O servidor de sinalização é um arquivo Python
   sem dependências que qualquer um pode hospedar ([HOSPEDAR.md](HOSPEDAR.md)).
 
-> Projeto pessoal, em desenvolvimento ativo (versão 0.8). Feedback e issues são
-> muito bem-vindos.
+> Projeto pessoal de [Nikao1](https://github.com/Nikao1), em desenvolvimento
+> ativo (versão 0.8). Feedback e issues são muito bem-vindos.
 
 ## Recursos
 
@@ -43,6 +43,8 @@ A ideia é ser o contrário de pesado e de "passa tudo pelo servidor de alguém"
 - **Chat** da sala, foto de perfil e nome da sala — tudo criptografado.
 - Tema escuro e claro, barra de controles que some sozinha sobre o vídeo,
   painel lateral de pessoas e chat, opção de continuar em segundo plano (bandeja).
+- **Atualização com um clique**, conferindo a assinatura digital do autor antes
+  de instalar ([PUBLICAR.md](PUBLICAR.md)).
 
 ## Como usar
 
@@ -148,9 +150,18 @@ Passo a passo em [HOSPEDAR.md](HOSPEDAR.md).
 - O servidor público roda em plano gratuito e pode demorar até 1 minuto para
   "acordar" na primeira conexão depois de um tempo parado.
 
+## Autor
+
+Criado e mantido por **[Nikao1](https://github.com/Nikao1)**.
+
+Se usar o código do Colaê em outro projeto, mantenha o aviso de copyright do
+[LICENSE](LICENSE) (é a única condição da licença MIT) — e um crédito com link
+para este repositório é sempre bem-vindo.
+
 ## Licença
 
-[MIT](LICENSE) — use, estude, modifique e distribua à vontade.
+[MIT](LICENSE) © 2026 Nikao1 — use, estude, modifique e distribua à vontade,
+mantendo o aviso de copyright.
 
 Componentes de terceiros e suas licenças estão em
 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). Uso do programa:

@@ -1,4 +1,5 @@
-﻿; ============================================================
+﻿; Colaê - Copyright (c) 2026 Nikao1 (github.com/Nikao1) - licença MIT
+; ============================================================
 ; Instalador do Colaê (Inno Setup 6.3 ou mais novo)
 ; ============================================================
 ;
@@ -34,7 +35,8 @@ AppId={{6E2B7C4A-9D31-4F8E-A5C2-3B7D1E0F9A64}
 AppName=Colaê
 AppVersion={#AppVersion}
 AppVerName=Colaê {#AppVersion}
-AppPublisher=Nikolas (Nikao1)
+AppPublisher=Nikao1
+AppCopyright=© 2026 Nikao1 - licença MIT
 AppPublisherURL=https://github.com/Nikao1/stream-project
 AppSupportURL=https://github.com/Nikao1/stream-project/issues
 AppUpdatesURL=https://github.com/Nikao1/stream-project/releases
@@ -71,7 +73,8 @@ SolidCompression=yes
 VersionInfoVersion={#AppVersion}
 VersionInfoProductName=Colaê
 VersionInfoDescription=Instalador do Colaê
-VersionInfoCompany=Nikolas (Nikao1)
+VersionInfoCompany=Nikao1
+VersionInfoCopyright=© 2026 Nikao1 - licença MIT
 
 [Languages]
 Name: "ptbr"; MessagesFile: "compiler:Languages\BrazilianPortuguese.isl"
@@ -105,8 +108,49 @@ Root: HKCU; Subkey: "Software\Classes\colae\shell\open\command"; ValueType: stri
 
 [Run]
 Filename: "{app}\Colae.exe"; Description: "Abrir o Colaê"; Flags: nowait postinstall skipifsilent
+; Atualizacao pelo proprio programa (instalador em silencio com
+; /ATUALIZAR): abre a versao nova sozinho no fim.
+Filename: "{app}\Colae.exe"; Flags: nowait; Check: EhAtualizacao
 
 [Code]
+// Rodando como atualizacao automatica (o Colaê chama o instalador
+// com /VERYSILENT /ATUALIZAR e fecha em seguida).
+function EhAtualizacao: Boolean;
+var
+  I: Integer;
+begin
+  Result := False;
+
+  for I := 1 to ParamCount do
+  begin
+    if CompareText(ParamStr(I), '/ATUALIZAR') = 0 then
+    begin
+      Result := True;
+      Exit;
+    end;
+  end;
+end;
+
+// Na atualizacao, o Colaê ainda pode estar terminando de fechar:
+// espera (ate ~15 s) ele sair antes de seguir.
+function InitializeSetup: Boolean;
+var
+  Tentativas: Integer;
+begin
+  Result := True;
+
+  if EhAtualizacao then
+  begin
+    Tentativas := 0;
+
+    while CheckForMutexes('ColaeInstance1,ColaeInstance2,ColaeInstance3,ColaeInstance4,ColaeInstance5,ColaeInstance6,ColaeInstance7,ColaeInstance8') and (Tentativas < 60) do
+    begin
+      Sleep(250);
+      Tentativas := Tentativas + 1;
+    end;
+  end;
+end;
+
 // Na desinstalacao: perguntar se apaga tambem as configuracoes
 // (nome, foto, atalhos, salas recentes). Desinstalando em
 // silencio (ex.: atualizacao), nunca apaga.

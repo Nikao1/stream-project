@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# Colaê - servidor de sinalização
+# Copyright (c) 2026 Nikao1 (github.com/Nikao1) - licença MIT (ver LICENSE)
 """
 Colae - servidor de sinalizacao
 
@@ -17,6 +19,11 @@ Protocolo (requisicoes em formato de formulario "a=1&b=2",
 respostas em texto "chave=valor", uma por linha):
 
     GET  /health
+    GET  /versao                      -> versao, url, pagina, hash,
+                                         assinatura [, notas]
+                                         (ultima versao do programa;
+                                         404 se o arquivo versao.txt
+                                         nao existir)
     POST /sessions                    local_ip, video_port, audio_port
                                       [stun_ip, public_video_port,
                                        public_audio_port, host_key,
@@ -422,6 +429,52 @@ INVITE_PAGE = """<!doctype html>
 """
 
 
+
+# ------------------------------------------------------------
+# Ultima versao do programa (aviso de atualizacao)
+#
+# Lida do arquivo versao.txt ao lado deste (linhas "chave=valor",
+# gerado pelo tools/publicar.ps1). Quem confere se o instalador e
+# legitimo e o PROGRAMA, pela assinatura - o servidor so repassa.
+# Sem o arquivo (ex.: servidor proprio), /versao responde 404 e
+# o programa simplesmente nao avisa nada.
+# ------------------------------------------------------------
+
+VERSION_FILE = os.environ.get(
+    "VERSAO_ARQUIVO",
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "versao.txt"))
+
+VERSION_KEYS = ("versao", "url", "pagina", "hash", "assinatura", "notas")
+
+_version_cache = {"mtime": None, "fields": None}
+
+
+def _load_version():
+    try:
+        mtime = os.path.getmtime(VERSION_FILE)
+    except OSError:
+        return None
+    if _version_cache["mtime"] == mtime:
+        return _version_cache["fields"]
+    fields = {}
+    try:
+        with open(VERSION_FILE, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, value = line.split("=", 1)
+                key = key.strip()
+                if key in VERSION_KEYS:
+                    fields[key] = value.strip()[:500]
+    except OSError:
+        return None
+    if not fields.get("versao"):
+        fields = None
+    _version_cache["mtime"] = mtime
+    _version_cache["fields"] = fields
+    return fields
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "StreamSignaling/1.0"
     protocol_version = "HTTP/1.1"
@@ -478,6 +531,11 @@ class Handler(BaseHTTPRequestHandler):
         path = self.path.split("?")[0]
         if path in ("/j", "/j/"):
             return self._invite_page()
+        if path == "/versao":
+            fields = _load_version()
+            if not fields:
+                return self._error(404, "sem_versao")
+            return self._reply(200, fields)
         if self.path == "/health":
             with _lock:
                 _purge_expired()

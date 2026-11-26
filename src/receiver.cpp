@@ -1,3 +1,6 @@
+// Colaê - tela, som e voz direto entre amigos
+// Copyright (c) 2026 Nikao1 (github.com/Nikao1) - licença MIT (ver LICENSE)
+
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <windows.h>
@@ -41,6 +44,7 @@
 #include "app_settings.h"
 #include "power_mode.h"
 #include "sender.h"
+#include "updater.h"
 #include "room_client.h"
 #include "room_crypto.h"
 #include "voice_channel.h"
@@ -3418,6 +3422,19 @@ int g_noiseStrength = 1;
 // Fechar a janela deixa o programa na bandeja (salvo).
 bool g_closeToTray = false;
 
+// Marca "este programa esta aberto" (ColaeInstanceN): fechada
+// antes de rodar o instalador da atualizacao.
+HANDLE g_instanceMarker = nullptr;
+
+// Atualizacoes: procurar sozinho (salvo), proxima procura,
+// confirmacao aberta, atualizacao pedida (instala quando o
+// download terminar) e a ultima versao ja avisada.
+bool g_updateAuto = true;
+ULONGLONG g_updateNextCheck = 0;
+bool g_updateConfirmOpen = false;
+bool g_updateInstallWanted = false;
+std::string g_updateNotified;
+
 // Teste do microfone nas configuracoes (fora da voz).
 MicTester g_micTester;
 
@@ -3623,6 +3640,11 @@ void LoadReceiverSettings()
         g_noiseStrength = 1;
 
     g_closeToTray = settings.GetInt(L"FecharParaBandeja", 0) != 0;
+
+    g_updateAuto = settings.GetInt(L"ProcurarAtualizacoes", 1) != 0;
+
+    // Primeira procura logo depois de abrir.
+    g_updateNextCheck = GetTickCount64() + 4000;
 
     g_lightThemeSetting = settings.GetInt(L"TemaClaro", 0) != 0;
 
@@ -4903,6 +4925,134 @@ void AddToast(
         g_toasts.end());
 
     g_toasts.push_back(Toast{ text, now });
+}
+
+
+// ------------------------------------------------------------
+// Atualizacoes - a cada frame
+// ------------------------------------------------------------
+
+// Texto do estado (aba Geral). outError = vermelho.
+std::string UpdateStatusText(
+    bool& outError)
+{
+    outError = false;
+
+    std::string version = updater::GetLatestVersion();
+
+    switch (updater::GetStatus())
+    {
+    case updater::Status::Checking:
+        return "Procurando" + std::string(UiBusyDots());
+
+    case updater::Status::UpToDate:
+        return "Você está na versão mais recente.";
+
+    case updater::Status::Available:
+        return updater::CanAutoInstall()
+            ? "Versão " + version + " disponível."
+            : "Versão " + version + " disponível: baixe pelo GitHub e "
+              "instale por cima (esta cópia não foi instalada pelo "
+              "instalador).";
+
+    case updater::Status::Downloading:
+        return "Baixando a versão " + version + "... " +
+               std::to_string(static_cast<int>(updater::DownloadProgress() * 100.0f + 0.5f)) +
+               "%";
+
+    case updater::Status::Ready:
+        return "Instalando" + std::string(UiBusyDots());
+
+    case updater::Status::Failed:
+        outError = true;
+        return "Não foi possível: " + updater::ErrorText() + ".";
+
+    default:
+        return std::string();
+    }
+}
+
+
+// "Atualizar": confirma (e instala sozinho) ou, sem como instalar
+// sozinho, abre a pagina de downloads.
+void RequestUpdate()
+{
+    if (updater::GetStatus() != updater::Status::Available)
+        return;
+
+    if (updater::CanAutoInstall())
+        g_updateConfirmOpen = true;
+    else
+        updater::OpenReleasePage();
+}
+
+
+void UpdateTick()
+{
+    ULONGLONG now = GetTickCount64();
+
+    // Procura sozinho: ao abrir e a cada 6 horas.
+    if (g_updateAuto &&
+        g_updateNextCheck != 0 &&
+        now >= g_updateNextCheck)
+    {
+        g_updateNextCheck = now + 6ull * 60 * 60 * 1000;
+
+        updater::CheckAsync();
+    }
+
+    updater::Status status = updater::GetStatus();
+
+    // Versao nova: um aviso (fora da tela inicial, que ja tem o
+    // botao).
+    if (status == updater::Status::Available)
+    {
+        std::string version = updater::GetLatestVersion();
+
+        if (version != g_updateNotified)
+        {
+            g_updateNotified = version;
+
+            if (g_appMode != AppMode::Home)
+            {
+                AddToast("Versão " + version + " do Colaê disponível: atualize pela tela inicial");
+            }
+        }
+    }
+
+    if (!g_updateInstallWanted)
+        return;
+
+    if (status == updater::Status::Failed)
+    {
+        g_updateInstallWanted = false;
+
+        AddToast("Não foi possível atualizar: " + updater::ErrorText());
+    }
+    else if (status == updater::Status::Ready)
+    {
+        g_updateInstallWanted = false;
+
+        // O instalador espera o "programa aberto" sumir.
+        if (g_instanceMarker)
+        {
+            CloseHandle(g_instanceMarker);
+
+            g_instanceMarker = nullptr;
+        }
+
+        if (updater::LaunchInstaller())
+        {
+            // Fecha de vez (sem ir pra bandeja).
+            g_quitRequested = true;
+
+            PostMessageW(g_hwnd, WM_CLOSE, 0, 0);
+        }
+        else
+        {
+            AddToast("Não foi possível atualizar: " + updater::ErrorText());
+        }
+    }
 }
 
 
@@ -7737,6 +7887,20 @@ void DrawReceiverUi()
         home.error = g_homeError;
 
         {
+            updater::Status status = updater::GetStatus();
+
+            if (status == updater::Status::Available ||
+                status == updater::Status::Downloading ||
+                status == updater::Status::Ready)
+            {
+                home.updateVersion = updater::GetLatestVersion();
+                home.updateCanInstall = updater::CanAutoInstall();
+                home.updateDownloading = status != updater::Status::Available;
+                home.updateProgress = updater::DownloadProgress();
+            }
+        }
+
+        {
             std::lock_guard<std::mutex> lock(g_uiMutex);
 
             home.status = g_homeStatus;
@@ -8293,6 +8457,26 @@ void DrawReceiverUi()
         shortcuts.lightTheme = &g_lightThemeSetting;
         shortcuts.closeToTray = &g_closeToTray;
 
+        // Atualizacoes
+        shortcuts.appVersion = STREAM_APP_VERSION;
+        shortcuts.updateAuto = &g_updateAuto;
+        shortcuts.updateStatus = UpdateStatusText(shortcuts.updateStatusError);
+
+        {
+            updater::Status status = updater::GetStatus();
+
+            shortcuts.updateBusy =
+                status == updater::Status::Checking ||
+                status == updater::Status::Downloading ||
+                status == updater::Status::Ready;
+
+            if (status == updater::Status::Available)
+            {
+                shortcuts.updateVersion = updater::GetLatestVersion();
+                shortcuts.updateCanInstall = updater::CanAutoInstall();
+            }
+        }
+
         // Servidor de sinalizacao
         {
             if (g_serverTest.valid() &&
@@ -8363,6 +8547,34 @@ void DrawReceiverUi()
         if (shortcutActions.micTestToggle)
         {
             g_micTestOn = !g_micTestOn;
+        }
+
+        if (shortcutActions.checkUpdate)
+        {
+            updater::CheckAsync();
+        }
+
+        if (shortcutActions.startUpdate)
+        {
+            RequestUpdate();
+        }
+
+        if (shortcutActions.updateAutoChanged)
+        {
+            ReceiverSettings().SetInt(
+                L"ProcurarAtualizacoes", g_updateAuto ? 1 : 0);
+
+            // Ligou agora: procura ja.
+            if (g_updateAuto)
+                g_updateNextCheck = GetTickCount64();
+        }
+
+        if (shortcutActions.openProjectPage)
+        {
+            ShellExecuteW(
+                nullptr, L"open",
+                L"https://github.com/Nikao1/stream-project",
+                nullptr, nullptr, SW_SHOWNORMAL);
         }
 
         if (shortcutActions.trayChanged)
@@ -8517,6 +8729,28 @@ void DrawReceiverUi()
         g_voiceSpeaker,
         g_micTestLoopback,
         g_noiseSuppression);
+
+    // Atualizacoes: procura, avisos e a confirmacao.
+    UpdateTick();
+
+    if (g_updateConfirmOpen)
+    {
+        bool confirm = false;
+
+        DrawUpdateConfirm(
+            &g_updateConfirmOpen,
+            updater::GetLatestVersion(),
+            updater::GetNotes(),
+            g_appMode == AppMode::Room,
+            confirm);
+
+        if (confirm)
+        {
+            g_updateInstallWanted = true;
+
+            updater::StartDownload();
+        }
+    }
 
     DrawToasts(g_toasts);
 
@@ -8729,6 +8963,11 @@ void DrawReceiverUi()
     if (homeActions.openSettings)
     {
         ToggleSettings(SETTINGS_TAB_GENERAL);
+    }
+
+    if (homeActions.update)
+    {
+        RequestUpdate();
     }
 
 
@@ -9861,6 +10100,8 @@ int AppMain(
                 GetLastError() != ERROR_ALREADY_EXISTS)
             {
                 // Fica aberto de proposito ate o programa sair.
+                g_instanceMarker = marker;
+
                 break;
             }
 
@@ -10221,6 +10462,8 @@ int AppMain(
         );
     }
 
+
+    updater::Shutdown();
 
     // Sala: avisa que saiu (senao os outros continuam vendo
     // esta pessoa por ~20 s).

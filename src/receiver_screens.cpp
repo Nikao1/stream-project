@@ -1,4 +1,9 @@
+// Colaê - tela, som e voz direto entre amigos
+// Copyright (c) 2026 Nikao1 (github.com/Nikao1) - licença MIT (ver LICENSE)
+
 #include "receiver_screens.h"
+
+#include <cstdio>
 
 #include <algorithm>
 #include <cstring>
@@ -257,6 +262,48 @@ void DrawHomeScreen(
     ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 6.0f * UiScale());
 
     UiWordmark();
+
+    // Versao nova: botao verde ao lado da engrenagem (como no
+    // Discord).
+    if (!model.updateVersion.empty() && !model.firstRun)
+    {
+        char progress[32];
+
+        snprintf(progress, sizeof(progress), "Baixando %d%%",
+                 static_cast<int>(model.updateProgress * 100.0f + 0.5f));
+
+        std::string text =
+            model.updateDownloading ? std::string(progress)
+            : model.updateCanInstall ? std::string("Atualizar")
+            : std::string("Baixar versão nova");
+
+        float width =
+            ImGui::GetTextLineHeight() * 0.95f + 7.0f * UiScale() +
+            ImGui::CalcTextSize(text.c_str()).x +
+            style.FramePadding.x * 2.0f;
+
+        ImGui::SameLine(
+            ImGui::GetContentRegionMax().x - ImGui::GetFrameHeight() -
+            style.ItemSpacing.x - width);
+
+        ImGui::BeginDisabled(model.updateDownloading);
+
+        if (UiIconLabelButton(
+                (text + "##atualizar").c_str(),
+                UiIcon::Download,
+                ImVec2(width, 0.0f),
+                UiColorSuccess()))
+        {
+            actions.update = true;
+        }
+
+        ImGui::EndDisabled();
+
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+        {
+            ImGui::SetTooltip("Versão %s disponível", model.updateVersion.c_str());
+        }
+    }
 
     ImGui::SameLine(ImGui::GetContentRegionMax().x - ImGui::GetFrameHeight());
 
@@ -3953,6 +4000,73 @@ void DrawGeneralSettingsTab(
             "Vale para as próximas salas. O convite leva o servidor "
             "junto: quem entra pelo link não precisa configurar nada.");
     }
+
+    // Atualizacoes
+    if (model.updateAuto)
+    {
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::Spacing();
+
+        UiFieldLabel("Atualizações");
+
+        UiMutedText(("Versão instalada: " + model.appVersion).c_str());
+
+        if (!model.updateStatus.empty())
+        {
+            UiWrappedColored(
+                model.updateStatusError ? UiColorError()
+                : !model.updateVersion.empty() ? UiColorSuccess()
+                : UiColorMuted(),
+                model.updateStatus.c_str());
+        }
+
+        ImGui::BeginDisabled(model.updateBusy);
+
+        if (!model.updateVersion.empty())
+        {
+            std::string label =
+                (model.updateCanInstall ? "Atualizar para " : "Baixar a versão ") +
+                model.updateVersion;
+
+            if (UiPrimaryButton(label.c_str()))
+            {
+                actions.startUpdate = true;
+            }
+        }
+        else if (UiButton("Procurar atualização"))
+        {
+            actions.checkUpdate = true;
+        }
+
+        ImGui::EndDisabled();
+
+        if (UiToggle("Procurar atualizações sozinho", model.updateAuto))
+        {
+            actions.updateAutoChanged = true;
+        }
+
+        UiMutedText(
+            "Pergunta ao servidor configurado qual é a última versão "
+            "(ele só vê seu IP, como ao entrar numa sala). O "
+            "instalador vem do GitHub e só é instalado se a "
+            "assinatura do autor conferir.");
+    }
+
+    // Sobre
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::Spacing();
+
+    UiFieldLabel("Sobre");
+
+    UiMutedText(
+        "Colaê, criado por Nikao1. Código aberto, licença MIT.");
+
+    if (UiIconLabelButton("Ver no GitHub", UiIcon::Link))
+    {
+        actions.openProjectPage = true;
+    }
 }
 
 
@@ -4282,4 +4396,101 @@ void DrawSettingsWindow(
     }
 
     ImGui::End();
+}
+
+
+// ============================================================
+// DrawUpdateConfirm
+// ============================================================
+
+void DrawUpdateConfirm(
+    bool* open,
+    const std::string& version,
+    const std::string& notes,
+    bool inRoom,
+    bool& outConfirm)
+{
+    outConfirm = false;
+
+    const char* id = "##confirmaratualizacao";
+
+    if (*open && !ImGui::IsPopupOpen(id))
+    {
+        ImGui::OpenPopup(id);
+    }
+
+    const ImGuiViewport* viewport = ImGui::GetMainViewport();
+
+    ImGui::SetNextWindowPos(
+        viewport->GetCenter(), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+
+    ImGui::SetNextWindowSize(ImVec2(400.0f * UiScale(), 0.0f));
+
+    ImGui::PushStyleColor(ImGuiCol_Border, UiColorDivider());
+
+    bool shown =
+        ImGui::BeginPopupModal(
+            id,
+            nullptr,
+            ImGuiWindowFlags_NoTitleBar |
+            ImGuiWindowFlags_NoResize |
+            ImGuiWindowFlags_NoMove |
+            ImGuiWindowFlags_NoSavedSettings |
+            ImGuiWindowFlags_AlwaysAutoResize);
+
+    // (So a borda da janela em laranja, nao a dos botoes.)
+    ImGui::PopStyleColor();
+
+    if (shown)
+    {
+        UiTitle("Atualizar o Colaê?");
+
+        UiMutedText(
+            ("Versão " + version + ". O Colaê fecha, instala e abre de "
+             "novo sozinho em alguns segundos.").c_str());
+
+        if (inRoom)
+        {
+            UiWrappedColored(
+                UiColorError(),
+                "Você vai sair da sala (e da voz).");
+        }
+
+        if (!notes.empty())
+        {
+            ImGui::Spacing();
+
+            UiFieldLabel("Novidades");
+
+            ImGui::PushTextWrapPos(0.0f);
+            ImGui::TextUnformatted(notes.c_str());
+            ImGui::PopTextWrapPos();
+        }
+
+        ImGui::Spacing();
+
+        float half =
+            (ImGui::GetContentRegionAvail().x -
+             ImGui::GetStyle().ItemSpacing.x) * 0.5f;
+
+        if (UiPrimaryButtonSized("Atualizar agora", ImVec2(half, 0.0f)))
+        {
+            outConfirm = true;
+            *open = false;
+
+            ImGui::CloseCurrentPopup();
+        }
+
+        ImGui::SameLine();
+
+        if (UiButton("Depois", ImVec2(half, 0.0f)) ||
+            ImGui::IsKeyPressed(ImGuiKey_Escape))
+        {
+            *open = false;
+
+            ImGui::CloseCurrentPopup();
+        }
+
+        ImGui::EndPopup();
+    }
 }

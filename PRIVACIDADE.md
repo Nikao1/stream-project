@@ -33,6 +33,18 @@ Para conseguir apresentar as pessoas umas às outras, o servidor precisa ver:
 - os **endereços de internet (IP e porta)** de cada um, para que os
   computadores consigam se conectar direto.
 
+## Atualizações
+
+Para avisar quando sai uma versão nova, o Colaê pergunta ao servidor
+configurado qual é a última versão (ao abrir e a cada 6 horas). Nessa
+pergunta o servidor vê só o seu IP — como já vê ao entrar numa sala — e
+nada sobre o que você faz no programa. Dá para desligar em Configurações →
+Geral → "Procurar atualizações sozinho".
+
+Ao atualizar, o instalador é baixado do GitHub (onde ficam as versões do
+projeto). Antes de instalar, o Colaê confere a **assinatura digital do autor**:
+se o arquivo tiver sido alterado por qualquer pessoa, ele não é instalado.
+
 ## Quanto tempo fica guardado
 
 Nada vai para banco de dados nem para arquivo. Tudo fica só na memória do

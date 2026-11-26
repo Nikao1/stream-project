@@ -193,7 +193,18 @@ janela está. No LoL, deixe o vídeo do jogo em "Sem bordas".
 
 Se a janela transmitida for fechada, a transmissão pausa (quem
 assiste vê "Transmissão pausada") e aparece "Escolher outra" ou
-"Parar agora". Sem resposta em 1 minuto, ela encerra sozinha.
+"Parar agora". Sem resposta em 10 segundos, ela encerra sozinha.
+
+
+ATUALIZAÇÕES
+------------
+Quando sai uma versão nova, aparece o botão verde "Atualizar" na
+tela inicial (ao lado da engrenagem). Clique, confirme, e o
+Colaê fecha, instala e abre de novo sozinho - só funciona na
+cópia instalada pelo instalador; no .zip, o botão abre a página
+de downloads. Antes de instalar, o Colaê confere a assinatura
+digital do autor. Em Configurações > Geral dá para procurar na
+hora ou desligar a procura automática.
 
 
 SE ALGO DER ERRADO

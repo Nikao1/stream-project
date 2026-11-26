@@ -1,3 +1,4 @@
+// Colae - Copyright (c) 2026 Nikao1 (github.com/Nikao1) - licenca MIT
 // Recursos do Colae.exe: icone e informacoes de versao
 // (as que aparecem em botao direito > Propriedades > Detalhes).
 //
@@ -25,7 +26,8 @@ BEGIN
     BEGIN
         BLOCK "041604B0"
         BEGIN
-            VALUE "CompanyName",      "Colaê"
+            VALUE "CompanyName",      "Nikao1"
+            VALUE "LegalCopyright",   "© 2026 Nikao1 - licença MIT"
             VALUE "FileDescription",  "Colaê - tela, som e voz direto entre amigos"
             VALUE "FileVersion",      STREAM_APP_VERSION
             VALUE "InternalName",     "Colae"

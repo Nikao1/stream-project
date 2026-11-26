@@ -1,3 +1,6 @@
+// Colaê - tela, som e voz direto entre amigos
+// Copyright (c) 2026 Nikao1 (github.com/Nikao1) - licença MIT (ver LICENSE)
+
 #pragma once
 
 #include <cstddef>
@@ -86,10 +89,22 @@ struct HomeScreenModel
 
     // Aviso em vermelho (vazio = nenhum).
     std::string error;
+
+    // Versao nova do programa (vazio = nenhuma): botao ao lado da
+    // engrenagem. updateCanInstall = atualiza sozinho (senao, so
+    // abre a pagina de downloads); updateDownloading/Progress =
+    // baixando.
+    std::string updateVersion;
+    bool updateCanInstall = false;
+    bool updateDownloading = false;
+    float updateProgress = 0.0f;
 };
 
 struct HomeScreenActions
 {
+    // Botao de versao nova.
+    bool update = false;
+
     bool createRoom = false;
 
     bool enter = false;
@@ -638,6 +653,19 @@ struct SettingsModel
     // relogio). A tela altera direto e avisa em trayChanged.
     bool* closeToTray = nullptr;
 
+    // Atualizacoes (aba Geral): versao instalada, linha de estado
+    // (updateStatusError = vermelha), versao nova (vazio = nenhuma)
+    // e se da pra atualizar sozinho; updateBusy = procurando ou
+    // baixando. updateAuto: a tela altera direto e avisa em
+    // updateAutoChanged.
+    std::string appVersion;
+    std::string updateStatus;
+    bool updateStatusError = false;
+    std::string updateVersion;
+    bool updateCanInstall = false;
+    bool updateBusy = false;
+    bool* updateAuto = nullptr;
+
     // Foto de perfil (ImTextureID; nullptr = sem foto) e nome
     // (pra inicial quando nao ha foto).
     void* myAvatar = nullptr;
@@ -712,6 +740,12 @@ struct SettingsActions
     // Geral
     bool themeChanged = false;
     bool trayChanged = false;
+
+    // Atualizacoes / sobre
+    bool checkUpdate = false;
+    bool startUpdate = false;
+    bool updateAutoChanged = false;
+    bool openProjectPage = false;
     bool chooseAvatar = false;
     bool removeAvatar = false;
 
@@ -877,4 +911,19 @@ struct StreamOverlayActions
 bool DrawStreamOverlay(
     StreamOverlayModel& model,
     StreamOverlayActions& actions
+);
+
+
+// ------------------------------------------------------------
+// Confirmar a atualizacao ("O Colae fecha e abre de novo")
+// ------------------------------------------------------------
+//
+// *open = mostrando. inRoom = avisa que sai da sala/voz.
+// outConfirm = "Atualizar agora" (o *open fecha sozinho).
+void DrawUpdateConfirm(
+    bool* open,
+    const std::string& version,
+    const std::string& notes,
+    bool inRoom,
+    bool& outConfirm
 );

@@ -1,3 +1,6 @@
+// Colaê - tela, som e voz direto entre amigos
+// Copyright (c) 2026 Nikao1 (github.com/Nikao1) - licença MIT (ver LICENSE)
+
 #pragma once
 
 #include "imgui.h"
@@ -173,7 +176,8 @@ enum class UiIcon
     Stop,
     Edit,
     Link,
-    Copy
+    Copy,
+    Download
 };
 
 void UiIconAt(

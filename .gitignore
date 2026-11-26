@@ -8,6 +8,8 @@
 # Pacotes gerados por tools/empacotar.ps1
 /dist/
 
+*.chave
+
 # Logs e relatorios de crash gerados ao rodar os programas
 *.log
 *.dmp

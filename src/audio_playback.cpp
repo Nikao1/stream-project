@@ -1,3 +1,6 @@
+// Colaê - tela, som e voz direto entre amigos
+// Copyright (c) 2026 Nikao1 (github.com/Nikao1) - licença MIT (ver LICENSE)
+
 #include "audio_playback.h"
 
 #include <algorithm>

@@ -82,4 +82,15 @@ Para voltar ao servidor público, clique em **Voltar ao padrão**.
   continua criptografado de ponta a ponta. Para HTTPS em casa, coloque o
   servidor atrás de um proxy como o Caddy, que gera o certificado sozinho.
 - Variáveis de ambiente úteis: `PORT` (porta), `TRUST_PROXY=1` (atrás de
-  proxy), `LOG_REQUESTS=1` (log de depuração).
+  proxy), `LOG_REQUESTS=1` (log de depuração), `VERSAO_ARQUIVO` (outro
+  caminho para o `versao.txt`).
+
+## Aviso de atualização
+
+Quem usa o seu servidor recebe o aviso de versão nova do Colaê pela rota
+`/versao`, que responde o conteúdo do arquivo `signaling/versao.txt`. Se você
+mantém o servidor atualizado com este repositório, o aviso funciona sozinho.
+Sem o arquivo, o servidor responde 404 e o programa simplesmente não avisa.
+
+O servidor não decide o que é instalado: o Colaê só instala um arquivo com a
+assinatura digital do autor.

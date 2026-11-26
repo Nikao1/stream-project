@@ -1,3 +1,6 @@
+// Colaê - tela, som e voz direto entre amigos
+// Copyright (c) 2026 Nikao1 (github.com/Nikao1) - licença MIT (ver LICENSE)
+
 #include "ui_widgets.h"
 
 #include <algorithm>
@@ -1579,6 +1582,21 @@ void UiIconAtEx(
     {
         draw->AddLine(P(-0.6f, -0.6f), P(0.6f, 0.6f), color, t);
         draw->AddLine(P(-0.6f, 0.6f), P(0.6f, -0.6f), color, t);
+        break;
+    }
+
+    case UiIcon::Download:
+    {
+        // Seta pra baixo + bandeja.
+        draw->AddLine(P(0.0f, -0.85f), P(0.0f, 0.35f), color, t);
+
+        ImVec2 head[3] = { P(-0.45f, -0.05f), P(0.0f, 0.4f), P(0.45f, -0.05f) };
+
+        draw->AddPolyline(head, 3, color, 0, t);
+
+        ImVec2 tray[4] = { P(-0.8f, 0.3f), P(-0.8f, 0.85f), P(0.8f, 0.85f), P(0.8f, 0.3f) };
+
+        draw->AddPolyline(tray, 4, color, 0, t);
         break;
     }
     }

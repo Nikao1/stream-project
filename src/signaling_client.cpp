@@ -1,3 +1,6 @@
+// Colaê - tela, som e voz direto entre amigos
+// Copyright (c) 2026 Nikao1 (github.com/Nikao1) - licença MIT (ver LICENSE)
+
 #include "signaling_client.h"
 #include "room_crypto.h"
 #include "version.h"
@@ -575,6 +578,31 @@ bool SplitInviteServer(
     }
 
     return false;
+}
+
+
+bool SignalingGetLatestVersion(
+    std::map<std::string, std::string>& outFields,
+    std::string& outError)
+{
+    outFields.clear();
+
+    DWORD status = 0;
+    std::string response;
+
+    if (!HttpRequestTo(
+            SignalingGetConfiguredUrl(), L"GET", "/versao", std::string(),
+            status, response, outError))
+    {
+        return false;
+    }
+
+    if (status == 200)
+    {
+        outFields = ParseKeyValues(response);
+    }
+
+    return true;
 }
 
 

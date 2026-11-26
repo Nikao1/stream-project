@@ -1,9 +1,13 @@
+// Colaê - tela, som e voz direto entre amigos
+// Copyright (c) 2026 Nikao1 (github.com/Nikao1) - licença MIT (ver LICENSE)
+
 #pragma once
 
 #include <atomic>
 #include <condition_variable>
 #include <cstdint>
 #include <functional>
+#include <map>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -34,6 +38,15 @@
 // ============================================================
 
 std::string GetSignalingUrl();
+
+// Ultima versao do programa anunciada pelo servidor configurado
+// (GET /versao: versao, url, pagina, hash, assinatura, notas).
+// false = sem resposta (rede); true com outFields vazio = o
+// servidor nao anuncia versoes (ex.: servidor proprio antigo).
+bool SignalingGetLatestVersion(
+    std::map<std::string, std::string>& outFields,
+    std::string& outError
+);
 
 // Servidor padrao (o publico, embutido no programa).
 std::string GetDefaultSignalingUrl();

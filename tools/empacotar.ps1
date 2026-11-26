@@ -1,3 +1,4 @@
+# Colae - Copyright (c) 2026 Nikao1 (github.com/Nikao1) - licenca MIT
 <#
 .SYNOPSIS
     Monta o pacote para distribuir o Colae (um .zip pronto

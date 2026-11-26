@@ -1,3 +1,6 @@
+// Colaê - tela, som e voz direto entre amigos
+// Copyright (c) 2026 Nikao1 (github.com/Nikao1) - licença MIT (ver LICENSE)
+
 #include "client_ui.h"
 #include <dwmapi.h>
 #include <algorithm>
@@ -143,7 +146,7 @@ ULONGLONG g_windowGoneAt = 0;
 ULONGLONG g_pausedFrameSentAt = 0;
 bool g_autoStopped = false;
 
-constexpr ULONGLONG WINDOW_GONE_STOP_MS = 60000;
+constexpr ULONGLONG WINDOW_GONE_STOP_MS = 10000;
 
 std::string g_pickerError;
 

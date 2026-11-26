@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.20)
 
 project(stream-project
-    VERSION 0.8.11
+    VERSION 0.8.12
     LANGUAGES C CXX
 )
 
@@ -279,6 +279,11 @@ add_executable(stream-project WIN32
     src/ffmpeg_check.h
     src/video_protocol.h
     src/audio_protocol.h
+    src/updater.cpp
+    src/updater.h
+    src/update_signature.cpp
+    src/update_signature.h
+    src/update_key.h
 
     src/version.h.in
     resources/colae.rc
@@ -318,4 +323,34 @@ target_link_libraries(stream-project PRIVATE
     advapi32
     gdi32
     user32
+)
+
+
+# ============================================================
+# colae-assinar - assina os instaladores das atualizacoes
+# (ver tools/assinar/colae_assinar.cpp e PUBLICAR.md). Programa
+# de linha de comando so pra quem publica versoes: nao vai no
+# pacote.
+# ============================================================
+
+add_executable(colae-assinar
+    tools/assinar/colae_assinar.cpp
+    src/update_signature.cpp
+    src/update_signature.h
+)
+
+target_include_directories(colae-assinar PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+)
+
+target_compile_definitions(colae-assinar PRIVATE
+    UNICODE
+    _UNICODE
+    WIN32_LEAN_AND_MEAN
+    NOMINMAX
+)
+
+target_link_libraries(colae-assinar PRIVATE
+    monocypher
+    bcrypt
 )
