@@ -1,4 +1,8 @@
 #include "client_ui.h"
+#include <dwmapi.h>
+#include <algorithm>
+#include "imgui.h"
+#include "imgui_internal.h"
 
 #include <ws2tcpip.h>
 #include <shellapi.h>
@@ -132,17 +136,31 @@ bool g_windowAudioOnly = false;
 // escolha do que compartilhar).
 bool g_blackCaptureDismissed = false;
 
+// Janela compartilhada fechada (ou escondida): quando foi (0 =
+// esta tudo certo). Passados WINDOW_GONE_STOP_MS sem escolher
+// outra, a transmissao encerra sozinha.
+ULONGLONG g_windowGoneAt = 0;
+ULONGLONG g_pausedFrameSentAt = 0;
+bool g_autoStopped = false;
+
+constexpr ULONGLONG WINDOW_GONE_STOP_MS = 10000;
+
 std::string g_pickerError;
 
 // O que esta sendo compartilhado agora (vazio = nada ainda).
 std::string g_sharingLabel;
 
 
+void ClearLiveThumbnails();
+
 void RefreshPickerLists()
 {
     g_monitors = ListCaptureMonitors();
 
     g_windows = ListCaptureWindows(g_hwnd);
+
+    // Lista nova: as previas ao vivo sao refeitas.
+    ClearLiveThumbnails();
 
     g_monitorEntries.clear();
 
@@ -167,6 +185,7 @@ void RefreshPickerLists()
         entry.detail = target.detail;
         entry.minimized = target.minimized;
         entry.thumbnailPending = !target.minimized;
+        entry.live = true;
 
         g_windowEntries.push_back(entry);
     }
@@ -179,6 +198,244 @@ void RefreshPickerLists()
         ThumbnailBatch::Start(g_monitors, g_windows);
 
     g_thumbnailsApplied = false;
+}
+
+
+// ============================================================
+// Previas ao vivo das janelas no seletor (DWM)
+//
+// O proprio Windows desenha uma copia da janela no lugar da
+// miniatura - a mesma das previas da barra de tarefas. Nao custa
+// nada pro programa (quem compoe e o DWM, na placa de video) e
+// funciona com janelas minimizadas (fica a ultima imagem antes de
+// minimizar) e com jogos que o PrintWindow devolve pretos. So
+// existe com o seletor aberto.
+//
+// Como o DWM desenha POR CIMA da janela do programa, a previa
+// some quando algo da interface (dica, menu, barra) passa por
+// cima - ai aparece a miniatura comum por baixo.
+// ============================================================
+
+struct LiveThumb
+{
+    HWND source = nullptr;
+    HTHUMBNAIL handle = nullptr;
+    bool failed = false;
+
+    // Ultimo estado enviado ao DWM (so manda de novo se mudar).
+    bool visible = false;
+    RECT destination{};
+    RECT sourceRect{};
+};
+
+std::vector<LiveThumb> g_liveThumbs;
+
+std::vector<PickerLiveSlot> g_liveSlots;
+
+int g_liveThumbsFrame = -1;
+
+void ClearLiveThumbnails()
+{
+    for (LiveThumb& thumb : g_liveThumbs)
+    {
+        if (thumb.handle)
+            DwmUnregisterThumbnail(thumb.handle);
+    }
+
+    g_liveThumbs.clear();
+}
+
+// true = alguma janela do ImGui na frente (dica, menu, barra)
+// cobre esse retangulo. Usa a ordem do frame anterior.
+bool LiveThumbCovered(
+    void* root,
+    const ImRect& rect)
+{
+    ImGuiContext& g = *GImGui;
+
+    int rootIndex = -1;
+
+    for (int i = 0; i < g.Windows.Size; ++i)
+    {
+        if (g.Windows[i] == root)
+        {
+            rootIndex = i;
+            break;
+        }
+    }
+
+    if (rootIndex < 0)
+        return true;
+
+    for (int i = rootIndex + 1; i < g.Windows.Size; ++i)
+    {
+        ImGuiWindow* window = g.Windows[i];
+
+        if (window != window->RootWindow ||
+            !(window->Active || window->WasActive) ||
+            window->Hidden)
+        {
+            continue;
+        }
+
+        bool tooltip = (window->Flags & ImGuiWindowFlags_Tooltip) != 0;
+
+        // Janelas "sem clique" sao avisos ou coisas sumindo
+        // (barra apagada): nao contam.
+        if ((window->Flags & ImGuiWindowFlags_NoInputs) && !tooltip)
+            continue;
+
+        if (window->Rect().Overlaps(rect))
+            return true;
+    }
+
+    return false;
+}
+
+void SetLiveThumbHidden(
+    LiveThumb& thumb)
+{
+    if (!thumb.handle || !thumb.visible)
+        return;
+
+    DWM_THUMBNAIL_PROPERTIES props{};
+
+    props.dwFlags = DWM_TNP_VISIBLE;
+    props.fVisible = FALSE;
+
+    DwmUpdateThumbnailProperties(thumb.handle, &props);
+
+    thumb.visible = false;
+}
+
+void UpdateLiveThumbnails()
+{
+    g_liveThumbsFrame = ImGui::GetFrameCount();
+
+    if (g_liveThumbs.size() != g_windows.size())
+    {
+        ClearLiveThumbnails();
+
+        g_liveThumbs.resize(g_windows.size());
+
+        for (size_t i = 0; i < g_windows.size(); ++i)
+        {
+            g_liveThumbs[i].source = g_windows[i].window;
+        }
+    }
+
+    std::vector<bool> shown(g_liveThumbs.size(), false);
+
+    for (const PickerLiveSlot& slot : g_liveSlots)
+    {
+        if (slot.index < 0 ||
+            slot.index >= static_cast<int>(g_liveThumbs.size()))
+        {
+            continue;
+        }
+
+        LiveThumb& thumb = g_liveThumbs[slot.index];
+
+        if (thumb.failed || !IsWindow(thumb.source))
+            continue;
+
+        if (!thumb.handle &&
+            FAILED(DwmRegisterThumbnail(g_hwnd, thumb.source, &thumb.handle)))
+        {
+            thumb.handle = nullptr;
+            thumb.failed = true;
+
+            continue;
+        }
+
+        SIZE size{};
+
+        if (FAILED(DwmQueryThumbnailSourceSize(thumb.handle, &size)) ||
+            size.cx <= 0 ||
+            size.cy <= 0)
+        {
+            continue;
+        }
+
+        // A imagem inteira dentro do quadro (como as miniaturas).
+        float boxWidth = slot.boxMaxX - slot.boxMinX;
+        float boxHeight = slot.boxMaxY - slot.boxMinY;
+
+        float fit =
+            (std::min)(
+                boxWidth / static_cast<float>(size.cx),
+                boxHeight / static_cast<float>(size.cy));
+
+        if (fit <= 0.0f)
+            continue;
+
+        float w = size.cx * fit;
+        float h = size.cy * fit;
+
+        float x0 = slot.boxMinX + (boxWidth - w) * 0.5f;
+        float y0 = slot.boxMinY + (boxHeight - h) * 0.5f;
+
+        // So a parte visivel (a lista rola).
+        float vx0 = (std::max)(x0, slot.clipMinX);
+        float vy0 = (std::max)(y0, slot.clipMinY);
+        float vx1 = (std::min)(x0 + w, slot.clipMaxX);
+        float vy1 = (std::min)(y0 + h, slot.clipMaxY);
+
+        if (vx1 - vx0 < 2.0f || vy1 - vy0 < 2.0f)
+            continue;
+
+        if (LiveThumbCovered(slot.root, ImRect(vx0, vy0, vx1, vy1)))
+            continue;
+
+        RECT destination{
+            static_cast<LONG>(vx0 + 0.5f),
+            static_cast<LONG>(vy0 + 0.5f),
+            static_cast<LONG>(vx1 + 0.5f),
+            static_cast<LONG>(vy1 + 0.5f) };
+
+        RECT sourceRect{
+            static_cast<LONG>((vx0 - x0) / fit),
+            static_cast<LONG>((vy0 - y0) / fit),
+            static_cast<LONG>((vx1 - x0) / fit + 0.5f),
+            static_cast<LONG>((vy1 - y0) / fit + 0.5f) };
+
+        shown[slot.index] = true;
+
+        if (thumb.visible &&
+            EqualRect(&thumb.destination, &destination) &&
+            EqualRect(&thumb.sourceRect, &sourceRect))
+        {
+            continue;
+        }
+
+        DWM_THUMBNAIL_PROPERTIES props{};
+
+        props.dwFlags =
+            DWM_TNP_RECTDESTINATION |
+            DWM_TNP_RECTSOURCE |
+            DWM_TNP_VISIBLE |
+            DWM_TNP_OPACITY |
+            DWM_TNP_SOURCECLIENTAREAONLY;
+
+        props.rcDestination = destination;
+        props.rcSource = sourceRect;
+        props.fVisible = TRUE;
+        props.opacity = 255;
+        props.fSourceClientAreaOnly = FALSE;
+
+        if (SUCCEEDED(DwmUpdateThumbnailProperties(thumb.handle, &props)))
+        {
+            thumb.visible = true;
+            thumb.destination = destination;
+            thumb.sourceRect = sourceRect;
+        }
+    }
+
+    for (size_t i = 0; i < g_liveThumbs.size(); ++i)
+    {
+        if (!shown[i])
+            SetLiveThumbHidden(g_liveThumbs[i]);
+    }
 }
 
 
@@ -743,6 +1000,7 @@ void DrawUi(
 
         model.monitors = &g_monitorEntries;
         model.windows = &g_windowEntries;
+        model.liveSlots = &g_liveSlots;
         model.windowAudioOnly = &g_windowAudioOnly;
         model.windowAudioSupported = g_windowAudioSupported;
         model.switching = g_captureRunning;
@@ -855,8 +1113,22 @@ void DrawUi(
         model.uploadWarning =
             total > 40;
     }
+    model.windowClosed = g_windowGoneAt != 0;
+
+    if (model.windowClosed)
+    {
+        ULONGLONG elapsed = GetTickCount64() - g_windowGoneAt;
+
+        model.closedSecondsLeft =
+            elapsed >= WINDOW_GONE_STOP_MS
+            ? 0
+            : static_cast<int>((WINDOW_GONE_STOP_MS - elapsed + 999) / 1000);
+    }
+
     model.blackCapture =
-        !g_blackCaptureDismissed && CaptureLooksBlack();
+        !model.windowClosed &&
+        !g_blackCaptureDismissed &&
+        CaptureLooksBlack();
 
     model.symmetricNat = g_symmetricNat;
     model.replyInput = g_replyInput;
@@ -1234,6 +1506,8 @@ void ClientUiDrawFrame(
 
     ClientScreenActions actions;
 
+    g_liveSlots.clear();
+
     if (panelOnly)
     {
         // Na lista da sala: so o painel das opcoes, por cima, e so
@@ -1258,6 +1532,12 @@ void ClientUiDrawFrame(
         }
 
         DrawUi(actions);
+    }
+
+    // Seletor aberto: previas ao vivo das janelas.
+    if (g_state == State::Picking && !panelOnly)
+    {
+        UpdateLiveThumbnails();
     }
 
     // "Trocar o que esta sendo compartilhado" na lista da sala: o
@@ -1546,6 +1826,101 @@ void DrawOptionsPanel(
 bool IsOpen()
 {
     return g_open;
+}
+
+
+// A cada frame: a janela compartilhada ainda existe? Fechou (ou
+// sumiu, ex.: foi pra bandeja): pausa com o aviso, e encerra
+// sozinha depois de alguns segundos.
+static void CheckSharedWindow()
+{
+    HWND window = CaptureWindowHandle();
+
+    bool gone =
+        window != nullptr &&
+        (!IsWindow(window) || !IsWindowVisible(window));
+
+    ULONGLONG now = GetTickCount64();
+
+    if (!gone)
+    {
+        // Voltou (ex.: saiu da bandeja): a captura continua sozinha.
+        if (g_windowGoneAt != 0)
+        {
+            std::cout << "A janela compartilhada voltou.\n";
+        }
+
+        g_windowGoneAt = 0;
+
+        return;
+    }
+
+    if (g_windowGoneAt == 0)
+    {
+        std::cout << "A janela compartilhada foi fechada: transmissao pausada.\n";
+
+        g_windowGoneAt = now;
+        g_pausedFrameSentAt = 0;
+    }
+
+    // Quem chegar agora tambem ve o aviso (e o encoder manda
+    // quadros-chave de novo).
+    if (now - g_pausedFrameSentAt >= 500)
+    {
+        g_pausedFrameSentAt = now;
+
+        SubmitPausedFrame();
+    }
+
+    // Escolhendo outra: o tempo nao corre.
+    if (g_state == State::Picking)
+    {
+        g_windowGoneAt = now;
+
+        return;
+    }
+
+    if (now - g_windowGoneAt >= WINDOW_GONE_STOP_MS &&
+        !g_sessionPending)
+    {
+        std::cout << "Ninguem escolheu outra janela: encerrando a transmissao.\n";
+
+        g_windowGoneAt = 0;
+
+        StopSharingInternal();
+
+        g_autoStopped = true;
+    }
+}
+
+
+bool TakeAutoStopped()
+{
+    bool stopped = g_autoStopped;
+
+    g_autoStopped = false;
+
+    return stopped;
+}
+
+
+void EndFrame()
+{
+    if (g_open && g_captureRunning)
+    {
+        CheckSharedWindow();
+    }
+    else
+    {
+        g_windowGoneAt = 0;
+    }
+
+    // O seletor nao foi desenhado neste frame (outra tela, janela
+    // escondida...): tira as previas ao vivo de cima.
+    if (g_liveThumbsFrame != ImGui::GetFrameCount())
+    {
+        ClearLiveThumbnails();
+    }
 }
 
 

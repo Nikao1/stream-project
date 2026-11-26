@@ -3868,7 +3868,7 @@ void TrayAdd()
         GetSystemMetrics(SM_CYSMICON),
         LR_DEFAULTCOLOR | LR_SHARED));
 
-    wcscpy_s(data.szTip, L"Cola\u00ea (em segundo plano)");
+    wcscpy_s(data.szTip, L"Cola\u00ea");
 
     // So na primeira vez: um aviso de que ele continua aqui.
     if (!g_trayBalloonShown)
@@ -3879,8 +3879,7 @@ void TrayAdd()
         wcscpy_s(data.szInfoTitle, L"O Cola\u00ea continua aberto");
         wcscpy_s(
             data.szInfo,
-            L"Clique no \u00edcone para voltar. Para sair de vez: "
-            L"bot\u00e3o direito > Sair.");
+            L"Clique no \u00edcone para voltar.");
 
         g_trayBalloonShown = true;
     }
@@ -3929,7 +3928,7 @@ void ShowTrayMenu()
     if (!menu)
         return;
 
-    AppendMenuW(menu, MF_STRING, TRAY_MENU_OPEN, L"Abrir o Cola\u00ea");
+    AppendMenuW(menu, MF_STRING, TRAY_MENU_OPEN, L"Abrir");
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING, TRAY_MENU_QUIT, L"Sair");
 
@@ -8521,6 +8520,8 @@ void DrawReceiverUi()
 
     DrawToasts(g_toasts);
 
+    sender::EndFrame();
+
 
     UiEndFrame();
 
@@ -8900,6 +8901,19 @@ void DrawReceiverUi()
     }
 
     // "Voltar" nas telas do modo Transmitir / Assistir
+    // A janela compartilhada fechou e ninguem escolheu outra: a
+    // transmissao encerrou sozinha.
+    if (sender::TakeAutoStopped())
+    {
+        AddToast("Transmissão encerrada: a janela foi fechada");
+
+        if (g_appMode == AppMode::Room &&
+            g_roomView == RoomView::Share)
+        {
+            shareGoHome = true;
+        }
+    }
+
     if (shareGoHome)
     {
         if (g_appMode == AppMode::Room)

@@ -191,6 +191,12 @@ struct ClientLiveModel
     // A janela compartilhada esta chegando preta (alguns jogos,
     // como a partida do LoL): sugerir a tela inteira.
     bool blackCapture = false;
+
+    // A janela compartilhada foi fechada: a transmissao esta
+    // pausada e encerra sozinha em closedSecondsLeft segundos
+    // (actions.openPicker = escolher outra; stopSharing = parar).
+    bool windowClosed = false;
+    int closedSecondsLeft = 0;
 };
 
 void DrawClientLiveScreen(
@@ -220,6 +226,24 @@ struct PickerEntry
     bool thumbnailPending = false;
 
     bool minimized = false;
+
+    // Janela: o programa pode mostrar por cima uma previa "ao
+    // vivo" do Windows (que tambem tem a ultima imagem das
+    // minimizadas). A tela so informa onde.
+    bool live = false;
+};
+
+// Onde a previa ao vivo de uma janela vai (coordenadas da
+// janela do programa): o quadro da miniatura e o recorte
+// visivel (rolagem). root = janela do ImGui do seletor.
+struct PickerLiveSlot
+{
+    int index = 0;
+
+    float boxMinX = 0, boxMinY = 0, boxMaxX = 0, boxMaxY = 0;
+    float clipMinX = 0, clipMinY = 0, clipMaxX = 0, clipMaxY = 0;
+
+    void* root = nullptr;
 };
 
 struct ClientPickerModel
@@ -227,6 +251,9 @@ struct ClientPickerModel
     const std::vector<PickerEntry>* monitors = nullptr;
 
     const std::vector<PickerEntry>* windows = nullptr;
+
+    // Saida: onde vao as previas ao vivo das janelas.
+    std::vector<PickerLiveSlot>* liveSlots = nullptr;
 
     // "So o som da janela" (a tela altera direto).
     bool* windowAudioOnly = nullptr;

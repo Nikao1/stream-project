@@ -42,6 +42,14 @@ void Draw(
 
 bool IsOpen();
 
+// Fim de cada frame da interface (antes de desenhar): limpa o
+// que so vale com o seletor na tela.
+void EndFrame();
+
+// true (uma vez) = a transmissao foi encerrada sozinha porque a
+// janela compartilhada fechou e ninguem escolheu outra.
+bool TakeAutoStopped();
+
 // Na lista da sala, transmitindo: so o painel das opcoes (abre
 // com SetRoomPanelOpen, no lugar de SetRoomPanelAnchor). Sem a
 // previa ao fundo. outOpenShareView = pediu pra trocar o que e

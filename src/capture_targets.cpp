@@ -389,9 +389,16 @@ BOOL CALLBACK CollectWindow(
 
     // A partida do LoL costuma chegar preta capturando so a
     // janela (a tela inteira funciona).
+    // O titulo das duas janelas do LoL engana: a partida se chama
+    // "League of Legends (TM) Client" e o cliente (lobby), so
+    // "League of Legends".
     if (_wcsicmp(processName.c_str(), L"League of Legends.exe") == 0)
     {
-        target.detail += " · melhor pela tela inteira";
+        target.detail = "partida do LoL · melhor pela tela inteira";
+    }
+    else if (_wcsicmp(processName.c_str(), L"LeagueClientUx.exe") == 0)
+    {
+        target.detail = "cliente do LoL (lobby)";
     }
 
     if (needsAdmin)

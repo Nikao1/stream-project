@@ -1563,10 +1563,7 @@ void DrawRoomScreen(
 
     UiMutedText(
         (std::to_string(model.memberCount) + " de " +
-         std::to_string(model.maxMembers) + " pessoas  ·  " +
-         (model.inviteLink.empty()
-          ? "passe o código para quem vai entrar"
-          : "mande o convite para quem vai entrar")).c_str());
+         std::to_string(model.maxMembers) + " pessoas").c_str());
 
     if (model.offline)
     {
@@ -3813,9 +3810,8 @@ void DrawGeneralSettingsTab(
         }
 
         UiMutedText(
-            "O X da janela esconde o Colaê na bandeja (perto do "
-            "relógio) e a voz continua. Para sair de vez: botão "
-            "direito no ícone da bandeja > Sair.");
+            "O X esconde o Colaê perto do relógio e a voz continua. "
+            "Para sair: botão direito no ícone > Sair.");
 
         ImGui::Spacing();
     }

@@ -191,6 +191,10 @@ alguns jogos, como a partida do League of Legends), o Colaê
 avisa e oferece "Transmitir a tela inteira" - a tela onde a
 janela está. No LoL, deixe o vídeo do jogo em "Sem bordas".
 
+Se a janela transmitida for fechada, a transmissão pausa (quem
+assiste vê "Transmissão pausada") e aparece "Escolher outra" ou
+"Parar agora". Sem resposta em 10 segundos, ela encerra sozinha.
+
 
 SE ALGO DER ERRADO
 ------------------

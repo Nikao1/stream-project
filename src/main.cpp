@@ -37,6 +37,7 @@
 #include <mutex>
 #include <condition_variable>
 #include <atomic>
+#include <algorithm>
 #include <chrono>
 #include <cstdint>
 #include <cstring>
@@ -262,6 +263,169 @@ std::mutex g_displayMutex;
 
 uint32_t g_displayWidth = 0;
 uint32_t g_displayHeight = 0;
+
+
+// ============================================================
+// IMAGEM DE "TRANSMISSAO PAUSADA"
+//
+// A janela compartilhada fechou: no lugar da ultima imagem
+// congelada, quem assiste (e a previa daqui, e a da sala) ve um
+// quadro escuro com o aviso. Desenhado uma vez com GDI e
+// reenviado de tempos em tempos (ver SubmitPausedFrame).
+// ============================================================
+
+std::vector<unsigned char> g_pausedPixels;
+uint32_t g_pausedWidth = 0;
+uint32_t g_pausedHeight = 0;
+
+void BuildPausedFrame(
+    uint32_t width,
+    uint32_t height)
+{
+    BITMAPINFO info{};
+
+    info.bmiHeader.biSize = sizeof(info.bmiHeader);
+    info.bmiHeader.biWidth = static_cast<LONG>(width);
+    info.bmiHeader.biHeight = -static_cast<LONG>(height); // de cima pra baixo
+    info.bmiHeader.biPlanes = 1;
+    info.bmiHeader.biBitCount = 32;
+    info.bmiHeader.biCompression = BI_RGB;
+
+    void* bits = nullptr;
+
+    HDC dc = CreateCompatibleDC(nullptr);
+
+    HBITMAP bitmap =
+        dc
+        ? CreateDIBSection(dc, &info, DIB_RGB_COLORS, &bits, nullptr, 0)
+        : nullptr;
+
+    g_pausedPixels.assign(static_cast<size_t>(width) * height * 4, 0);
+
+    if (bitmap && bits)
+    {
+        HGDIOBJ oldBitmap = SelectObject(dc, bitmap);
+
+        RECT all{ 0, 0, static_cast<LONG>(width), static_cast<LONG>(height) };
+
+        HBRUSH background = CreateSolidBrush(RGB(14, 17, 22));
+
+        FillRect(dc, &all, background);
+
+        DeleteObject(background);
+
+        SetBkMode(dc, TRANSPARENT);
+
+        int titleSize = (std::max)(16, static_cast<int>(height / 16));
+
+        HFONT title = CreateFontW(
+            -titleSize, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
+            DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+            CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
+
+        HFONT subtitle = CreateFontW(
+            -(titleSize * 11 / 20), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+            DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+            CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
+
+        LONG middle = static_cast<LONG>(height / 2);
+
+        RECT top{ 0, middle - titleSize * 3 / 2, all.right, middle };
+        RECT bottom{ 0, middle + titleSize / 4, all.right, middle + titleSize * 3 / 2 };
+
+        HGDIOBJ oldFont = SelectObject(dc, title);
+
+        SetTextColor(dc, RGB(236, 238, 241));
+
+        DrawTextW(dc, L"Transmiss\u00e3o pausada", -1, &top,
+                  DT_CENTER | DT_BOTTOM | DT_SINGLELINE);
+
+        SelectObject(dc, subtitle);
+
+        SetTextColor(dc, RGB(150, 156, 166));
+
+        DrawTextW(dc, L"A janela compartilhada foi fechada", -1, &bottom,
+                  DT_CENTER | DT_TOP | DT_SINGLELINE);
+
+        SelectObject(dc, oldFont);
+        SelectObject(dc, oldBitmap);
+
+        DeleteObject(title);
+        DeleteObject(subtitle);
+
+        GdiFlush();
+
+        std::memcpy(g_pausedPixels.data(), bits, g_pausedPixels.size());
+
+        // GDI deixa o alfa em 0: opaco.
+        for (size_t i = 3; i < g_pausedPixels.size(); i += 4)
+        {
+            g_pausedPixels[i] = 255;
+        }
+    }
+
+    if (bitmap)
+        DeleteObject(bitmap);
+
+    if (dc)
+        DeleteDC(dc);
+
+    g_pausedWidth = width;
+    g_pausedHeight = height;
+}
+
+
+void SubmitPausedFrame()
+{
+    // Mesmo tamanho da ultima imagem (o encoder nao reinicia).
+    uint32_t width = 0;
+    uint32_t height = 0;
+
+    {
+        std::lock_guard<std::mutex> lock(g_displayMutex);
+
+        width = g_displayWidth;
+        height = g_displayHeight;
+    }
+
+    if (width < 64 || height < 64)
+    {
+        width = 1280;
+        height = 720;
+    }
+
+    width &= ~1u;
+    height &= ~1u;
+
+    if (g_pausedWidth != width ||
+        g_pausedHeight != height ||
+        g_pausedPixels.empty())
+    {
+        BuildPausedFrame(width, height);
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(g_displayMutex);
+
+        g_displayPixels = g_pausedPixels;
+        g_displayWidth = width;
+        g_displayHeight = height;
+    }
+
+    if (g_udpReceiverConnected)
+    {
+        {
+            std::lock_guard<std::mutex> lock(g_encodeMutex);
+
+            g_pendingEncodeFrame.pixels = g_pausedPixels;
+            g_pendingEncodeFrame.width = width;
+            g_pendingEncodeFrame.height = height;
+            g_pendingEncodeFrame.valid = true;
+        }
+
+        g_encodeCv.notify_one();
+    }
+}
 
 
 // ============================================================

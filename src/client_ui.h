@@ -113,6 +113,10 @@ bool CaptureLooksBlack();
 // Janela sendo capturada (nullptr = uma tela inteira).
 HWND CaptureWindowHandle();
 
+// Manda pra quem assiste (e pra previa) o quadro "Transmissao
+// pausada" (a janela compartilhada fechou).
+void SubmitPausedFrame();
+
 // Liga/desliga o motor (portas UDP, threads). Ver main.cpp.
 bool EngineStart();
 

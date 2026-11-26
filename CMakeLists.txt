@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.20)
 
 project(stream-project
-    VERSION 0.8.9
+    VERSION 0.8.11
     LANGUAGES C CXX
 )
 

@@ -3,6 +3,7 @@
 
 #include "imgui.h"
 #include "ui_widgets.h"
+#include "imgui_internal.h"
 
 
 namespace
@@ -231,9 +232,7 @@ static void DrawBlackCaptureNotice(
         "Essa janela está chegando preta para quem assiste.");
 
     UiMutedText(
-        "Acontece com alguns jogos (como a partida do LoL). "
-        "Transmitir a tela inteira onde ela está costuma "
-        "resolver.");
+        "Acontece com alguns jogos, como a partida do LoL.");
 
     float avail = ImGui::GetContentRegionAvail().x;
 
@@ -257,6 +256,60 @@ static void DrawBlackCaptureNotice(
 }
 
 
+// Aviso de "a janela foi fechada" (transmissao pausada).
+static void DrawWindowClosedNotice(
+    const ClientLiveModel& model,
+    ClientScreenActions& actions)
+{
+    UiWrappedColored(
+        UiColorError(),
+        "A janela compartilhada foi fechada.");
+
+    UiMutedText(
+        ("Transmissão pausada. Encerra em " +
+         std::to_string(model.closedSecondsLeft < 1 ? 1 : model.closedSecondsLeft) +
+         " s.").c_str());
+
+    float avail = ImGui::GetContentRegionAvail().x;
+
+    float stopWidth =
+        ImGui::CalcTextSize("Parar agora").x +
+        ImGui::GetStyle().FramePadding.x * 2.0f;
+
+    if (UiPrimaryButtonSized(
+            "Escolher outra",
+            ImVec2(avail - stopWidth - ImGui::GetStyle().ItemSpacing.x, 0.0f)))
+    {
+        actions.openPicker = true;
+    }
+
+    ImGui::SameLine();
+
+    if (UiButton("Parar agora##janelafechada"))
+    {
+        actions.stopSharing = true;
+    }
+}
+
+
+// Avisos da transmissao (no maximo um por vez).
+static bool HasLiveNotice(
+    const ClientLiveModel& model)
+{
+    return model.windowClosed || model.blackCapture;
+}
+
+static void DrawLiveNotice(
+    const ClientLiveModel& model,
+    ClientScreenActions& actions)
+{
+    if (model.windowClosed)
+        DrawWindowClosedNotice(model, actions);
+    else if (model.blackCapture)
+        DrawBlackCaptureNotice(actions);
+}
+
+
 void DrawClientLiveScreen(
     ClientLiveModel& model,
     ClientScreenActions& actions)
@@ -277,7 +330,7 @@ void DrawClientLiveScreen(
     static float roomAlpha = 0.0f;
 
     if (roomPanel &&
-        model.blackCapture &&
+        HasLiveNotice(model) &&
         !model.hidden &&
         !*model.roomPanelOpen)
     {
@@ -312,7 +365,7 @@ void DrawClientLiveScreen(
             ImGuiWindowFlags_NoSavedSettings |
             ImGuiWindowFlags_NoFocusOnAppearing);
 
-        DrawBlackCaptureNotice(actions);
+        DrawLiveNotice(model, actions);
 
         ImGui::End();
     }
@@ -400,9 +453,9 @@ void DrawClientLiveScreen(
 
         UiWrappedColored(UiColorSuccess(), line.c_str());
 
-        if (model.blackCapture)
+        if (HasLiveNotice(model))
         {
-            DrawBlackCaptureNotice(actions);
+            DrawLiveNotice(model, actions);
         }
 
         float half =
@@ -468,11 +521,11 @@ void DrawClientLiveScreen(
         UiMutedText(sharing.c_str());
     }
 
-    if (model.blackCapture)
+    if (HasLiveNotice(model))
     {
         ImGui::Spacing();
 
-        DrawBlackCaptureNotice(actions);
+        DrawLiveNotice(model, actions);
 
         ImGui::Spacing();
     }
@@ -496,11 +549,6 @@ void DrawClientLiveScreen(
 
     if (model.inRoom)
     {
-        UiMutedText(
-            "Quem está na sala vê sua transmissão na lista e "
-            "escolhe assistir."
-        );
-
         if (model.roomPreview)
         {
             if (UiToggle(
@@ -907,7 +955,9 @@ std::string Ellipsize(
 bool PickerCard(
     const PickerEntry& entry,
     int id,
-    float width)
+    float width,
+    std::vector<PickerLiveSlot>* liveSlots = nullptr,
+    int liveIndex = -1)
 {
     const ImGuiStyle& style = ImGui::GetStyle();
 
@@ -984,6 +1034,27 @@ bool PickerCard(
 
     float boxWidth = thumbMax.x - thumbMin.x;
     float boxHeight = thumbMax.y - thumbMin.y;
+
+    if (entry.live && liveSlots && liveIndex >= 0)
+    {
+        ImVec2 clipMin = draw->GetClipRectMin();
+        ImVec2 clipMax = draw->GetClipRectMax();
+
+        PickerLiveSlot slot;
+
+        slot.index = liveIndex;
+        slot.boxMinX = thumbMin.x;
+        slot.boxMinY = thumbMin.y;
+        slot.boxMaxX = thumbMax.x;
+        slot.boxMaxY = thumbMax.y;
+        slot.clipMinX = clipMin.x;
+        slot.clipMinY = clipMin.y;
+        slot.clipMaxX = clipMax.x;
+        slot.clipMaxY = clipMax.y;
+        slot.root = ImGui::GetCurrentWindow()->RootWindow;
+
+        liveSlots->push_back(slot);
+    }
 
     if (entry.thumbnail &&
         entry.thumbnailWidth > 0.0f &&
@@ -1077,7 +1148,8 @@ bool PickerCard(
 int PickerGrid(
     const std::vector<PickerEntry>& entries,
     int idBase,
-    int columns)
+    int columns,
+    std::vector<PickerLiveSlot>* liveSlots = nullptr)
 {
     const ImGuiStyle& style = ImGui::GetStyle();
 
@@ -1097,7 +1169,7 @@ int PickerGrid(
             ImGui::SameLine();
         }
 
-        if (PickerCard(entries[i], idBase + i, cardWidth))
+        if (PickerCard(entries[i], idBase + i, cardWidth, liveSlots, i))
         {
             clicked = i;
         }
@@ -1212,7 +1284,7 @@ void DrawClientPickerScreen(
     }
 
     int windowClicked =
-        PickerGrid(windows, 1000, columns);
+        PickerGrid(windows, 1000, columns, model.liveSlots);
 
     if (windowClicked >= 0)
     {
