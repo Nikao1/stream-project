@@ -21,4 +21,4 @@
 // versao nova e abre a pagina de downloads.
 // ============================================================
 
-constexpr const char* COLAE_UPDATE_PUBLIC_KEY = "3de4319c7efcfd81a4991fe20c2727a1ccfa9550929a0053eea861bd6f721a2c";
+constexpr const char* COLAE_UPDATE_PUBLIC_KEY = "";

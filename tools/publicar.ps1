@@ -97,7 +97,7 @@ if (-not (Test-Path $instalador))
 # 2. Assinar
 # ------------------------------------------------------------
 
-Passo "Assinando o instalador"
+Passo "Assinando o instalador (digite a senha da chave quando pedir)"
 
 $assinar = Get-ChildItem -Path (Join-Path $projeto $PastaBuild) -Recurse -Filter "colae-assinar.exe" -ErrorAction SilentlyContinue |
     Sort-Object LastWriteTime -Descending | Select-Object -First 1

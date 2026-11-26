@@ -22,10 +22,20 @@ usa o `.zip` recebe o aviso e o botão abre a página de downloads.
 
 1. Compile o projeto (o `colae-assinar.exe` é compilado junto, em
    `build\Release\`).
-2. Gere o par de chaves **fora da pasta do repositório**:
+2. Gere o par de chaves **fora da pasta do repositório**. Ele pede uma
+   **senha** (mínimo 8 caracteres), que protege a chave:
 
    ```
    build\Release\colae-assinar.exe gerar-chave D:\chaves\colae.chave
+   ```
+
+   A chave privada fica gravada **criptografada** (Argon2id +
+   XChaCha20-Poly1305). Sem a senha, o arquivo não serve para nada.
+   Se você já tinha uma chave criada **sem senha** (versão antiga da
+   ferramenta), proteja-a sem trocar de chave:
+
+   ```
+   build\Release\colae-assinar.exe proteger D:\chaves\colae.chave
    ```
 
 3. Cole a **chave pública** que ele mostrar em `src/update_key.h`:
@@ -34,8 +44,9 @@ usa o `.zip` recebe o aviso e o botão abre a página de downloads.
    constexpr const char* COLAE_UPDATE_PUBLIC_KEY = "cole-aqui-os-64-caracteres";
    ```
 
-4. **Guarde o arquivo `.chave` com cuidado** e faça uma cópia de segurança (num
-   pendrive, por exemplo):
+4. **Guarde o arquivo `.chave` e a senha com cuidado.** Faça uma cópia de
+   segurança do arquivo (num pendrive, por exemplo) e guarde a senha num
+   gerenciador de senhas. Esquecer a senha é o mesmo que perder a chave:
    - **Se vazar:** qualquer um poderia assinar atualizações. Gere outra chave e
      publique uma versão nova com a chave pública nova (instalada manualmente
      uma vez).
@@ -58,8 +69,8 @@ A partir dela, as próximas chegam pelo botão.
    powershell -ExecutionPolicy Bypass -File tools\publicar.ps1 -Chave D:\chaves\colae.chave -Notas "O que mudou, em uma linha"
    ```
 
-   Ele compila, gera o `.zip` e o instalador, assina o instalador e escreve
-   `signaling/versao.txt`.
+   Ele compila, gera o `.zip` e o instalador, pede a **senha da chave**,
+   assina o instalador e escreve `signaling/versao.txt`.
 3. Crie o **release** `vx.y.z` no GitHub
    (https://github.com/Nikao1/stream-project/releases/new) e anexe:
    - `dist\Instalar-Colae-x.y.z.exe` (é o que a atualização baixa, então

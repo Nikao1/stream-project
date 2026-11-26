@@ -8,6 +8,7 @@
 # Pacotes gerados por tools/empacotar.ps1
 /dist/
 
+# Chave PRIVADA das atualizacoes (nunca no repositorio)
 *.chave
 
 # Logs e relatorios de crash gerados ao rodar os programas
